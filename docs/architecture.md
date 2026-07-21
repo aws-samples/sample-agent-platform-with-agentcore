@@ -16,7 +16,9 @@ The platform hosts two kinds of agent kernels behind one control plane:
 ```
                            ┌─────────────────────────────────────────────┐
                            │                Portal (React)               │
-                           │  Dev Workbench │ Publish │ Debug │ (more…)  │
+                           │  Workbench · Publish · Debug · Scheduler    │
+                           │  Channels · Memory · Observability · Eval   │
+                           │  Governance · MCP & Skills                  │
                            └──────┬──────────────────────────┬───────────┘
                                   │ REST                     │ WSS (SigV4 pre-signed)
                                   ▼                          │
@@ -52,6 +54,11 @@ The platform hosts two kinds of agent kernels behind one control plane:
                           ▼
                     Model providers
 ```
+
+This sketch shows the two kernel paths; the full picture — including the
+EventBridge Scheduler → Lambda firing engine, channel webhooks, AgentCore
+Memory and the data stores — is the animated diagram in the README
+(`docs/images/architecture.svg`).
 
 ## Components
 
@@ -305,11 +312,11 @@ React + Vite + Tailwind. Information architecture:
 |---|---|---|
 | Overview | ✅ live | landing page, platform capabilities |
 | Dev Workbench | ✅ live | interactive Claude Code sessions (xterm.js web terminal, S3 artifacts) |
-| Publish | ✅ live | published agents + self-service publish from workspace manifests |
+| Publish | ✅ live | published agents + self-service publish from workspace manifests; click a card to edit and republish (version bump) |
 | Debug | ✅ live | invoke the raw kernel or any published agent, with memory binding |
-| Scheduler | ✅ live | recurring prompts (rate/cron) with run-now and pause |
+| Scheduler | ✅ live | recurring prompts (visual interval/cron builder) with run-now and pause |
 | MCP & Skills | ✅ live | ecosystem registry, session attachments, per-invoke MCP tools, AgentCore built-in tools (Code Interpreter + Browser) |
-| Channels | ✅ live | webhook endpoints with one-time tokens + curl snippets |
+| Channels | ✅ live | webhook endpoints with one-time tokens, curl snippets + an in-portal test dialog |
 | Observability | ✅ live | invocation ledger: stats tiles + per-call table |
 | Memory | ✅ live | AgentCore Memory stores, event browser, semantic record search |
 | Evaluation | ✅ live | datasets, LLM-judged runs with per-case verdicts |
@@ -322,7 +329,7 @@ React + Vite + Tailwind. Information architecture:
 | `NetworkStack` | VPC, private/public subnets, NAT GW + EIP, egress SG |
 | `PlatformStack` | S3 workspace bucket, ECR repos, DynamoDB table, Secrets Manager placeholders |
 | `RuntimeStack` | `AWS::BedrockAgentCore::Runtime` (L1) × 2 kernels, execution role, VPC network config |
-| `PortalStack` | ECS Fargate backend + ALB + CloudFront + frontend S3 (optional; backend can also run locally) |
+| `PortalStack` | ECS Fargate backend + ALB + CloudFront + frontend S3 + Cognito user pool + scheduler engine (EventBridge Scheduler group, schedule-runner Lambda, SQS DLQ) — optional; backend can also run locally |
 
 AgentCore runtimes are created through CloudFormation rather than
 `create-agent-runtime` CLI calls — CloudFormation is the reliable path in fresh

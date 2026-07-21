@@ -29,8 +29,8 @@ supported as an alternative.
 │   ├── agent-sdk-kernel/     # Headless kernel: Claude Agent SDK behind the AgentCore /invocations contract
 │   └── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
 ├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry
-├── frontend/                 # React portal: Dev Workbench, Publish, Debug, MCP & Skills (+ roadmap pages)
-├── infrastructure/           # CDK (Python): VPC/NAT network, platform resources, AgentCore runtimes, portal hosting
+├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Channels, Memory, Observability, Eval, Governance
+├── infrastructure/           # CDK (Python): VPC/NAT network, platform resources, AgentCore runtimes, portal hosting + scheduler engine
 ├── scripts/                  # Image build & deployment helpers
 └── docs/                     # Architecture, deployment and user guides
 ```
