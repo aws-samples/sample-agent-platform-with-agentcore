@@ -300,6 +300,11 @@ export const api = {
     request<Channel>('/api/v1/channels', { method: 'POST', body: JSON.stringify(body) }),
   toggleChannel: (id: string, enabled: boolean) =>
     request<Channel>(`/api/v1/channels/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }),
+  testChannel: (id: string, body: { message: string; conversation_id?: string }) =>
+    request<{ ok: boolean; reply: string; runtime_session_id: string }>(
+      `/api/v1/channels/${id}/test`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   deleteChannel: (id: string) => request<{ ok: boolean }>(`/api/v1/channels/${id}`, { method: 'DELETE' }),
 
   // Evaluation

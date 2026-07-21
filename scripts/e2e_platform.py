@@ -195,8 +195,9 @@ def main() -> int:
     sched_id = sched["id"]
     status, res = http("POST", f"/api/v1/schedules/{sched_id}/run-now", token=token, timeout=120)
     report("scheduler.run-now", status == 200 and "SCHED_E2E_OK" in res.get("result", ""), res.get("result", "")[:60])
-    # timed tick: expression fires every minute, backend ticks every 30 s
-    deadline = time.time() + 150
+    # timed fire: EventBridge Scheduler fires ~1 min after creation (or the
+    # local dev loop ticks every 30 s) and the run itself takes a while
+    deadline = time.time() + 300
     ticked = False
     while time.time() < deadline:
         _, all_s = http("GET", "/api/v1/schedules", token=token)

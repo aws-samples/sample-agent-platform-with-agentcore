@@ -3,7 +3,23 @@ import { Loader2, Pause, Play, Plus, RefreshCw, Trash2, Zap } from 'lucide-react
 import { Modal, SectionTitle } from '@/components/common/ui'
 import { api, type PublishedAgent, type Schedule } from '@/services/api'
 
-const EXPR_HINT = 'rate(30 minutes) · rate(2 hours) · 0 9 * * 1-5 (5-field cron, UTC)'
+const WEEKDAYS = [
+  { value: '1', label: 'Monday' },
+  { value: '2', label: 'Tuesday' },
+  { value: '3', label: 'Wednesday' },
+  { value: '4', label: 'Thursday' },
+  { value: '5', label: 'Friday' },
+  { value: '6', label: 'Saturday' },
+  { value: '0', label: 'Sunday' },
+]
+
+const CRON_PRESETS = [
+  { value: 'daily', label: 'Every day at…' },
+  { value: 'weekdays', label: 'Weekdays (Mon–Fri) at…' },
+  { value: 'weekly', label: 'Weekly on…' },
+  { value: 'monthly', label: 'Monthly on the 1st at…' },
+  { value: 'custom', label: 'Custom cron expression' },
+]
 
 export default function SchedulerPage() {
   const [schedules, setSchedules] = useState<Schedule[]>([])
@@ -16,9 +32,35 @@ export default function SchedulerPage() {
   const [name, setName] = useState('')
   const [target, setTarget] = useState('agent-sdk')
   const [prompt, setPrompt] = useState('')
-  const [expression, setExpression] = useState('rate(30 minutes)')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
+
+  // expression builder
+  const [exprMode, setExprMode] = useState<'interval' | 'cron'>('interval')
+  const [intervalN, setIntervalN] = useState(30)
+  const [intervalUnit, setIntervalUnit] = useState<'minutes' | 'hours' | 'days'>('minutes')
+  const [cronPreset, setCronPreset] = useState('daily')
+  const [cronHour, setCronHour] = useState(9)
+  const [cronMinute, setCronMinute] = useState(0)
+  const [cronWeekday, setCronWeekday] = useState('1')
+  const [cronCustom, setCronCustom] = useState('0 9 * * 1-5')
+
+  const buildExpression = (): string => {
+    if (exprMode === 'interval') {
+      const n = Math.max(1, Math.floor(intervalN) || 1)
+      return `rate(${n} ${n === 1 ? intervalUnit.slice(0, -1) : intervalUnit})`
+    }
+    const m = Math.min(59, Math.max(0, Math.floor(cronMinute) || 0))
+    const h = Math.min(23, Math.max(0, Math.floor(cronHour) || 0))
+    switch (cronPreset) {
+      case 'daily': return `${m} ${h} * * *`
+      case 'weekdays': return `${m} ${h} * * 1-5`
+      case 'weekly': return `${m} ${h} * * ${cronWeekday}`
+      case 'monthly': return `${m} ${h} 1 * *`
+      default: return cronCustom.trim()
+    }
+  }
+  const expression = buildExpression()
 
   const refresh = () => {
     api.listSchedules().then(setSchedules).catch((e) => setError(String(e)))
@@ -70,7 +112,7 @@ export default function SchedulerPage() {
 
       {schedules.length === 0 ? (
         <div className="card p-10 text-center text-sm text-slate-400">
-          No schedules yet. The backend ticks every 30 s; expressions: {EXPR_HINT}
+          No schedules yet. Create one — fixed intervals or cron (UTC); the backend ticks every 30 s.
         </div>
       ) : (
         <div className="card overflow-x-auto">
@@ -154,13 +196,86 @@ export default function SchedulerPage() {
         </select>
         <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Prompt</label>
         <textarea className="input min-h-20" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="What should run on each occurrence?" />
-        <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Expression</label>
-        <input className="input font-mono" value={expression} onChange={(e) => setExpression(e.target.value)} />
-        <p className="mt-1 text-xs text-slate-400">{EXPR_HINT}</p>
+        <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Schedule</label>
+        <div className="mb-2 flex gap-1 rounded-lg bg-slate-100 p-1 text-xs">
+          {(['interval', 'cron'] as const).map((m) => (
+            <button
+              key={m}
+              className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${
+                exprMode === m ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+              onClick={() => setExprMode(m)}
+            >
+              {m === 'interval' ? 'Fixed interval' : 'Cron (UTC)'}
+            </button>
+          ))}
+        </div>
+        {exprMode === 'interval' ? (
+          <div className="flex items-center gap-2 text-sm text-slate-700">
+            every
+            <input
+              type="number"
+              min={1}
+              className="input !w-24"
+              value={intervalN}
+              onChange={(e) => setIntervalN(Number(e.target.value))}
+            />
+            <select
+              className="input !w-32"
+              value={intervalUnit}
+              onChange={(e) => setIntervalUnit(e.target.value as typeof intervalUnit)}
+            >
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+            </select>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <select className="input" value={cronPreset} onChange={(e) => setCronPreset(e.target.value)}>
+              {CRON_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+            {cronPreset === 'weekly' && (
+              <select className="input" value={cronWeekday} onChange={(e) => setCronWeekday(e.target.value)}>
+                {WEEKDAYS.map((d) => (
+                  <option key={d.value} value={d.value}>{d.label}</option>
+                ))}
+              </select>
+            )}
+            {cronPreset === 'custom' ? (
+              <input
+                className="input font-mono"
+                value={cronCustom}
+                onChange={(e) => setCronCustom(e.target.value)}
+                placeholder="0 9 * * 1-5  (min hour day month weekday)"
+              />
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-slate-700">
+                at
+                <input
+                  type="number" min={0} max={23} className="input !w-20"
+                  value={cronHour} onChange={(e) => setCronHour(Number(e.target.value))}
+                />
+                :
+                <input
+                  type="number" min={0} max={59} className="input !w-20"
+                  value={cronMinute} onChange={(e) => setCronMinute(Number(e.target.value))}
+                />
+                <span className="text-xs text-slate-400">UTC (HH : MM)</span>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          expression: <code className="font-mono text-slate-700">{expression || '—'}</code>
+          {exprMode === 'cron' && <span className="ml-2 text-slate-400">times are UTC</span>}
+        </p>
         {createError && <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{createError}</div>}
         <div className="mt-4 flex justify-end gap-2">
           <button className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
-          <button className="btn-primary" disabled={creating || !name.trim() || !prompt.trim()} onClick={create}>
+          <button className="btn-primary" disabled={creating || !name.trim() || !prompt.trim() || !expression} onClick={create}>
             {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create
           </button>
         </div>

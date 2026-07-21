@@ -8,6 +8,6 @@
     "start": "node main.js"
   },
   "dependencies": {
-    "ws": "8.18.0"
+    "ws": "8.21.0"
   }
 }

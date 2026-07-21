@@ -56,6 +56,32 @@ def delete_channel(channel_id: str, user: str = Depends(get_current_user)):
     return {"ok": True}
 
 
+@router.post("/{channel_id}/test")
+def test_channel(
+    channel_id: str,
+    req: ChannelWebhookRequest,
+    user: str = Depends(get_current_user),
+):
+    """In-portal webhook test: same routing as the webhook, authenticated by
+    the portal identity instead of the channel token (which is only shown
+    once at creation)."""
+    try:
+        result = channel_service.test_channel(
+            channel_id, user=user, message=req.message, conversation_id=req.conversation_id
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    except (QuotaExceeded, SourceDisabled) as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return {
+        "ok": result.get("ok", False),
+        "reply": result.get("result", ""),
+        "runtime_session_id": result.get("runtime_session_id", ""),
+    }
+
+
 @router.post("/{channel_id}/webhook")
 def webhook(
     channel_id: str,

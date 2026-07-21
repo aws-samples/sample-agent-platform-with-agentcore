@@ -60,7 +60,8 @@ architecture, all live:
   image build). Republish to bump the version; invoke from Debug, channels,
   schedules, evals or plain HTTP.
 - **Scheduler** — cron / `rate(N minutes)` schedules against any kernel or
-  published agent, with claim-based ticking so replicas never double-fire.
+  published agent, fired by **EventBridge Scheduler → Lambda** (retries +
+  DLQ), with an in-process tick loop as the local-development fallback.
 - **Channels** — token-authenticated webhook endpoints for external systems
   (bots, CI, ops hooks); a `conversation_id` keeps a warm runtime session.
 - **Memory** — AgentCore Memory stores managed from the portal; bind one to
@@ -134,10 +135,10 @@ adds the MCP & Skills ecosystem (registry, session attachments, per-invoke
 tools); Phase 3 wires in the AgentCore built-in tools (Code Interpreter +
 Browser) through that same registry; Phase 4 ships the platform-operations
 layer — self-service publishing, scheduler, channels, memory, observability,
-evaluation and governance. Remaining ideas (image-based custom kernel
-publishing via CodeBuild, EventBridge Scheduler for HA ticking, CloudWatch
-GenAI dashboard deep links) are documented as extension points in
-[EXTENDING.md](EXTENDING.md).
+evaluation and governance (scheduling runs on EventBridge Scheduler + Lambda).
+Remaining ideas (image-based custom kernel publishing via CodeBuild,
+CloudWatch GenAI dashboard deep links, DLQ alarming) are documented as
+extension points in [EXTENDING.md](EXTENDING.md).
 
 ## Security
 
@@ -153,9 +154,11 @@ before exposing the portal beyond a demo audience.
 ### Static-analysis suppressions
 
 The repo is scanned by gitleaks, semgrep, checkov, bandit, grype, cfn-nag and
-syft. The scan is clean; a small number of findings are suppressed in place
-(tool-native comments) because they are by-design for this architecture or
-false positives. Each suppression carries its reason inline; they are:
+syft, plus GitHub code scanning (CodeQL) and Dependabot on the public
+repository. The scan is clean; a small number of findings are suppressed
+(tool-native comments, or a documented dismissal for CodeQL) because they are
+by-design for this architecture or false positives. Each suppression carries
+its reason; they are:
 
 | Tool / rule | Where | Reason |
 |---|---|---|
@@ -169,6 +172,7 @@ false positives. Each suppression carries its reason inline; they are:
 | semgrep JS/TS rules (i18n etc.) | `frontend/` (via `.semgrepignore`) | The reference portal is a single-language demo UI; internationalization is out of scope. Security logic lives in the backend and kernels, which are still scanned. |
 | semgrep `arbitrary-sleep` | `scripts/e2e_platform.py` | Intentional poll intervals in the E2E test harness (waiting for async server-side work: eval runs, memory extraction, scheduler ticks). |
 | semgrep `dynamic-urllib-use-detected` | `scripts/e2e_platform.py` | Test harness only; the URL is the fixed https portal base plus literal API paths — no user-controlled input. |
+| CodeQL `py/clear-text-logging-sensitive-data` | `agent-sdk-kernel/src/main.py` | False positive — the logged value is the Secrets Manager secret *name* (in a "could not read" error), not the secret value. Dismissed on GitHub with this reason. |
 
 ## License
 

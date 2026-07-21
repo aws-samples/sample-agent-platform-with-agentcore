@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Copy, Loader2, MessagesSquare, Pause, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, FlaskConical, Loader2, MessagesSquare, Pause, Play, Plus, RefreshCw, Send, Trash2 } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
 import { api, type Channel, type PublishedAgent } from '@/services/api'
+
+interface TestExchange {
+  message: string
+  reply: string
+  ok: boolean
+  at: string
+}
 
 export default function ChannelsPage() {
   const [channels, setChannels] = useState<Channel[]>([])
@@ -14,6 +21,42 @@ export default function ChannelsPage() {
   const [target, setTarget] = useState('agent-sdk')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
+
+  // in-portal webhook tester
+  const [testing, setTesting] = useState<Channel | null>(null)
+  const [testMessage, setTestMessage] = useState('')
+  const [testConversation, setTestConversation] = useState('portal-test')
+  const [testBusy, setTestBusy] = useState(false)
+  const [testError, setTestError] = useState('')
+  const [exchanges, setExchanges] = useState<TestExchange[]>([])
+
+  const openTest = (ch: Channel) => {
+    setTesting(ch)
+    setTestMessage('')
+    setTestError('')
+    setExchanges([])
+  }
+
+  const sendTest = async () => {
+    if (!testing || !testMessage.trim()) return
+    setTestBusy(true)
+    setTestError('')
+    try {
+      const res = await api.testChannel(testing.id, {
+        message: testMessage,
+        conversation_id: testConversation || undefined,
+      })
+      setExchanges((x) => [
+        { message: testMessage, reply: res.reply, ok: res.ok, at: new Date().toLocaleTimeString() },
+        ...x,
+      ])
+      setTestMessage('')
+    } catch (e) {
+      setTestError(String(e))
+    } finally {
+      setTestBusy(false)
+    }
+  }
 
   const refresh = () => {
     api.listChannels().then(setChannels).catch((e) => setError(String(e)))
@@ -76,6 +119,13 @@ export default function ChannelsPage() {
                 </span>
                 <button
                   className="rounded p-1.5 text-slate-400 hover:bg-slate-50 hover:text-brand-600"
+                  title="Test in portal"
+                  onClick={() => openTest(ch)}
+                >
+                  <FlaskConical size={14} />
+                </button>
+                <button
+                  className="rounded p-1.5 text-slate-400 hover:bg-slate-50 hover:text-brand-600"
                   title={ch.enabled ? 'Disable' : 'Enable'}
                   onClick={() => api.toggleChannel(ch.id, !ch.enabled).then(refresh).catch((e) => setError(String(e)))}
                 >
@@ -131,6 +181,61 @@ export default function ChannelsPage() {
             {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create
           </button>
         </div>
+      </Modal>
+
+      <Modal open={testing !== null} title={`Test channel: ${testing?.name ?? ''}`} onClose={() => setTesting(null)}>
+        {testing && (
+          <>
+            <p className="mb-3 text-xs text-slate-500">
+              Sends through the <strong>same routing</strong> as the webhook (target{' '}
+              <code className="rounded bg-slate-100 px-1 font-mono">{testing.target}</code>, governed pipeline,
+              warm session per conversation) — authenticated by your portal sign-in, so no token needed here.
+              External callers still use <code className="rounded bg-slate-100 px-1">X-Channel-Token</code>.
+            </p>
+            <div className="flex gap-2">
+              <input
+                className="input flex-1"
+                placeholder='message, e.g. "hello"'
+                value={testMessage}
+                onChange={(e) => setTestMessage(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !testBusy && sendTest()}
+              />
+              <input
+                className="input w-36"
+                title="conversation_id — same value keeps a warm session"
+                value={testConversation}
+                onChange={(e) => setTestConversation(e.target.value)}
+                placeholder="conversation id"
+              />
+              <button className="btn-primary" disabled={testBusy || !testMessage.trim()} onClick={sendTest}>
+                {testBusy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Send
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Same <code>conversation id</code> = same warm session (context carries over); first send on a fresh
+              conversation has cold-start latency.
+            </p>
+            {testError && (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{testError}</div>
+            )}
+            <div className="mt-3 max-h-80 space-y-3 overflow-y-auto">
+              {exchanges.map((x, i) => (
+                <div key={i} className="rounded-lg border border-slate-100 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium text-slate-700">{x.message}</p>
+                    <span className="text-[10px] text-slate-400">{x.at}</span>
+                  </div>
+                  <pre className={`mt-2 whitespace-pre-wrap rounded-lg p-2 text-xs ${x.ok ? 'bg-slate-50 text-slate-800' : 'bg-red-50 text-red-700'}`}>
+                    {x.reply || '(empty reply)'}
+                  </pre>
+                </div>
+              ))}
+              {exchanges.length === 0 && !testBusy && (
+                <p className="py-6 text-center text-xs text-slate-300">Replies appear here</p>
+              )}
+            </div>
+          </>
+        )}
       </Modal>
 
       <Modal open={created !== null} title="Channel created — save the token" onClose={() => setCreated(null)}>

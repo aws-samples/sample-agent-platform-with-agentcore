@@ -98,9 +98,17 @@ publish time — a typo fails the publish instead of shipping silently.
 The platform reads the manifest straight from the workspace's S3 prefix (give
 the 30 s sync a moment after saving the file).
 
-**3. Iterate** — edit the manifest and publish again: same name = version
-bump, with history kept on the agent card. Publishing is config-only, so a
-new version is live immediately and there is nothing to roll out.
+**3. Iterate** — two equivalent ways, both keeping version history on the
+agent card:
+
+- **Click the agent card** — edit its description, system prompt, turn
+  budget, tool attachments and memory binding in a form and hit *Publish
+  v(N+1)*. Handy for quick tweaks without going back to a workspace.
+- **Republish from the workspace** — edit the manifest and publish again;
+  same name = version bump.
+
+Publishing is config-only, so a new version is live immediately for every
+consumer and there is nothing to roll out.
 
 **Use it** — the agent now appears as a target in Debug, Channels, Scheduler
 and Evaluation, and has its own API endpoint:
@@ -125,8 +133,12 @@ published agent — type a prompt, *Invoke*.
 - **Warm sessions** — after the first invoke, follow-ups reuse the same
   microVM (fast, keeps context). Click *new* to force a fresh session.
   Switching targets always starts fresh.
-- **Memory** — pick a store and an actor ID (e.g. your username) to give the
-  kernel long-term recall; see [Memory](#memory).
+- **Memory** — pick a store from the dropdown (only `ACTIVE` stores are
+  selectable; hit *reload* if yours is still creating). The actor ID defaults
+  to your username — recall only works when writing and asking use the
+  **same actor**. For a published agent the store comes from its config: the
+  panel shows which store it is bound to (or tells you it has none).
+  See [Memory](#memory).
 
 The first invoke on any fresh session has cold-start latency. Each result
 shows turns, duration and cost.
@@ -153,7 +165,11 @@ no rebuild.
 
 Run a prompt against a kernel or published agent on a schedule.
 
-**Create** — *New schedule* → name, target, prompt, and an expression:
+**Create** — *New schedule* → name, target, prompt, and a schedule built in
+the UI: pick **Fixed interval** (every N minutes/hours/days) or **Cron (UTC)**
+with presets (daily / weekdays / weekly / monthly at a time you pick) — the
+generated expression is previewed live, and a *custom* preset accepts any
+5-field cron. The API takes the expressions directly:
 
 | Expression | Meaning |
 |---|---|
@@ -162,9 +178,11 @@ Run a prompt against a kernel or published agent on a schedule.
 
 **Semantics worth knowing:**
 
-- The backend checks for due schedules every 30 s, so sub-minute precision is
-  not a goal; a claimed occurrence runs exactly once even with multiple
-  backend replicas.
+- On a hosted deployment each schedule is backed by **Amazon EventBridge
+  Scheduler**: occurrences fire on time regardless of what the portal backend
+  is doing, and a schedule-runner Lambda executes them through the same
+  governed pipeline. (Local development falls back to an in-process 30 s
+  tick loop inside the backend.)
 - *Run now* fires immediately **without** shifting the recurring clock.
 - *Pause* stops firing; *Resume* re-arms from now (it does not backfill
   missed occurrences).
@@ -181,6 +199,12 @@ single URL + secret to talk to an agent. No AWS credentials, no Cognito.
 **Create** — *New channel* → name + target. The response shows the webhook
 URL and the token **once**, with a ready-to-run curl snippet. Copy it now;
 the token is not retrievable later (delete and recreate to rotate).
+
+**Test it in the portal** — the flask icon on a channel card opens a tester
+that sends messages through the exact same routing as the webhook (target,
+governed pipeline, warm session per conversation ID) but authenticates with
+your portal sign-in — no token or terminal needed. Use it to check the
+channel's behavior before handing the URL + token to the external system.
 
 **Call it:**
 
@@ -319,7 +343,7 @@ the backend locally):
 | Agents | `agents`, `agents/publish-from-session`, `agents/{id}/invoke` |
 | Ecosystem | `ecosystem/mcp-servers`, `ecosystem/skills` |
 | Schedules | `schedules`, `…/enable`, `…/disable`, `…/run-now` |
-| Channels | `channels`, `channels/{id}/webhook` (token auth) |
+| Channels | `channels`, `channels/{id}/webhook` (token auth), `channels/{id}/test` (portal auth) |
 | Memory | `memory/stores`, `…/actors`, `…/events`, `…/records` |
 | Evaluation | `evals/datasets`, `evals/runs` |
 | Observability | `observability/invocations`, `observability/stats` |

@@ -260,12 +260,16 @@ free.
   Workbench session's S3 workspace; republishing the same name bumps the
   version and keeps history. Config-only publishing means instant rollout and
   no per-agent runtime; image-based custom kernels remain the CDK path.
-- **Scheduler** (`schedule_service.py`) — schedules in DynamoDB; an
-  in-process asyncio loop ticks every 30 s and claims due schedules with a
-  conditional update on `next_run_at`, so concurrent backend replicas never
-  double-fire. Expressions: `rate(N minutes|hours|days)` or 5-field cron
-  (UTC, via croniter). For HA, swap the tick loop for EventBridge Scheduler
-  targeting the same run path.
+- **Scheduler** (`schedule_service.py`) — schedules in DynamoDB, fired by
+  **Amazon EventBridge Scheduler**: the backend mirrors every schedule into a
+  dedicated schedule group, and at each occurrence EventBridge invokes the
+  schedule-runner **Lambda**, which packages this same service layer and
+  executes `run_once` through the governed pipeline (retries + SQS DLQ cover
+  infra-level failures; on startup the backend reconciles the group against
+  DynamoDB). Expressions: `rate(N minutes|hours|days)` or 5-field cron (UTC)
+  — translated to EventBridge's 6-field dialect at mirror time. Local
+  development (no EventBridge wiring) falls back to an in-process 30 s tick
+  loop with conditional-update claiming.
 - **Channels** (`channel_service.py`) — webhook endpoints authenticated by a
   server-generated token (shown once, constant-time compare) instead of
   Cognito, so external systems need no AWS credentials. A caller-supplied

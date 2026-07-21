@@ -13,8 +13,11 @@ from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_elasticloadbalancingv2 as elbv2
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_scheduler as scheduler
+from aws_cdk import aws_sqs as sqs
 from aws_cdk import RemovalPolicy
 from constructs import Construct
 
@@ -137,6 +140,109 @@ class PortalStack(Stack):
             )
         )
 
+        # --------------------------- scheduler -----------------------------
+        # Production firing engine: one EventBridge Scheduler schedule per
+        # platform schedule (created at runtime by the backend, in this
+        # dedicated group) -> the schedule-runner Lambda -> the same governed
+        # invocation pipeline. The Lambda packages the backend's service
+        # layer; its code is deployed by scripts/deploy-schedule-lambda.sh
+        # (mirroring how kernel images are pushed outside CloudFormation).
+        schedule_group = scheduler.CfnScheduleGroup(
+            self, "ScheduleGroup", name="agent-platform"
+        )
+
+        schedule_dlq = sqs.Queue(
+            self,
+            "ScheduleDlq",
+            queue_name="agent-platform-schedule-dlq",
+            enforce_ssl=True,
+            retention_period=Duration.days(14),
+        )
+
+        runner_logs = logs.LogGroup(
+            self,
+            "ScheduleRunnerLogs",
+            log_group_name="/aws/lambda/agent-platform-schedule-runner",
+            retention=logs.RetentionDays.ONE_WEEK,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        runner_fn = lambda_.Function(
+            self,
+            "ScheduleRunner",
+            function_name="agent-platform-schedule-runner",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            architecture=lambda_.Architecture.ARM_64,
+            handler="index.handler",
+            # placeholder until scripts/deploy-schedule-lambda.sh uploads the
+            # real package (backend `app` module + handler + dependencies)
+            code=lambda_.Code.from_inline(
+                "def handler(event, context):\n"
+                "    raise RuntimeError('schedule-runner code not deployed - "
+                "run scripts/deploy-schedule-lambda.sh')\n"
+            ),
+            # a single agent run can legitimately take minutes
+            timeout=Duration.minutes(10),
+            memory_size=512,
+            log_group=runner_logs,
+            environment={
+                "PLATFORM_AWS_REGION": self.region,
+                "PLATFORM_DYNAMO_TABLE": platform.table.table_name,
+                "PLATFORM_WORKSPACE_BUCKET": platform.workspace_bucket.bucket_name,
+                "PLATFORM_INTERACTIVE_RUNTIME_ARN": runtime.interactive_runtime_arn,
+                "PLATFORM_SDK_RUNTIME_ARN": runtime.sdk_runtime_arn,
+                "PLATFORM_MCP_TOOLS_RUNTIME_ARN": runtime.mcp_tools_runtime_arn,
+            },
+        )
+        platform.table.grant_read_write_data(runner_fn)
+        runner_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="AgentCoreInvoke",
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=[
+                    f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"
+                ],
+            )
+        )
+
+        # role EventBridge Scheduler assumes to invoke the runner
+        scheduler_role = iam.Role(
+            self,
+            "SchedulerRole",
+            assumed_by=iam.PrincipalWithConditions(
+                iam.ServicePrincipal("scheduler.amazonaws.com"),
+                {"StringEquals": {"aws:SourceAccount": self.account}},
+            ),
+        )
+        runner_fn.grant_invoke(scheduler_role)
+        schedule_dlq.grant_send_messages(scheduler_role)
+
+        # the backend mirrors schedule CRUD into the group
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="SchedulerCrud",
+                actions=[
+                    "scheduler:CreateSchedule",
+                    "scheduler:UpdateSchedule",
+                    "scheduler:DeleteSchedule",
+                    "scheduler:GetSchedule",
+                    "scheduler:ListSchedules",
+                ],
+                resources=[
+                    f"arn:aws:scheduler:{self.region}:{self.account}:schedule/{schedule_group.name}/*"
+                ],
+            )
+        )
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="PassSchedulerRole",
+                actions=["iam:PassRole"],
+                resources=[scheduler_role.role_arn],
+                conditions={
+                    "StringEquals": {"iam:PassedToService": "scheduler.amazonaws.com"}
+                },
+            )
+        )
+
         task_def = ecs.FargateTaskDefinition(
             self,
             "TaskDef",
@@ -164,6 +270,11 @@ class PortalStack(Stack):
                 "PLATFORM_CORS_ORIGINS": "*",
                 "PLATFORM_COGNITO_POOL_ID": user_pool.user_pool_id,
                 "PLATFORM_COGNITO_CLIENT_ID": user_pool_client.user_pool_client_id,
+                # switches the scheduler into eventbridge mode
+                "PLATFORM_SCHEDULER_GROUP": schedule_group.name,
+                "PLATFORM_SCHEDULER_LAMBDA_ARN": runner_fn.function_arn,
+                "PLATFORM_SCHEDULER_ROLE_ARN": scheduler_role.role_arn,
+                "PLATFORM_SCHEDULER_DLQ_ARN": schedule_dlq.queue_arn,
             },
         )
         container.add_port_mappings(ecs.PortMapping(container_port=8000))
@@ -274,3 +385,5 @@ class PortalStack(Stack):
         CfnOutput(self, "AlbDnsName", value=alb.load_balancer_dns_name)
         CfnOutput(self, "UserPoolId", value=user_pool.user_pool_id)
         CfnOutput(self, "UserPoolClientId", value=user_pool_client.user_pool_client_id)
+        CfnOutput(self, "ScheduleRunnerFunction", value=runner_fn.function_name)
+        CfnOutput(self, "ScheduleDlqUrl", value=schedule_dlq.queue_url)

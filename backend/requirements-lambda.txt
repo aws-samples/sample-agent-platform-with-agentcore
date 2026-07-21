@@ -1,0 +1,7 @@
+# Dependencies for the schedule-runner Lambda package — the subset of
+# requirements.txt that app.services.schedule_service (and the invocation
+# pipeline it pulls in) actually imports. boto3 ships with the Lambda runtime.
+pydantic>=2.8.0
+pydantic-settings>=2.4.0
+croniter>=3.0.0
+PyYAML>=6.0.0

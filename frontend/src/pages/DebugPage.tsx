@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, Play, RotateCcw } from 'lucide-react'
+import { Loader2, Play, RefreshCw, RotateCcw } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import {
   api,
@@ -8,12 +8,14 @@ import {
   type MemoryStore,
   type PublishedAgent,
 } from '@/services/api'
+import { getUser } from '@/services/auth'
 
 interface HistoryEntry {
   prompt: string
   target: string
   result: InvokeResult
   at: string
+  memoryActor?: string
 }
 
 export default function DebugPage() {
@@ -32,15 +34,34 @@ export default function DebugPage() {
   const [memoryStores, setMemoryStores] = useState<MemoryStore[]>([])
   const [memoryId, setMemoryId] = useState('')
   const [memoryActor, setMemoryActor] = useState('')
+  const [storesLoading, setStoresLoading] = useState(false)
 
   const isAgent = target.startsWith('agent:')
+  const targetAgent = isAgent ? agents.find((a) => a.id === target.slice('agent:'.length)) : undefined
+  // published agents carry their own memory binding; callers only pick the actor
+  const agentMemoryStore = targetAgent?.memory_id
+    ? memoryStores.find((m) => m.id === targetAgent.memory_id)
+    : undefined
+  const memoryActive = isAgent ? Boolean(targetAgent?.memory_id) : Boolean(memoryId)
+
+  const loadStores = () => {
+    setStoresLoading(true)
+    api.listMemoryStores().then(setMemoryStores).catch(() => {}).finally(() => setStoresLoading(false))
+  }
 
   useEffect(() => {
     api.listMcpServers().then(setMcpOptions).catch(() => {})
     api.listSkills().then(setSkillOptions).catch(() => {})
     api.listAgents().then(setAgents).catch(() => {})
-    api.listMemoryStores().then((s) => setMemoryStores(s.filter((m) => m.status === 'ACTIVE'))).catch(() => {})
+    loadStores()
   }, [])
+
+  // recall only works when write and read use the same actor — default to the
+  // signed-in username the moment memory comes into play, instead of silently
+  // sending an empty actor
+  useEffect(() => {
+    if (memoryActive && !memoryActor) setMemoryActor(getUser() || '')
+  }, [memoryActive]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // switching target invalidates the warm session
   useEffect(() => {
@@ -68,7 +89,16 @@ export default function DebugPage() {
             memory_actor_id: memoryActor || undefined,
           })
       setSessionId(result.runtime_session_id)
-      setHistory((h) => [{ prompt, target, result, at: new Date().toLocaleTimeString() }, ...h])
+      setHistory((h) => [
+        {
+          prompt,
+          target,
+          result,
+          at: new Date().toLocaleTimeString(),
+          memoryActor: memoryActive ? memoryActor || '(you)' : undefined,
+        },
+        ...h,
+      ])
       setPrompt('')
     } catch (e) {
       setError(String(e))
@@ -158,28 +188,69 @@ export default function DebugPage() {
             </>
           )}
 
-          {(memoryStores.length > 0 || isAgent) && (
-            <>
-              <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">
-                Memory <span className="font-normal text-slate-400">(optional — recall across sessions)</span>
-              </label>
-              <div className="flex gap-2">
-                {!isAgent && (
-                  <select className="input" value={memoryId} onChange={(e) => setMemoryId(e.target.value)}>
-                    <option value="">no memory</option>
-                    {memoryStores.map((m) => (
-                      <option key={m.id} value={m.id}>{m.name}</option>
-                    ))}
-                  </select>
-                )}
+          <label className="mb-1 mt-4 flex items-center gap-2 text-sm font-medium text-slate-700">
+            Memory <span className="font-normal text-slate-400">(optional — recall across sessions)</span>
+            {!isAgent && (
+              <button
+                className="ml-auto inline-flex items-center gap-1 text-[11px] font-normal text-brand-600 hover:underline"
+                title="Reload stores (new stores take a few minutes to become ACTIVE)"
+                onClick={loadStores}
+              >
+                <RefreshCw size={11} className={storesLoading ? 'animate-spin' : ''} /> reload
+              </button>
+            )}
+          </label>
+          {isAgent ? (
+            targetAgent?.memory_id ? (
+              <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2">
+                <p className="text-xs text-indigo-800">
+                  This agent is bound to store{' '}
+                  <strong>{agentMemoryStore?.name || targetAgent.memory_id}</strong> — pick who the memory is about:
+                </p>
                 <input
-                  className="input"
+                  className="input mt-2"
                   placeholder="actor id (e.g. alice)"
                   value={memoryActor}
                   onChange={(e) => setMemoryActor(e.target.value)}
                 />
               </div>
+            ) : (
+              <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                This agent has no memory binding (set <code className="rounded bg-slate-100 px-1">memory_id</code> in
+                its manifest to enable recall).
+              </p>
+            )
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <select className="input" value={memoryId} onChange={(e) => setMemoryId(e.target.value)}>
+                  <option value="">no memory</option>
+                  {memoryStores.map((m) => (
+                    <option key={m.id} value={m.id} disabled={m.status !== 'ACTIVE'}>
+                      {m.name}{m.status !== 'ACTIVE' ? ` — ${m.status}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  placeholder="actor id (e.g. alice)"
+                  value={memoryActor}
+                  onChange={(e) => setMemoryActor(e.target.value)}
+                  disabled={!memoryId}
+                />
+              </div>
+              {memoryStores.length === 0 && !storesLoading && (
+                <p className="mt-1 text-[11px] text-slate-400">
+                  No stores yet — create one on the Memory page (takes a few minutes to become ACTIVE).
+                </p>
+              )}
             </>
+          )}
+          {memoryActive && (
+            <p className="mt-1 text-[11px] text-slate-400">
+              Recall needs the <strong>same actor id</strong> when writing and asking. Long-term extraction is async
+              (~1 min): tell it a fact, wait a moment, click <em>new</em> for a fresh session, then ask.
+            </p>
           )}
 
           {!isAgent && (
@@ -231,7 +302,12 @@ export default function DebugPage() {
             <div key={i} className="card p-5">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-sm font-medium text-slate-900">{h.prompt}</p>
-                <span className="text-[11px] text-slate-400">{h.target} · {h.at}</span>
+                <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  {h.memoryActor && (
+                    <span className="badge bg-indigo-50 text-indigo-700">memory: {h.memoryActor}</span>
+                  )}
+                  {h.target} · {h.at}
+                </span>
               </div>
               <pre className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-800">
                 {h.result.result || JSON.stringify(h.result.raw, null, 2)}

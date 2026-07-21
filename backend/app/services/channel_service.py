@@ -102,17 +102,11 @@ class ChannelService:
 
     # ------------------------------------------------------------- webhook
 
-    def handle_webhook(self, channel_id: str, token: str, message: str, conversation_id: str = "") -> dict:
-        """Verify the token and route the message through the invocation
-        pipeline. Raises PermissionError / KeyError / ValueError for the API
-        layer to map onto status codes."""
+    def _route(self, item: dict, channel_id: str, *, user: str, message: str,
+               conversation_id: str, ref_suffix: str = "") -> dict:
+        """Shared routing: enabled check + stable session mapping + pipeline."""
         from app.services.invocation_service import invoke  # avoid import cycle
 
-        item = self.table.get_item(Key={"PK": PK, "SK": f"CH#{channel_id}"}).get("Item")
-        if not item:
-            raise KeyError("channel not found")
-        if not hmac.compare_digest(item.get("token", ""), token or ""):
-            raise PermissionError("invalid channel token")
         if not item.get("enabled", True):
             raise ValueError("channel is disabled")
 
@@ -121,13 +115,29 @@ class ChannelService:
             digest = hashlib.sha256(f"{channel_id}:{conversation_id}".encode()).hexdigest()
             runtime_session_id = f"chn-{digest[:44]}"  # ≥33 chars for AgentCore
 
-        result = invoke(
-            user=f"channel:{item.get('name', channel_id)}",
+        return invoke(
+            user=user,
             source="channel",
             target=item.get("target", "agent-sdk"),
             prompt=message,
             runtime_session_id=runtime_session_id,
-            ref=f"channel:{channel_id}",
+            ref=f"channel:{channel_id}{ref_suffix}",
+        )
+
+    def handle_webhook(self, channel_id: str, token: str, message: str, conversation_id: str = "") -> dict:
+        """Verify the token and route the message through the invocation
+        pipeline. Raises PermissionError / KeyError / ValueError for the API
+        layer to map onto status codes."""
+        item = self.table.get_item(Key={"PK": PK, "SK": f"CH#{channel_id}"}).get("Item")
+        if not item:
+            raise KeyError("channel not found")
+        if not hmac.compare_digest(item.get("token", ""), token or ""):
+            raise PermissionError("invalid channel token")
+
+        result = self._route(
+            item, channel_id,
+            user=f"channel:{item.get('name', channel_id)}",
+            message=message, conversation_id=conversation_id,
         )
         self.table.update_item(
             Key={"PK": PK, "SK": f"CH#{channel_id}"},
@@ -135,6 +145,19 @@ class ChannelService:
             ExpressionAttributeValues={":t": _now(), ":one": 1},
         )
         return result
+
+    def test_channel(self, channel_id: str, *, user: str, message: str, conversation_id: str = "") -> dict:
+        """Portal-authenticated dry run of the webhook: same routing (enabled
+        check, conversation → warm session mapping, governed pipeline) but no
+        token needed and no message-count bump — the call is attributed to the
+        portal user, not the channel."""
+        item = self.table.get_item(Key={"PK": PK, "SK": f"CH#{channel_id}"}).get("Item")
+        if not item:
+            raise KeyError("channel not found")
+        return self._route(
+            item, channel_id, user=user,
+            message=message, conversation_id=conversation_id, ref_suffix=":test",
+        )
 
 
 channel_service = ChannelService()

@@ -113,9 +113,19 @@ DynamoDB table and workspace bucket.
 ```bash
 cdk deploy AgentPlatformPortal
 ./scripts/deploy-frontend.sh
+./scripts/deploy-schedule-lambda.sh   # schedule-runner Lambda code
 ```
 
 Open the `PortalUrl` output.
+
+The Portal stack also provisions the **scheduler firing engine**: an
+EventBridge Scheduler group, the `agent-platform-schedule-runner` Lambda and
+an SQS DLQ. CloudFormation creates the function with placeholder code —
+`deploy-schedule-lambda.sh` builds the real package (the backend's `app`
+module + arm64 wheels) and updates it, the same split as kernel images
+(infra in CFN, code artifact via script). Re-run it whenever backend service
+code changes. Locally (`uvicorn`, no EventBridge wiring) the backend falls
+back to an in-process tick loop automatically.
 
 ### Portal sign-in (Cognito)
 
@@ -197,7 +207,8 @@ Auth modes (backend resolves in this order):
 | Conversation restarts instead of resuming on reconnect | The runtime session expired (AgentCore idle timeout); expected — history is restored via `claude --continue`, but the previous process is gone |
 | Interactive terminal drops to a bare `bash` prompt instead of Claude Code | Claude Code 2.1.x+ gates bypassPermissions mode behind a launch dialog; keep `skipDangerousModePermissionPrompt: true` in the kernel's `settings.json` (a new base-image build can pull a CLI version that adds such gates) |
 | Built-in tool call fails with AccessDenied | Runtime execution role missing `StartCodeInterpreterSession` / `StartBrowserSession` (+ connect/invoke actions) on the account's `code-interpreter/*` / `browser/*` resources — see `RuntimeStack` `BuiltinTools` policy |
-| Schedules never fire | The scheduler tick loop runs inside the backend process — the portal backend (ECS task or local `uvicorn`) must be running; check `enabled` and `next_run_at` on the Scheduler page |
+| Schedules never fire (hosted) | Check the schedule-runner Lambda's logs (`/aws/lambda/agent-platform-schedule-runner`) and the `agent-platform-schedule-dlq` queue; a `RuntimeError: code not deployed` means `scripts/deploy-schedule-lambda.sh` hasn't been run. Verify the mirror exists: `aws scheduler get-schedule --group-name agent-platform --name sched-<id>` |
+| Schedules never fire (local dev) | The fallback tick loop runs inside the backend process — `uvicorn` must be running; check `enabled` and `next_run_at` on the Scheduler page |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |
 | Memory retrieval returns nothing right after a conversation | Long-term extraction is asynchronous (typically under a minute); raw events are visible immediately on the Memory page |

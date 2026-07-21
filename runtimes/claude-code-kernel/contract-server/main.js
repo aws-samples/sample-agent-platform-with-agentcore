@@ -15,7 +15,7 @@
 const http = require("http");
 const fs = require("fs");
 const url = require("url");
-const { spawn, exec } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const WebSocket = require("ws");
 
 const PORT = 8080;
@@ -80,19 +80,24 @@ function triggerSync() {
   const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
   lastSyncTime = now;
 
+  // execFile (no shell): the session ID comes from a request header, so it
+  // must never be interpolated into a shell string.
   const base = `s3://${bucket}/${prefix}/${runtimeSessionId}`;
-  const excludes =
-    '--exclude "node_modules/*" --exclude ".venv/*" --exclude "__pycache__/*" ' +
-    '--exclude ".git/objects/*" --exclude "*.pyc" --exclude "cdk.out/*"';
-  exec(
-    `aws s3 sync /workspace/ ${base}/ --quiet ${excludes} --region ${region} && ` +
-      `aws s3 sync /root/.claude/ ${base}/.claude-home/ --quiet --exclude "*.lock" --region ${region}`,
-    { timeout: 20_000 },
-    (err) => {
-      if (err) console.log(`[workspace] sync error: ${err.message}`);
-      else console.log(`[workspace] synced at ${new Date().toISOString()}`);
-    },
-  );
+  const syncArgs = (src, dst, extra) => ["s3", "sync", src, dst, "--quiet", "--region", region, ...extra];
+  const excludes = ["node_modules/*", ".venv/*", "__pycache__/*", ".git/objects/*", "*.pyc", "cdk.out/*"]
+    .flatMap((p) => ["--exclude", p]);
+  execFile("aws", syncArgs("/workspace/", `${base}/`, excludes), { timeout: 20_000 }, (err) => {
+    if (err) return console.log(`[workspace] sync error: ${err.message}`);
+    execFile(
+      "aws",
+      syncArgs("/root/.claude/", `${base}/.claude-home/`, ["--exclude", "*.lock"]),
+      { timeout: 20_000 },
+      (err2) => {
+        if (err2) console.log(`[workspace] sync error: ${err2.message}`);
+        else console.log(`[workspace] synced at ${new Date().toISOString()}`);
+      },
+    );
+  });
 }
 
 /**
@@ -135,18 +140,19 @@ function applySessionConfig(config) {
     for (const sk of config.skills || []) {
       if (!sk.name || !sk.s3_uri) continue;
       // Defense-in-depth: config comes from the platform's own ecosystem
-      // registry, but validate the S3 URI against a strict allowlist before it
-      // ever reaches a shell, so an adopter wiring in a different config source
-      // can't turn it into command injection.
+      // registry, but validate the S3 URI against a strict allowlist anyway,
+      // so an adopter wiring in a different config source stays safe.
       if (!/^s3:\/\/[a-zA-Z0-9._/-]+$/.test(sk.s3_uri)) {
         console.log(`[config] skipping skill with invalid s3_uri: ${sk.name}`);
         continue;
       }
       const dest = `/workspace/.claude/skills/${sk.name.replace(/[^a-zA-Z0-9_-]/g, "")}/`;
-      // dest derived from a sanitized name; s3_uri allowlisted above; runs inside the isolated microVM
-      exec(
+      fs.mkdirSync(dest, { recursive: true });
+      // execFile (no shell): arguments are passed as an array, never interpolated
+      execFile(
         // nosemgrep: detect-child-process
-        `mkdir -p ${dest} && aws s3 sync "${sk.s3_uri}" "${dest}" --quiet --region ${region}`,
+        "aws",
+        ["s3", "sync", sk.s3_uri, dest, "--quiet", "--region", region],
         { timeout: 30_000 },
         (err) => {
           if (err) console.log(`[config] skill sync failed (${sk.name}): ${err.message}`);
@@ -186,7 +192,9 @@ function handleHttp(req, res) {
     // AgentCore injects the runtime session ID on every invocation; the first
     // one tells this container which session identity (and S3 prefix) it owns.
     const headerSessionId = req.headers["x-amzn-bedrock-agentcore-runtime-session-id"];
-    if (headerSessionId && !runtimeSessionId) {
+    // The ID becomes part of this session's S3 prefix — accept only a safe
+    // charset so a crafted header can't produce surprising object keys.
+    if (headerSessionId && !runtimeSessionId && /^[a-zA-Z0-9._-]{1,256}$/.test(headerSessionId)) {
       runtimeSessionId = headerSessionId;
       fs.writeFileSync(SESSION_ID_FILE, runtimeSessionId);
       console.log(`[contract-server] runtime session ID: ${runtimeSessionId}`);

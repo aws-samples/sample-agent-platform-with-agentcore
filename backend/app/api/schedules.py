@@ -53,9 +53,7 @@ def disable_schedule(schedule_id: str, user: str = Depends(get_current_user)):
 @router.post("/{schedule_id}/run-now")
 def run_now(schedule_id: str, user: str = Depends(get_current_user)):
     """Fire one occurrence immediately (does not shift the recurring clock)."""
-    item = schedule_service.table.get_item(
-        Key={"PK": "SCHEDULE", "SK": f"SCHED#{schedule_id}"}
-    ).get("Item")
+    item = schedule_service.get_raw(schedule_id)
     if not item:
         raise HTTPException(status_code=404, detail="Schedule not found")
     result = schedule_service.run_once(item)

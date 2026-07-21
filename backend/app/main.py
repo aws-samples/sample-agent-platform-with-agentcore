@@ -26,8 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # In-process scheduler tick loop (single backend task). For HA, replace
-    # with EventBridge Scheduler targeting the same run path.
+    # eventbridge mode (PortalStack): reconcile the EventBridge schedule
+    # group with DynamoDB; local mode (uvicorn dev): start the tick loop.
     schedule_service.start()
     yield
     schedule_service.stop()

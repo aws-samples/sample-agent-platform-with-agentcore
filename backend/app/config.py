@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     workspace_bucket: str = ""
     workspace_prefix: str = "workspaces"
 
+    # EventBridge Scheduler wiring (outputs of the PortalStack). When all of
+    # group/lambda/role are set, the scheduler runs in "eventbridge" mode:
+    # each platform schedule is mirrored to an EventBridge Scheduler schedule
+    # that invokes the schedule-runner Lambda. When unset (local development),
+    # an in-process tick loop fires schedules instead.
+    scheduler_group: str = ""
+    scheduler_lambda_arn: str = ""
+    scheduler_role_arn: str = ""
+    scheduler_dlq_arn: str = ""
+
     # Cognito user pool guarding the API (production mode). When set, every
     # /api request must carry a valid Cognito ID token as a Bearer header.
     cognito_pool_id: str = ""

@@ -101,7 +101,7 @@ each has a documented production upgrade:
 
 | Sample implementation | Production path |
 |---|---|
-| In-process scheduler tick loop (single ECS task) | EventBridge Scheduler → an internal endpoint / Lambda calling the same `schedule_service.run_once` |
+| Schedule-runner Lambda failures land in the SQS DLQ silently | Wire a CloudWatch alarm on `ApproximateNumberOfMessagesVisible` (and redrive) for the `agent-platform-schedule-dlq` queue |
 | Config-only published agents on the shared kernel | Image-based publishing: CodeBuild ARM64 build from the workspace → ECR → `AWS::BedrockAgentCore::Runtime` per agent |
 | Invocation ledger in DynamoDB | CloudWatch GenAI Observability dashboards + OTel traces (already emitted by the runtimes) |
 | LLM judge via the platform kernel | A dedicated eval framework with reference-model grading |
