@@ -147,6 +147,9 @@ function applySessionConfig(config) {
         continue;
       }
       const dest = `/workspace/.claude/skills/${sk.name.replace(/[^a-zA-Z0-9_-]/g, "")}/`;
+      // dest is a fixed prefix plus a name stripped to [a-zA-Z0-9_-] — no dots
+      // or slashes survive, so path traversal is impossible.
+      // nosemgrep: detect-non-literal-fs-filename
       fs.mkdirSync(dest, { recursive: true });
       // execFile (no shell): arguments are passed as an array, never interpolated
       execFile(
