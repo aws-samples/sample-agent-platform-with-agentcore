@@ -1,0 +1,348 @@
+/** Typed fetch wrapper for the control-plane API. */
+
+export interface Session {
+  session_id: string
+  runtime_session_id: string
+  name: string
+  kernel: string
+  status: string
+  created_at: string
+  last_activity: string
+  s3_prefix: string
+  mcp_servers: string[]
+  skills: string[]
+}
+
+export interface EcosystemEntry {
+  id: string
+  type: 'mcp' | 'skill'
+  name: string
+  description: string
+  kind: string
+  target: string
+  s3_prefix: string
+  builtin: boolean
+  created_at: string
+}
+
+export interface ConnectInfo {
+  wss_url: string
+  expires_in: number
+  runtime_status: string
+}
+
+export interface Kernel {
+  id: string
+  name: string
+  kind: 'interactive' | 'headless'
+  description: string
+  runtime_arn: string
+  status: string
+  available: boolean
+}
+
+export interface InvokeResult {
+  ok: boolean
+  result: string
+  usage: Record<string, unknown>
+  raw: Record<string, unknown>
+  runtime_session_id: string
+}
+
+export interface ArtifactFile {
+  key: string
+  size: number
+  last_modified: string
+}
+
+export interface PublishedAgent {
+  id: string
+  name: string
+  description: string
+  system_prompt: string
+  max_turns: number
+  mcp_server_names: string[]
+  skill_names: string[]
+  memory_id: string
+  version: number
+  source: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  history: { version: number; at: string; by: string }[]
+}
+
+export interface Schedule {
+  id: string
+  name: string
+  target: string
+  prompt: string
+  system: string
+  expression: string
+  enabled: boolean
+  created_by: string
+  created_at: string
+  next_run_at: string
+  last_run_at: string
+  last_status: string
+  last_result_preview: string
+  run_count: number
+}
+
+export interface Channel {
+  id: string
+  name: string
+  description: string
+  target: string
+  enabled: boolean
+  created_by: string
+  created_at: string
+  message_count: number
+  last_message_at: string
+  token?: string
+}
+
+export interface EvalDataset {
+  id: string
+  name: string
+  description: string
+  cases: { prompt: string; expected: string }[]
+  created_by: string
+  created_at: string
+}
+
+export interface EvalRun {
+  id: string
+  dataset_id: string
+  dataset_name: string
+  target: string
+  status: string
+  started_by: string
+  started_at: string
+  finished_at: string
+  results: {
+    case: number
+    prompt: string
+    expected: string
+    answer: string
+    pass: boolean
+    score: number
+    reason: string
+  }[]
+  passed: number
+  total: number
+  avg_score: number | null
+  error: string
+}
+
+export interface MemoryStore {
+  id: string
+  arn: string
+  name: string
+  description: string
+  status: string
+  event_expiry_days: number
+  strategies: { id: string; type: string; name: string }[]
+  created_at: string
+}
+
+export interface MemoryEvent {
+  session_id: string
+  event_id: string
+  at: string
+  messages: string[]
+}
+
+export interface MemoryRecord {
+  record_id: string
+  text: string
+  namespaces: string[]
+  score: number | null
+}
+
+export interface InvocationRecord {
+  ts: string
+  user: string
+  source: string
+  target: string
+  prompt_preview: string
+  ok: boolean
+  duration_ms: number | null
+  num_turns: number | null
+  total_cost_usd: number | null
+  runtime_session_id: string
+  error: string
+  ref: string
+}
+
+export interface ObservabilityStats {
+  window: number
+  ok: number
+  failed: number
+  success_rate: number | null
+  avg_duration_ms: number | null
+  total_cost_usd: number
+  by_source: Record<string, number>
+  log_group_hint: string
+}
+
+export interface GovernancePolicy {
+  daily_limit_per_user: number
+  daily_limit_total: number
+  max_turns_cap: number
+  sources_enabled: Record<string, boolean>
+}
+
+export interface UsageToday {
+  date: string
+  total: number
+  user: number
+}
+
+export interface AuditEvent {
+  ts: string
+  user: string
+  action: string
+  resource: string
+  detail: string
+}
+
+export interface ArtifactContent {
+  key: string
+  content: string
+  truncated: boolean
+}
+
+import { getToken, signOut } from './auth'
+
+const BASE = ''
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const resp = await fetch(`${BASE}${path}`, { ...init, headers })
+  if (resp.status === 401) {
+    // Expired/invalid token — force a fresh sign-in
+    signOut()
+    window.location.href = '/login'
+    throw new Error('401 Unauthorized')
+  }
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '')
+    throw new Error(`${resp.status} ${resp.statusText}: ${detail}`)
+  }
+  return resp.json() as Promise<T>
+}
+
+export const api = {
+  listSessions: () => request<Session[]>('/api/v1/sessions'),
+  createSession: (name: string, kernel = 'claude-code', mcpServerIds: string[] = [], skillIds: string[] = []) =>
+    request<Session>('/api/v1/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ name, kernel, mcp_server_ids: mcpServerIds, skill_ids: skillIds }),
+    }),
+  connectSession: (id: string) => request<ConnectInfo>(`/api/v1/sessions/${id}/connect`),
+  stopSession: (id: string) => request<Session>(`/api/v1/sessions/${id}/stop`, { method: 'POST' }),
+  deleteSession: (id: string) => request<{ ok: boolean }>(`/api/v1/sessions/${id}`, { method: 'DELETE' }),
+  listArtifacts: (id: string) => request<ArtifactFile[]>(`/api/v1/sessions/${id}/artifacts`),
+  readArtifact: (id: string, key: string) =>
+    request<ArtifactContent>(`/api/v1/sessions/${id}/artifacts/${encodeURIComponent(key)}`),
+  listKernels: () => request<Kernel[]>('/api/v1/kernels'),
+  invokeSdkKernel: (body: {
+    prompt: string
+    system?: string
+    max_turns?: number
+    session_id?: string
+    mcp_server_ids?: string[]
+    skill_ids?: string[]
+    memory_id?: string
+    memory_actor_id?: string
+  }) =>
+    request<InvokeResult>('/api/v1/kernels/agent-sdk/invoke', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // Published agents
+  listAgents: () => request<PublishedAgent[]>('/api/v1/agents'),
+  publishAgent: (body: {
+    name: string
+    description?: string
+    system_prompt?: string
+    max_turns?: number
+    mcp_server_names?: string[]
+    skill_names?: string[]
+    memory_id?: string
+  }) => request<PublishedAgent>('/api/v1/agents', { method: 'POST', body: JSON.stringify(body) }),
+  publishAgentFromSession: (sessionId: string) =>
+    request<PublishedAgent>('/api/v1/agents/publish-from-session', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+  deleteAgent: (id: string) => request<{ ok: boolean }>(`/api/v1/agents/${id}`, { method: 'DELETE' }),
+  invokeAgent: (id: string, body: { prompt: string; session_id?: string; memory_actor_id?: string }) =>
+    request<InvokeResult>(`/api/v1/agents/${id}/invoke`, { method: 'POST', body: JSON.stringify(body) }),
+
+  // Scheduler
+  listSchedules: () => request<Schedule[]>('/api/v1/schedules'),
+  createSchedule: (body: { name: string; target: string; prompt: string; system?: string; expression: string }) =>
+    request<Schedule>('/api/v1/schedules', { method: 'POST', body: JSON.stringify(body) }),
+  toggleSchedule: (id: string, enabled: boolean) =>
+    request<Schedule>(`/api/v1/schedules/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }),
+  runScheduleNow: (id: string) => request<InvokeResult>(`/api/v1/schedules/${id}/run-now`, { method: 'POST' }),
+  deleteSchedule: (id: string) => request<{ ok: boolean }>(`/api/v1/schedules/${id}`, { method: 'DELETE' }),
+
+  // Channels
+  listChannels: () => request<Channel[]>('/api/v1/channels'),
+  createChannel: (body: { name: string; description?: string; target: string }) =>
+    request<Channel>('/api/v1/channels', { method: 'POST', body: JSON.stringify(body) }),
+  toggleChannel: (id: string, enabled: boolean) =>
+    request<Channel>(`/api/v1/channels/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }),
+  deleteChannel: (id: string) => request<{ ok: boolean }>(`/api/v1/channels/${id}`, { method: 'DELETE' }),
+
+  // Evaluation
+  listEvalDatasets: () => request<EvalDataset[]>('/api/v1/evals/datasets'),
+  createEvalDataset: (body: { name: string; description?: string; cases: { prompt: string; expected: string }[] }) =>
+    request<EvalDataset>('/api/v1/evals/datasets', { method: 'POST', body: JSON.stringify(body) }),
+  deleteEvalDataset: (id: string) => request<{ ok: boolean }>(`/api/v1/evals/datasets/${id}`, { method: 'DELETE' }),
+  listEvalRuns: () => request<EvalRun[]>('/api/v1/evals/runs'),
+  getEvalRun: (id: string) => request<EvalRun>(`/api/v1/evals/runs/${id}`),
+  startEvalRun: (body: { dataset_id: string; target: string }) =>
+    request<EvalRun>('/api/v1/evals/runs', { method: 'POST', body: JSON.stringify(body) }),
+
+  // Memory
+  listMemoryStores: () => request<MemoryStore[]>('/api/v1/memory/stores'),
+  createMemoryStore: (body: { name: string; description?: string }) =>
+    request<MemoryStore>('/api/v1/memory/stores', { method: 'POST', body: JSON.stringify(body) }),
+  deleteMemoryStore: (id: string) => request<{ ok: boolean }>(`/api/v1/memory/stores/${id}`, { method: 'DELETE' }),
+  listMemoryActors: (id: string) => request<string[]>(`/api/v1/memory/stores/${id}/actors`),
+  listMemoryEvents: (id: string, actorId: string) =>
+    request<MemoryEvent[]>(`/api/v1/memory/stores/${id}/events?actor_id=${encodeURIComponent(actorId)}`),
+  retrieveMemoryRecords: (id: string, actorId: string, query: string) =>
+    request<MemoryRecord[]>(
+      `/api/v1/memory/stores/${id}/records?actor_id=${encodeURIComponent(actorId)}&query=${encodeURIComponent(query)}`,
+    ),
+
+  // Observability
+  listInvocations: () => request<InvocationRecord[]>('/api/v1/observability/invocations'),
+  getObservabilityStats: () => request<ObservabilityStats>('/api/v1/observability/stats'),
+
+  // Governance
+  getGovernancePolicy: () => request<GovernancePolicy>('/api/v1/governance/policy'),
+  updateGovernancePolicy: (body: Partial<GovernancePolicy>) =>
+    request<GovernancePolicy>('/api/v1/governance/policy', { method: 'PUT', body: JSON.stringify(body) }),
+  getUsageToday: () => request<UsageToday>('/api/v1/governance/usage'),
+  listAuditEvents: () => request<AuditEvent[]>('/api/v1/governance/audit'),
+  listMcpServers: () => request<EcosystemEntry[]>('/api/v1/ecosystem/mcp-servers'),
+  createMcpServer: (body: { name: string; description: string; kind: string; target: string }) =>
+    request<EcosystemEntry>('/api/v1/ecosystem/mcp-servers', { method: 'POST', body: JSON.stringify(body) }),
+  deleteMcpServer: (id: string) =>
+    request<{ ok: boolean }>(`/api/v1/ecosystem/mcp-servers/${id}`, { method: 'DELETE' }),
+  listSkills: () => request<EcosystemEntry[]>('/api/v1/ecosystem/skills'),
+  createSkill: (body: { name: string; description: string; skill_md: string }) =>
+    request<EcosystemEntry>('/api/v1/ecosystem/skills', { method: 'POST', body: JSON.stringify(body) }),
+  deleteSkill: (id: string) =>
+    request<{ ok: boolean }>(`/api/v1/ecosystem/skills/${id}`, { method: 'DELETE' }),
+}

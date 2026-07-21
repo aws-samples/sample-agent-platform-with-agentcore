@@ -1,0 +1,17 @@
+# semgrep ignore list (gitignore syntax).
+#
+# frontend/ is the React reference portal. semgrep's default JS/TS rules flag
+# jsx-not-internationalized on every user-facing string (~60 findings) and a
+# few style rules (package version ranges, JSON.stringify keys). This sample
+# intentionally ships a single-language demo UI — internationalization is out
+# of scope for a reference implementation — so the portal is excluded from
+# semgrep. Security-relevant logic lives in the backend control plane and the
+# runtime kernels, which are still scanned.
+frontend/
+
+# Standard build / dependency output (not committed, listed for completeness).
+node_modules/
+dist/
+build/
+.git/
+cdk.out/

@@ -1,0 +1,8 @@
+bedrock-agentcore>=1.4.0
+claude-agent-sdk>=0.1.0
+boto3>=1.40.0
+mcp-proxy-for-aws>=0.1.0
+# Built-in tool wrappers (builtin_tools_mcp.py): local stdio MCP server +
+# Playwright client driving the AgentCore cloud browser over CDP
+mcp>=1.9.0
+playwright>=1.49.0

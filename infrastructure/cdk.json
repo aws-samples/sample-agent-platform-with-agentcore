@@ -1,0 +1,12 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "llm_gateway_url": "",
+    "use_bedrock": "",
+    "anthropic_model": "",
+    "anthropic_small_fast_model": "",
+    "image_tag": "latest",
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true
+  }
+}

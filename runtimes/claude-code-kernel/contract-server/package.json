@@ -1,0 +1,13 @@
+{
+  "name": "claude-code-kernel-contract-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AgentCore Runtime contract server: /ping, /invocations, and a WebSocket bridge to ttyd",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "ws": "8.18.0"
+  }
+}

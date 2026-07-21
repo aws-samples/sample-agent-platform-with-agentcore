@@ -1,0 +1,288 @@
+#!/bin/bash
+# Entrypoint for the interactive Claude Code kernel.
+#
+# Responsibilities:
+#   1. Resolve model access (LLM gateway or Bedrock direct) — no baked-in secrets
+#   2. Prepare the Claude Code workspace (permissions, onboarding state)
+#   3. Optionally wire MCP tools hosted on another AgentCore Runtime
+#   4. Start the contract-server (ttyd + WebSocket bridge on :8080)
+#   5. Restore the session workspace from S3, then sync it back periodically
+set -e
+
+# ---------------------------------------------------------------------------
+# 1. Model access
+#
+# Gateway mode (default when ANTHROPIC_BASE_URL is set):
+#   Claude Code talks to an Anthropic-compatible gateway (e.g. LiteLLM) via
+#   /v1/messages. The API key is read from Secrets Manager at startup and
+#   exported so every child shell (ttyd → bash → claude) inherits it.
+#
+# Bedrock mode (set CLAUDE_CODE_USE_BEDROCK=1, leave ANTHROPIC_BASE_URL unset):
+#   Claude Code calls Amazon Bedrock with the container's IAM role. Use
+#   cross-region inference profiles (model IDs prefixed with `global.`).
+# ---------------------------------------------------------------------------
+export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+export AWS_DEFAULT_REGION="$AWS_REGION"
+
+# Claude Code silently downgrades bypassPermissions when running as root
+# unless it believes it's inside a sandbox. The AgentCore microVM *is* the
+# sandbox here — without this, every MCP/tool call pops a permission dialog.
+export IS_SANDBOX=1
+
+if [ -n "$ANTHROPIC_BASE_URL" ]; then
+  echo "[start.sh] model access: LLM gateway ($ANTHROPIC_BASE_URL)"
+  LLM_GATEWAY_SECRET_NAME="${LLM_GATEWAY_SECRET_NAME:-agent-platform/llm-gateway-key}"
+  GATEWAY_KEY=$(aws secretsmanager get-secret-value \
+    --secret-id "$LLM_GATEWAY_SECRET_NAME" \
+    --region "$AWS_REGION" \
+    --query 'SecretString' --output text 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['api_key'])" 2>/dev/null || echo "")
+  if [ -n "$GATEWAY_KEY" ]; then
+    export ANTHROPIC_AUTH_TOKEN="$GATEWAY_KEY"
+  else
+    echo "[start.sh] WARNING: could not read $LLM_GATEWAY_SECRET_NAME — model calls will fail"
+  fi
+elif [ "$CLAUDE_CODE_USE_BEDROCK" = "1" ]; then
+  echo "[start.sh] model access: Amazon Bedrock (IAM role, cross-region inference)"
+else
+  echo "[start.sh] WARNING: neither ANTHROPIC_BASE_URL nor CLAUDE_CODE_USE_BEDROCK is set"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Workspace + Claude Code configuration
+# ---------------------------------------------------------------------------
+S3_BUCKET="${WORKSPACE_S3_BUCKET:?WORKSPACE_S3_BUCKET env var is required}"
+S3_PREFIX="${WORKSPACE_S3_PREFIX:-workspaces}"
+SYNC_INTERVAL="${WORKSPACE_SYNC_INTERVAL:-30}"
+WORKSPACE="/workspace"
+
+SESSION_ID_FILE="/tmp/.runtime-session-id"
+STARTUP_LOG="/tmp/.startup-log"
+echo -n "" > "$STARTUP_LOG"
+
+log_startup() {
+  local msg="[startup] $(date -u +%H:%M:%S) $1"
+  echo "$msg" >> /proc/1/fd/1 2>/dev/null || echo "$msg"
+  echo "$msg" >> "$STARTUP_LOG"
+}
+
+get_session_id() {
+  if [ -f "$SESSION_ID_FILE" ]; then
+    cat "$SESSION_ID_FILE"
+  else
+    echo "shared"
+  fi
+}
+
+save_workspace() {
+  local sid
+  sid=$(get_session_id)
+  # Never sync before the session identity is known — otherwise different
+  # sessions would clobber a shared prefix.
+  if [ "$sid" = "shared" ]; then
+    return
+  fi
+  local s3_path="s3://${S3_BUCKET}/${S3_PREFIX}/${sid}"
+  aws s3 sync "${WORKSPACE}/" "${s3_path}/" \
+    --quiet \
+    --exclude "node_modules/*" \
+    --exclude ".venv/*" \
+    --exclude "__pycache__/*" \
+    --exclude ".git/objects/*" \
+    --exclude "*.pyc" \
+    --exclude "cdk.out/*" \
+    2>/dev/null || true
+  # Claude Code state (conversation transcripts, project registry) lives in
+  # /root/.claude — persist it so a dormant session resumes with history.
+  aws s3 sync /root/.claude/ "${s3_path}/.claude-home/" \
+    --quiet --exclude "*.lock" 2>/dev/null || true
+  echo "[workspace] saved to ${s3_path} at $(date -u +%H:%M:%S)" >> /proc/1/fd/1 2>/dev/null || true
+}
+
+background_sync() {
+  while true; do
+    sleep "$SYNC_INTERVAL"
+    if [ -f "$SESSION_ID_FILE" ]; then
+      save_workspace
+    fi
+  done
+}
+
+cleanup() {
+  echo "[workspace] shutdown — final sync…" >> /proc/1/fd/1 2>/dev/null || true
+  save_workspace
+  kill "$NODE_PID" 2>/dev/null || true
+  exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
+mkdir -p "${WORKSPACE}/.claude" /root/.claude
+
+# The terminal is the trust boundary here, not Claude Code's permission
+# prompts: whoever reaches this shell already has full container access, so
+# run Claude Code unattended-friendly inside the sandbox.
+# NOTE: defaultMode must live under "permissions" — a top-level defaultMode is
+# silently ignored and every MCP tool call would pop a permission dialog.
+# skipDangerousModePermissionPrompt: newer Claude Code (2.1.x+) gates
+# bypassPermissions behind a one-time "accept responsibility" dialog on launch;
+# without this the auto-started `claude` sits at that dialog (and a stray Enter
+# selects "No, exit", dropping the session to a bare shell).
+cat > "${WORKSPACE}/.claude/settings.json" << 'SETTINGS'
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "WebFetch(*)",
+      "WebSearch(*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "skipDangerousModePermissionPrompt": true
+}
+SETTINGS
+cp "${WORKSPACE}/.claude/settings.json" /root/.claude/settings.json
+
+# Pre-complete onboarding and pre-trust /workspace so every `claude` launch
+# goes straight to the prompt (each WebSocket connect spawns a fresh shell,
+# so without this the trust dialog would reappear on every reconnect).
+cat > /root/.claude.json << 'CLAUDEJSON'
+{
+  "numStartups": 1,
+  "hasCompletedOnboarding": true,
+  "hasDismissedAnnouncement": true,
+  "projects": {
+    "/workspace": {
+      "hasTrustDialogAccepted": true,
+      "hasCompletedProjectOnboarding": true
+    }
+  }
+}
+CLAUDEJSON
+
+cat > "${WORKSPACE}/CLAUDE.md" << 'CLAUDEMD'
+# Cloud Workspace
+
+This is a hosted Claude Code workspace running on Amazon Bedrock AgentCore.
+
+- Files in /workspace persist to S3 and survive container restarts.
+- Your conversation history is restored when you resume a dormant session.
+- Runtime session ID: `cat /tmp/.runtime-session-id`
+CLAUDEMD
+
+# ---------------------------------------------------------------------------
+# 3. Optional: MCP tools hosted on another AgentCore Runtime
+#
+# MCP_RUNTIME_ARN points at an AgentCore Runtime deployed with protocol=MCP.
+# Claude Code reaches it through a local stdio→SigV4 proxy using this
+# container's IAM role — no extra secrets required.
+# ---------------------------------------------------------------------------
+if [ -n "$MCP_RUNTIME_ARN" ]; then
+  MCP_REGION="${MCP_RUNTIME_REGION:-$AWS_REGION}"
+  ENCODED_ARN=$(python3 -c "import urllib.parse,os;print(urllib.parse.quote(os.environ['MCP_RUNTIME_ARN'],safe=''))")
+  MCP_ENDPOINT="https://bedrock-agentcore.${MCP_REGION}.amazonaws.com/runtimes/${ENCODED_ARN}/invocations?qualifier=DEFAULT"
+  cat > "${WORKSPACE}/.mcp.json" << MCPJSON
+{
+  "mcpServers": {
+    "platform-tools": {
+      "type": "stdio",
+      "command": "mcp-proxy-for-aws",
+      "args": ["${MCP_ENDPOINT}", "--service", "bedrock-agentcore", "--region", "${MCP_REGION}"]
+    }
+  }
+}
+MCPJSON
+  log_startup "wired MCP tools → ${MCP_RUNTIME_ARN}"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Auto-start Claude Code inside a persistent tmux session
+#
+# ttyd attaches every WebSocket client to tmux session "main" (see
+# contract-server). Detaching does NOT kill the shell or Claude Code, so a
+# browser disconnect / session switch keeps the conversation and any running
+# task alive until AgentCore expires the runtime session.
+# ---------------------------------------------------------------------------
+cat > /root/.tmux.conf << 'TMUXCONF'
+# Look like a plain terminal, not a multiplexer
+set -g status off
+# Follow the size of the most recently active client
+setw -g aggressive-resize on
+# The tmux window runs a login shell so .bash_profile auto-starts claude
+set -g default-command "bash -l"
+set -g history-limit 10000
+set -sg escape-time 0
+# Keep the tmux server alive even when no session exists yet
+set -g exit-empty off
+TMUXCONF
+
+cat >> /root/.bash_profile << 'AUTOSTART'
+source /root/.bashrc 2>/dev/null || true
+if [ -z "$CLAUDE_STARTED" ] && [ -n "$PS1" ]; then
+  export CLAUDE_STARTED=1
+  # Wait for the S3 restore to finish so Claude Code sees the full workspace
+  WAIT=0
+  while [ ! -f /tmp/.restore-done ] && [ $WAIT -lt 30 ]; do
+    sleep 1
+    WAIT=$((WAIT + 1))
+  done
+  # ttyd spawns a new shell per WebSocket client, so a browser reconnect (or
+  # a dormant-session resume) starts a fresh `claude` process. Continue the
+  # previous conversation when transcripts exist — locally or restored from S3.
+  if find /root/.claude/projects -name '*.jsonl' -size +0c 2>/dev/null | head -1 | grep -q .; then
+    claude --continue || claude
+  else
+    claude
+  fi
+fi
+AUTOSTART
+
+# ---------------------------------------------------------------------------
+# 5. Contract server + S3 restore + background sync
+# ---------------------------------------------------------------------------
+node /opt/contract-server/main.js &
+NODE_PID=$!
+
+(
+  log_startup "waiting for session ID from AgentCore…"
+  WAIT_COUNT=0
+  while [ ! -f "$SESSION_ID_FILE" ] && [ $WAIT_COUNT -lt 60 ]; do
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+  done
+
+  SESSION_ID=$(get_session_id)
+  if [ "$SESSION_ID" = "shared" ]; then
+    log_startup "WARNING: no session ID after 60s — skipping S3 restore"
+  else
+    S3_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${SESSION_ID}"
+    log_startup "session: ${SESSION_ID}"
+    log_startup "restoring from ${S3_PATH}…"
+    if aws s3 ls "${S3_PATH}/" >/dev/null 2>&1; then
+      # .mcp.json is owned by the warmup config (session attachments), not by
+      # the restored snapshot — never let restore clobber it.
+      aws s3 sync "${S3_PATH}/" "${WORKSPACE}/" --quiet \
+        --exclude ".claude/settings.json" --exclude ".claude-home/*" \
+        --exclude ".mcp.json" 2>/dev/null || true
+      if aws s3 ls "${S3_PATH}/.claude-home/" >/dev/null 2>&1; then
+        aws s3 sync "${S3_PATH}/.claude-home/" /root/.claude/ --quiet \
+          --exclude "settings.json" 2>/dev/null || true
+        log_startup "Claude Code state restored"
+      fi
+      FILE_COUNT=$(find "${WORKSPACE}" -type f 2>/dev/null | wc -l)
+      log_startup "restored ${FILE_COUNT} files"
+    else
+      log_startup "no prior data — fresh workspace"
+    fi
+  fi
+  touch /tmp/.restore-done
+) &
+
+background_sync &
+
+wait "$NODE_PID"
+cleanup

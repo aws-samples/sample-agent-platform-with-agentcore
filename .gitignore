@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv
+uv.lock
+
+# Node / CDK
+node_modules/
+cdk.out/
+*.js.map
+.cdk.staging/
+
+# AgentCore / bedrock-agentcore toolkit
+.agentcore/
+.bedrock_agentcore.yaml
+Dockerfile.bedrock_agentcore
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+*.log
+cdk.context.json
