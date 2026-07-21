@@ -19,6 +19,8 @@ platform works in enterprises that enforce model allow-lists, budgets and
 source-IP restrictions. Direct Bedrock access (cross-region inference) is
 supported as an alternative.
 
+![portal overview](docs/images/portal-overview.png)
+
 ![architecture](docs/images/architecture.svg)
 
 ## What's inside

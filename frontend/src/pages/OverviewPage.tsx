@@ -1,5 +1,18 @@
 import { Link } from 'react-router-dom'
-import { ArrowRight, Terminal, Rocket, MessagesSquare, ListTodo, Cloud, Database, Shield, Boxes } from 'lucide-react'
+import {
+  ArrowRight,
+  Terminal,
+  Rocket,
+  MessagesSquare,
+  ListTodo,
+  Cloud,
+  Database,
+  Shield,
+  Boxes,
+  Webhook,
+  Activity,
+  FlaskConical,
+} from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 
 const ENTRIES = [
@@ -10,43 +23,72 @@ const ENTRIES = [
     audience: 'Interactive development',
     desc: 'Launch a cloud Claude Code instance and work in a browser terminal. Sessions and artifacts persist to S3 and survive restarts.',
     color: 'from-sky-500 to-brand-600',
-    live: true,
   },
   {
     to: '/publish',
     icon: Rocket,
     title: 'Publish',
-    audience: 'Kernel hosting',
-    desc: 'Publish clean agent kernels (Claude Agent SDK) as AgentCore Runtime endpoints that any application can invoke.',
+    audience: 'Self-service publishing',
+    desc: 'Drop an agent.yaml in a workspace and publish it as a versioned agent — prompt, tools and memory binding, no image build.',
     color: 'from-emerald-500 to-teal-600',
-    live: true,
   },
   {
     to: '/debug',
     icon: MessagesSquare,
     title: 'Debug',
     audience: 'SDK / API integration',
-    desc: 'Invoke a published kernel, inspect the response and usage, and reuse warm sessions before going live.',
+    desc: 'Invoke the raw kernel or any published agent, inspect the response, usage and memory recall before going live.',
     color: 'from-sky-500 to-indigo-600',
-    live: true,
+  },
+  {
+    to: '/ecosystem',
+    icon: Boxes,
+    title: 'MCP & Skills',
+    audience: 'Tool ecosystem',
+    desc: 'A registry of MCP servers, skill packages and AgentCore built-in tools (Code Interpreter, Browser) attachable to any session or invoke.',
+    color: 'from-amber-500 to-orange-600',
   },
   {
     to: '/scheduler',
     icon: ListTodo,
     title: 'Scheduler',
-    audience: 'Task orchestration',
-    desc: 'Abstract work into tasks: cron / event / chat triggers routed to published runtimes with approval and delivery.',
+    audience: 'Recurring runs',
+    desc: 'Cron and interval schedules against any kernel or published agent, fired by EventBridge Scheduler with retries and a DLQ.',
     color: 'from-violet-500 to-brand-600',
-    live: false,
+  },
+  {
+    to: '/channels',
+    icon: Webhook,
+    title: 'Channels',
+    audience: 'External systems',
+    desc: 'Token-authenticated webhook endpoints for bots, CI and ops hooks; a conversation_id keeps a warm session across calls.',
+    color: 'from-cyan-500 to-sky-600',
+  },
+  {
+    to: '/memory',
+    icon: Database,
+    title: 'Memory',
+    audience: 'Cross-session recall',
+    desc: 'AgentCore Memory stores managed from the portal — bind one to an invocation and the agent remembers across sessions.',
+    color: 'from-fuchsia-500 to-violet-600',
+  },
+  {
+    to: '/governance',
+    icon: Shield,
+    title: 'Governance',
+    audience: 'Platform operations',
+    desc: 'Daily quotas, kill switches and turn caps enforced in one invocation pipeline, with a full audit trail of platform actions.',
+    color: 'from-slate-500 to-slate-700',
   },
 ]
 
 const CAPABILITIES = [
   { icon: Cloud, label: 'Hosted sessions (microVM isolation)' },
   { icon: Database, label: 'S3-persisted workspaces & transcripts' },
-  { icon: Terminal, label: 'Multiple runtime kernels' },
-  { icon: Boxes, label: 'MCP / Skill injection' },
-  { icon: Shield, label: 'Fixed egress IP for gateway allow-lists' },
+  { icon: Shield, label: 'One governed invocation pipeline' },
+  { icon: Activity, label: 'Invocation ledger & stats' },
+  { icon: FlaskConical, label: 'LLM-judged evaluation runs' },
+  { icon: Terminal, label: 'Fixed egress IP for gateway allow-lists' },
 ]
 
 export default function OverviewPage() {
@@ -125,7 +167,6 @@ export default function OverviewPage() {
             </div>
             <div className="mb-2 flex items-center gap-2">
               <span className="badge bg-slate-100 text-slate-600">{s.audience}</span>
-              {!s.live && <span className="badge bg-violet-50 text-violet-700">soon</span>}
             </div>
             <h3 className="text-lg font-semibold text-slate-900 group-hover:text-brand-700">{s.title}</h3>
             <p className="mt-2 flex-1 text-sm leading-relaxed text-slate-600">{s.desc}</p>
