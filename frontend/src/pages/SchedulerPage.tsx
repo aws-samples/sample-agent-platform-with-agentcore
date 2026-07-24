@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Loader2, Pause, Play, Plus, RefreshCw, Trash2, Zap } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
 import { api, type PublishedAgent, type Schedule } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 const WEEKDAYS = [
   { value: '1', label: 'Monday' },
@@ -138,7 +139,7 @@ export default function SchedulerPage() {
                   <td className="px-4 py-3 font-mono text-xs text-slate-600">{s.target}</td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-600">{s.expression}</td>
                   <td className="px-4 py-3 text-xs text-slate-600">
-                    {s.enabled ? s.next_run_at.replace('T', ' ').slice(0, 19) : <span className="badge bg-slate-100 text-slate-500">paused</span>}
+                    {s.enabled ? fmtTs(s.next_run_at) : <span className="badge bg-slate-100 text-slate-500">paused</span>}
                   </td>
                   <td className="px-4 py-3 text-xs">
                     {s.last_run_at ? (

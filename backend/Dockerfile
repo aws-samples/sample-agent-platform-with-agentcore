@@ -6,6 +6,11 @@ FROM python:3.13-slim
 COPY requirements.txt /opt/requirements.txt
 RUN pip install --no-cache-dir -r /opt/requirements.txt
 
+# Node hosts pipeline workflow scripts (app/workflow/runner.mjs); the scripts
+# get no AWS SDK or credentials — only the stdio bridge back to Python.
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY app/ /app/app/
 WORKDIR /app
 

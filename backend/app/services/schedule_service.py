@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -288,6 +289,60 @@ class ScheduleService:
 
     # ------------------------------------------------------------ execution
 
+    @staticmethod
+    def _run_pipeline(target: str, user: str) -> dict:
+        """Dispatch a ``pipeline:{name}`` schedule target to the pipeline
+        engine. Workflow scripts need Node, which only the backend container
+        has — inside the schedule-runner Lambda (PLATFORM_PORTAL_API_URL set)
+        the run is delegated to the backend API instead, which also lifts the
+        Lambda's 10-minute budget off long pipelines."""
+        name = target.partition(":")[2]
+        if settings.portal_api_url:
+            return ScheduleService._delegate_pipeline(name, user)
+        from app.services.pipeline_service import pipeline_service
+        return pipeline_service.run_sync(name, user=user)
+
+    @staticmethod
+    def _delegate_pipeline(name: str, user: str) -> dict:
+        """Lambda path: start the run through the portal API (as the portal
+        admin) and poll it to a terminal state within the Lambda budget."""
+        import urllib.request
+
+        base = settings.portal_api_url.rstrip("/")
+
+        def http(method: str, path: str, token: str | None = None, body: dict | None = None):
+            req = urllib.request.Request(
+                base + path, method=method,
+                data=json.dumps(body).encode() if body is not None else None,
+                headers={"Content-Type": "application/json",
+                         **({"Authorization": f"Bearer {token}"} if token else {})},
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 — fixed base URL
+                return json.loads(r.read())
+
+        sm = boto3.client("secretsmanager", region_name=settings.aws_region)
+        cred = json.loads(sm.get_secret_value(SecretId=settings.portal_admin_secret)["SecretString"])
+        cfg = http("GET", "/api/v1/config")
+        idp = boto3.client("cognito-idp", region_name=settings.aws_region)
+        token = idp.initiate_auth(
+            ClientId=cfg["cognito_client_id"], AuthFlow="USER_PASSWORD_AUTH",
+            AuthParameters={"USERNAME": cred.get("username", "admin"), "PASSWORD": cred["password"]},
+        )["AuthenticationResult"]["IdToken"]
+
+        run = http("POST", f"/api/v1/pipelines/{name}/runs", token, body={})
+        run_id = run["id"]
+        deadline = _now() + timedelta(seconds=480)  # leave headroom inside the 10-min budget
+        while _now() < deadline:
+            time.sleep(15)
+            run = http("GET", f"/api/v1/pipeline-runs/{run_id}", token)
+            if run.get("status") != "running":
+                break
+        # a run still in flight at the Lambda deadline is NOT a failure — long
+        # pipelines (async feed refresh) outlive this poll and finish on the
+        # backend; the portal Pipeline page has the live record
+        return {"ok": run.get("status") in ("completed", "running"), "run_id": run_id,
+                "result": run.get("result"), "status": run.get("status")}
+
     def run_once(self, item: dict, source: str = "schedule") -> dict:
         """Execute one schedule occurrence through the invocation pipeline.
         Called by the schedule-runner Lambda (eventbridge mode), the local
@@ -295,23 +350,41 @@ class ScheduleService:
         from app.services.invocation_service import invoke  # avoid import cycle
 
         schedule_id = item["SK"].partition("#")[2]
-        try:
-            result = invoke(
-                user=item.get("created_by", "scheduler"),
-                source=source,
-                target=item.get("target", "agent-sdk"),
-                prompt=item["prompt"],
-                system=item.get("system") or None,
-                ref=f"schedule:{schedule_id}",
-            )
-            status = "ok" if result.get("ok") else "failed"
-            preview = (result.get("result") or str(result.get("raw", "")))[:RESULT_PREVIEW]
-        except Exception as e:
-            # Details go to the log and the stored preview (shown on the
-            # Scheduler page), never into the HTTP response body.
-            logger.exception("schedule %s run failed", schedule_id)
-            status, preview = "error", str(e)[:RESULT_PREVIEW]
-            result = {"ok": False, "error": "schedule run failed — see backend logs"}
+        target = item.get("target", "agent-sdk")
+        # A ``pipeline:*`` target is a multi-phase orchestration (fan-out over
+        # many invocations), not a single kernel invoke — dispatch to its
+        # service. Each of its internal steps still flows through invoke() with
+        # its own governance + ledger entry, so the pipeline stays observable.
+        if target.startswith("pipeline:"):
+            try:
+                result = self._run_pipeline(target, item.get("created_by", "scheduler"))
+                status = "ok" if result.get("ok") else "failed"
+                preview = json.dumps(
+                    result.get("result") if result.get("result") is not None else result,
+                    ensure_ascii=False, default=str,
+                )[:RESULT_PREVIEW]
+            except Exception as e:
+                logger.exception("pipeline schedule %s run failed", schedule_id)
+                status, preview = "error", str(e)[:RESULT_PREVIEW]
+                result = {"ok": False, "error": "pipeline run failed — see backend logs"}
+        else:
+            try:
+                result = invoke(
+                    user=item.get("created_by", "scheduler"),
+                    source=source,
+                    target=target,
+                    prompt=item["prompt"],
+                    system=item.get("system") or None,
+                    ref=f"schedule:{schedule_id}",
+                )
+                status = "ok" if result.get("ok") else "failed"
+                preview = (result.get("result") or str(result.get("raw", "")))[:RESULT_PREVIEW]
+            except Exception as e:
+                # Details go to the log and the stored preview (shown on the
+                # Scheduler page), never into the HTTP response body.
+                logger.exception("schedule %s run failed", schedule_id)
+                status, preview = "error", str(e)[:RESULT_PREVIEW]
+                result = {"ok": False, "error": "schedule run failed — see backend logs"}
         self.table.update_item(
             Key={"PK": PK, "SK": item["SK"]},
             UpdateExpression=(

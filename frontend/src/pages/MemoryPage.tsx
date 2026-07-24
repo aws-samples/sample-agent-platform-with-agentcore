@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Database, Loader2, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { Modal, SectionTitle, StatusBadge } from '@/components/common/ui'
 import { api, type MemoryEvent, type MemoryRecord, type MemoryStore } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 export default function MemoryPage() {
   const [stores, setStores] = useState<MemoryStore[]>([])
@@ -203,7 +204,7 @@ export default function MemoryPage() {
                   {events.map((ev) => (
                     <div key={ev.event_id} className="rounded-lg border border-slate-100 p-3">
                       <p className="mb-1 text-[10px] text-slate-400">
-                        {ev.at.replace('T', ' ').slice(0, 19)} · session {ev.session_id.slice(0, 16)}…
+                        {fmtTs(ev.at)} · session {ev.session_id.slice(0, 16)}…
                       </p>
                       {ev.messages.map((m, i) => (
                         <p key={i} className="text-xs text-slate-700">{m}</p>

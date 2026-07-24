@@ -135,6 +135,46 @@ export interface EvalRun {
   error: string
 }
 
+export interface Pipeline {
+  id: string
+  name: string
+  description: string
+  version: number
+  script_size: number
+  script?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  history: { version: number; at: string; by: string }[]
+}
+
+export interface PipelineRunAgent {
+  phase: string
+  label: string
+  ok: boolean
+  runtime_session_id?: string
+  duration_ms?: number | null
+  num_turns?: number | null
+  cost_usd?: number | null
+  error?: string
+}
+
+export interface PipelineRun {
+  id: string
+  pipeline: string
+  status: string
+  source: string
+  started_by: string
+  started_at: string
+  finished_at: string
+  phase: string
+  trace_id: string
+  agents: PipelineRunAgent[]
+  logs: string[]
+  result: Record<string, unknown> | null
+  error: string
+}
+
 export interface MemoryStore {
   id: string
   arn: string
@@ -316,6 +356,20 @@ export const api = {
   getEvalRun: (id: string) => request<EvalRun>(`/api/v1/evals/runs/${id}`),
   startEvalRun: (body: { dataset_id: string; target: string }) =>
     request<EvalRun>('/api/v1/evals/runs', { method: 'POST', body: JSON.stringify(body) }),
+
+  // Pipelines (workflow scripts) + runs
+  listPipelines: () => request<Pipeline[]>('/api/v1/pipelines'),
+  getPipeline: (name: string) => request<Pipeline>(`/api/v1/pipelines/${encodeURIComponent(name)}`),
+  upsertPipeline: (body: { name: string; description?: string; script: string }) =>
+    request<Pipeline>('/api/v1/pipelines', { method: 'POST', body: JSON.stringify(body) }),
+  deletePipeline: (id: string) => request<{ ok: boolean }>(`/api/v1/pipelines/${id}`, { method: 'DELETE' }),
+  startPipelineRun: (name: string) =>
+    request<PipelineRun>(`/api/v1/pipelines/${encodeURIComponent(name)}/runs`, {
+      method: 'POST', body: JSON.stringify({}),
+    }),
+  listPipelineRuns: (pipeline?: string) =>
+    request<PipelineRun[]>(`/api/v1/pipeline-runs${pipeline ? `?pipeline=${encodeURIComponent(pipeline)}` : ''}`),
+  getPipelineRun: (id: string) => request<PipelineRun>(`/api/v1/pipeline-runs/${id}`),
 
   // Memory
   listMemoryStores: () => request<MemoryStore[]>('/api/v1/memory/stores'),

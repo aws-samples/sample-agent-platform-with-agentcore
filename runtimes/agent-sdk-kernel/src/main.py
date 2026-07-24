@@ -18,14 +18,25 @@ Payload contract::
         ],
         "memory": {                 // optional AgentCore Memory binding
             "memory_id": "mem-...", "actor_id": "alice"
+        },
+        "async": {                  // optional: run as an AgentCore async task
+            "bucket": "…", "key": "feeds/ai-pulse/2026-07-23.md"
         }
     }
+
+Async mode: the entrypoint registers an AgentCore async task (the runtime
+stays alive — up to the platform's 8h async ceiling instead of the 15min
+synchronous invoke limit), returns ``{accepted: true}`` immediately, and the
+agent run continues in the background. On completion the kernel writes the
+final answer to ``s3://{bucket}/{key}`` plus a ``{key}.status.json`` sidecar
+({ok, usage, error}) that callers poll as the completion signal.
 
 Model access is resolved from the environment (see resolve_model_env):
 either an Anthropic-compatible LLM gateway (ANTHROPIC_BASE_URL + key from
 Secrets Manager) or Amazon Bedrock via the container's IAM role.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -90,12 +101,45 @@ def resolve_model_env() -> None:
 resolve_model_env()
 
 
+_SECRET_CACHE: dict[str, str] = {}
+
+
+def resolve_secret_placeholders(target: str) -> str:
+    """Replace ``{{secret:NAME}}`` tokens in a URL target with values from
+    Secrets Manager (cached per process).
+
+    This keeps credentials for remote MCP servers (e.g. Exa's
+    ``?exaApiKey=…``) out of the platform registry: the registry stores the
+    placeholder, only this container — whose IAM role is granted the specific
+    secret — ever sees the plaintext.
+    """
+    import re
+
+    def _lookup(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in _SECRET_CACHE:
+            sm = boto3.client(
+                "secretsmanager", region_name=os.environ.get("AWS_REGION", "us-east-1")
+            )
+            raw = sm.get_secret_value(SecretId=name)["SecretString"]
+            try:  # allow either a raw string or {"api_key": "..."} JSON
+                parsed = json.loads(raw)
+                raw = parsed.get("api_key", raw) if isinstance(parsed, dict) else raw
+            except (json.JSONDecodeError, ValueError):
+                pass
+            _SECRET_CACHE[name] = raw
+        return _SECRET_CACHE[name]
+
+    return re.sub(r"\{\{secret:([A-Za-z0-9/_+=.@-]+)\}\}", _lookup, target)
+
+
 def build_mcp_config(servers: list[dict]) -> dict:
     """Translate registry entries into Claude Agent SDK MCP server configs.
 
     AgentCore-hosted servers are reached through mcp-proxy-for-aws (stdio →
     SigV4 streamable-HTTP) using this container's IAM role; plain URLs are
-    passed straight through as HTTP transports.
+    passed through as HTTP transports after ``{{secret:…}}`` placeholder
+    resolution (see resolve_secret_placeholders).
     """
     region = os.environ.get("AWS_REGION", "us-east-1")
     cfg: dict = {}
@@ -116,7 +160,10 @@ def build_mcp_config(servers: list[dict]) -> dict:
                 "args": [endpoint, "--service", "bedrock-agentcore", "--region", region],
             }
         elif kind == "url":
-            cfg[name] = {"type": "http", "url": target}
+            try:
+                cfg[name] = {"type": "http", "url": resolve_secret_placeholders(target)}
+            except Exception:
+                logger.exception("secret resolution failed for MCP %s — skipping it", name)
         elif kind == "builtin":
             # AgentCore built-in tools (code-interpreter / browser) wrapped as
             # a local stdio MCP server; sessions use this container's role.
@@ -231,6 +278,74 @@ def mount_skills(skills: list[dict]) -> bool:
     return mounted
 
 
+async def run_agent(prompt: str, options: "ClaudeAgentOptions") -> tuple[str, dict, bool]:
+    """One full agent run → (answer, usage, is_error). Shared by the
+    synchronous entrypoint and background async tasks.
+
+    The answer is ResultMessage.result — the agent's *final* reply. Joining
+    every AssistantMessage text block would also capture the running
+    commentary the model emits between tool calls ("let me search…"), which
+    pollutes artifact-shaped outputs (feed markdown); it stays only as a
+    fallback for SDK versions/paths that leave result empty.
+    """
+    text_parts: list[str] = []
+    final = ""
+    usage: dict = {}
+    is_error = False
+    async for message in query(prompt=prompt, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    text_parts.append(block.text)
+        elif isinstance(message, ResultMessage):
+            # nosemgrep: is-function-without-parentheses  (is_error is a bool attribute of ResultMessage, not a method)
+            is_error = bool(message.is_error)
+            final = (message.result or "").strip()
+            usage = {
+                "duration_ms": message.duration_ms,
+                "num_turns": message.num_turns,
+                "total_cost_usd": message.total_cost_usd,
+            }
+    return final or "\n".join(text_parts).strip(), usage, is_error
+
+
+# Strong references so background async tasks aren't garbage-collected
+_ASYNC_TASKS: set = set()
+
+
+async def run_async_task(prompt: str, options: "ClaudeAgentOptions",
+                         bucket: str, key: str, task_id: int) -> None:
+    """Background body of an async invocation: run the agent, persist the
+    answer + a status sidecar to S3, then release the AgentCore task."""
+    status: dict = {"ok": False, "usage": {}, "error": ""}
+    try:
+        answer, usage, is_error = await run_agent(prompt, options)
+        status["usage"] = usage
+        if is_error or not answer:
+            status["error"] = "agent run failed" if is_error else "agent produced no output"
+        else:
+            status["ok"] = True
+            s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+            await asyncio.to_thread(
+                s3.put_object, Bucket=bucket, Key=key,
+                Body=answer.encode("utf-8"), ContentType="text/markdown; charset=utf-8",
+            )
+    except Exception as e:
+        logger.exception("async task failed (%s)", key)
+        status["error"] = str(e)[:500]
+    finally:
+        try:
+            s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+            await asyncio.to_thread(
+                s3.put_object, Bucket=bucket, Key=f"{key}.status.json",
+                Body=json.dumps(status).encode(), ContentType="application/json",
+            )
+        except Exception:
+            logger.exception("async status write failed (%s)", key)
+        app.complete_async_task(task_id)
+        logger.info("async task %s done ok=%s key=%s", task_id, status["ok"], key)
+
+
 @app.entrypoint
 async def invoke(payload: dict, context) -> dict:
     """Standard AgentCore invocation entrypoint."""
@@ -270,25 +385,20 @@ async def invoke(payload: dict, context) -> dict:
 
     logger.info("invoke session=%s prompt=%.80r", getattr(context, "session_id", "?"), prompt)
 
-    text_parts: list[str] = []
-    usage: dict = {}
-    is_error = False
+    # ---- async mode: register an AgentCore task and return immediately ----
+    async_spec = (payload or {}).get("async") or {}
+    if async_spec.get("bucket") and async_spec.get("key"):
+        bucket, key = str(async_spec["bucket"]), str(async_spec["key"]).lstrip("/")
+        task_id = app.add_async_task("agent-run", {"key": key})
+        task = asyncio.get_running_loop().create_task(
+            run_async_task(prompt, options, bucket, key, task_id)
+        )
+        _ASYNC_TASKS.add(task)
+        task.add_done_callback(_ASYNC_TASKS.discard)
+        return {"ok": True, "kernel": "agent-sdk-kernel", "accepted": True,
+                "task_id": task_id, "output_key": key}
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_parts.append(block.text)
-        elif isinstance(message, ResultMessage):
-            # nosemgrep: is-function-without-parentheses  (is_error is a bool attribute of ResultMessage, not a method)
-            is_error = bool(message.is_error)
-            usage = {
-                "duration_ms": message.duration_ms,
-                "num_turns": message.num_turns,
-                "total_cost_usd": message.total_cost_usd,
-            }
-
-    answer = "\n".join(text_parts).strip()
+    answer, usage, is_error = await run_agent(prompt, options)
     if memory and not is_error:
         store_memory_event(
             memory, str(getattr(context, "session_id", "") or ""), prompt, answer

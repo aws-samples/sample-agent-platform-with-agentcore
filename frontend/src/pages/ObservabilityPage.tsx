@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import { api, type InvocationRecord, type ObservabilityStats } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 function StatTile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -71,7 +72,7 @@ export default function ObservabilityPage() {
           <tbody>
             {invocations.map((r, i) => (
               <tr key={i} className="border-b border-slate-50">
-                <td className="px-4 py-2.5 whitespace-nowrap text-xs text-slate-500">{r.ts.replace('T', ' ').slice(0, 19)}</td>
+                <td className="px-4 py-2.5 whitespace-nowrap text-xs text-slate-500">{fmtTs(r.ts)}</td>
                 <td className="px-4 py-2.5"><span className={`badge ${SOURCE_STYLES[r.source] ?? 'bg-slate-100 text-slate-600'}`}>{r.source}</span></td>
                 <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{r.target}</td>
                 <td className="px-4 py-2.5 text-xs text-slate-600">{r.user}</td>

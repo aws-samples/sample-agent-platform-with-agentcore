@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { FlaskConical, Loader2, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
 import { api, type EvalDataset, type EvalRun, type PublishedAgent } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 export default function EvalPage() {
   const [datasets, setDatasets] = useState<EvalDataset[]>([])
@@ -150,7 +151,7 @@ export default function EvalPage() {
               <p className="text-xs text-slate-500">
                 {r.passed}/{r.total} passed{r.avg_score != null && ` · avg score ${r.avg_score.toFixed(1)}/10`}
               </p>
-              <p className="ml-auto text-[11px] text-slate-400">{r.started_at.replace('T', ' ').slice(0, 19)}</p>
+              <p className="ml-auto text-[11px] text-slate-400">{fmtTs(r.started_at)}</p>
             </div>
             {r.error && <p className="mt-2 text-xs text-red-600">{r.error}</p>}
             {expandedRun === r.id && (

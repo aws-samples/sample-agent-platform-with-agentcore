@@ -73,6 +73,18 @@ class RuntimeStack(Stack):
         platform.workspace_bucket.grant_read_write(role)
         # LLM gateway key
         platform.llm_gateway_secret.grant_read(role)
+        # Remote-MCP credentials: url-kind registry targets may carry
+        # {{secret:…}} placeholders the kernel resolves at session start
+        # (e.g. the Exa API key) — grant only the platform's MCP secrets.
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="McpSecrets",
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agent-platform/exa-api-key*"
+                ],
+            )
+        )
         if use_bedrock == "1":
             role.add_to_policy(
                 iam.PolicyStatement(

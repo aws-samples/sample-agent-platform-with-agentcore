@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Copy, FlaskConical, Loader2, MessagesSquare, Pause, Play, Plus, RefreshCw, Send, Trash2 } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
 import { api, type Channel, type PublishedAgent } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 interface TestExchange {
   message: string
@@ -152,7 +153,7 @@ export default function ChannelsPage() {
               </button>
             </div>
             <p className="mt-2 text-[11px] text-slate-400">
-              {ch.message_count} messages{ch.last_message_at && ` · last ${ch.last_message_at.replace('T', ' ').slice(0, 19)}`} ·
+              {ch.message_count} messages{ch.last_message_at && ` · last ${fmtTs(ch.last_message_at)}`} ·
               token shown once at creation · same <code>conversation_id</code> keeps a warm session
             </p>
           </div>

@@ -139,6 +139,16 @@ class PortalStack(Stack):
                 resources=["*"],
             )
         )
+        # Pipeline runs emit an orchestration trace (root → phase → agent
+        # spans) via X-Ray; with Transaction Search enabled they render in the
+        # CloudWatch Traces console. PutTraceSegments is not resource-scoped.
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="PipelineTraces",
+                actions=["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+                resources=["*"],
+            )
+        )
 
         # --------------------------- scheduler -----------------------------
         # Production firing engine: one EventBridge Scheduler schedule per
@@ -194,6 +204,8 @@ class PortalStack(Stack):
             },
         )
         platform.table.grant_read_write_data(runner_fn)
+        # pipeline schedules read staged feeds and write the shortlist
+        platform.workspace_bucket.grant_read_write(runner_fn)
         runner_fn.add_to_role_policy(
             iam.PolicyStatement(
                 sid="AgentCoreInvoke",
@@ -201,6 +213,13 @@ class PortalStack(Stack):
                 resources=[
                     f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/*"
                 ],
+            )
+        )
+        runner_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="PipelineTraces",
+                actions=["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+                resources=["*"],
             )
         )
 
@@ -377,6 +396,22 @@ class PortalStack(Stack):
                     http_status=404, response_http_status=200, response_page_path="/index.html"
                 ),
             ],
+        )
+
+        # Pipeline schedules: workflow scripts need Node (backend container
+        # only), so the runner Lambda delegates pipeline runs to the backend
+        # API, signing in as the portal admin.
+        runner_fn.add_environment(
+            "PLATFORM_PORTAL_API_URL", f"https://{distribution.distribution_domain_name}"
+        )
+        runner_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="PortalAdminSecret",
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agent-platform/portal-admin*"
+                ],
+            )
         )
 
         CfnOutput(self, "PortalUrl", value=f"https://{distribution.distribution_domain_name}")

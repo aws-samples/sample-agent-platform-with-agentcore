@@ -44,3 +44,6 @@ credentials
 # Logs
 *.log
 cdk.context.json
+
+# TypeScript incremental build info
+*.tsbuildinfo

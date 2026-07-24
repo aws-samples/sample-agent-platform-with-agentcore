@@ -6,6 +6,7 @@ import uuid
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ConnectionClosedError, EndpointConnectionError
 
 from app.config import settings
 
@@ -67,6 +68,7 @@ class KernelService:
         mcp_servers: list[dict] | None = None,
         skills: list[dict] | None = None,
         memory: dict | None = None,
+        async_output: dict | None = None,
     ) -> dict:
         """Proxy an invocation to the headless kernel.
 
@@ -74,6 +76,10 @@ class KernelService:
         container); omitting it starts a fresh session. ``memory`` binds the
         call to an AgentCore Memory store ({memory_id, actor_id}) — the kernel
         retrieves relevant records before the run and stores the exchange after.
+        ``async_output`` ({bucket, key}) switches the kernel to async-task
+        mode: the call returns ``{accepted: true}`` immediately and the kernel
+        writes the answer + a ``{key}.status.json`` sidecar to S3 when done
+        (poll the sidecar for completion — see invocation_service).
         """
         if not settings.sdk_runtime_arn:
             return {"ok": False, "result": "", "raw": {"error": "sdk_runtime_arn not configured"}}
@@ -88,13 +94,27 @@ class KernelService:
             payload["skills"] = skills
         if memory and memory.get("memory_id"):
             payload["memory"] = memory
+        if async_output and async_output.get("key"):
+            payload["async"] = async_output
 
-        resp = self.agentcore.invoke_agent_runtime(
-            agentRuntimeArn=settings.sdk_runtime_arn,
-            qualifier=settings.runtime_qualifier,
-            runtimeSessionId=sid,
-            payload=json.dumps(payload).encode(),
-        )
+        def _invoke():
+            return self.agentcore.invoke_agent_runtime(
+                agentRuntimeArn=settings.sdk_runtime_arn,
+                qualifier=settings.runtime_qualifier,
+                runtimeSessionId=sid,
+                payload=json.dumps(payload).encode(),
+            )
+
+        try:
+            resp = _invoke()
+        except (ConnectionClosedError, EndpointConnectionError):
+            # A pooled keep-alive connection the endpoint had already closed
+            # (idle backend between runs) — surfaces as "Connection was closed
+            # before we received a valid response". Retry once on a fresh
+            # connection; read timeouts stay non-retried on purpose (retrying
+            # a genuinely long run would double model cost).
+            logger.warning("stale connection to AgentCore — retrying once (session %s)", sid)
+            resp = _invoke()
         body = resp["response"].read()
         try:
             data = json.loads(body)

@@ -23,6 +23,7 @@ import {
   type PublishedAgent,
   type Session,
 } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 const LIFECYCLE = ['Iterate in Dev Workbench', 'Drop agent.yaml in /workspace', 'Publish (version bump)', 'Verify in Debug', 'Consume via API / channels / schedules']
 
@@ -386,7 +387,7 @@ export default function PublishPage() {
                 <div className="space-y-0.5 text-[11px] text-slate-400">
                   {editing.history.slice(0, 5).map((h) => (
                     <p key={h.version}>
-                      v{h.version} · {h.at.replace('T', ' ').slice(0, 19)} · by {h.by}
+                      v{h.version} · {fmtTs(h.at)} · by {h.by}
                     </p>
                   ))}
                 </div>

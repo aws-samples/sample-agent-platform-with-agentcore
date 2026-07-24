@@ -11,6 +11,7 @@ import SchedulerPage from '@/pages/SchedulerPage'
 import ObservabilityPage from '@/pages/ObservabilityPage'
 import MemoryPage from '@/pages/MemoryPage'
 import EvalPage from '@/pages/EvalPage'
+import PipelinePage from '@/pages/PipelinePage'
 import ChannelsPage from '@/pages/ChannelsPage'
 import GovernancePage from '@/pages/GovernancePage'
 import { getPublicConfig, getToken } from '@/services/auth'
@@ -57,6 +58,7 @@ export default function App() {
         <Route path="/observability" element={<ObservabilityPage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/eval" element={<EvalPage />} />
+        <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/governance" element={<GovernancePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

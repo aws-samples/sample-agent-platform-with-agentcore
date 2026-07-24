@@ -31,6 +31,7 @@ DEFAULT_POLICY = {
         "schedule": True,
         "channel": True,
         "eval": True,
+        "pipeline": True,
     },
 }
 

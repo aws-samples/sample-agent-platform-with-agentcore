@@ -15,6 +15,7 @@ from app.api import (
     kernels,
     memory,
     observability,
+    pipelines,
     schedules,
     sessions,
 )
@@ -58,6 +59,7 @@ app.include_router(evals.router)
 app.include_router(memory.router)
 app.include_router(observability.router)
 app.include_router(governance.router)
+app.include_router(pipelines.router)
 
 
 @app.get("/health")

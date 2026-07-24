@@ -13,6 +13,7 @@ import {
   Cloud,
   LogOut,
   Webhook,
+  Workflow,
 } from 'lucide-react'
 import { getUser, signOut } from '@/services/auth'
 
@@ -27,6 +28,7 @@ const NAV = [
   { to: '/observability', label: 'Observability', icon: Activity },
   { to: '/memory', label: 'Memory', icon: Database },
   { to: '/eval', label: 'Evaluation', icon: FlaskConical },
+  { to: '/pipeline', label: 'Workflow', icon: Workflow, badge: 'Exp' },
   { to: '/governance', label: 'Governance', icon: Shield },
 ]
 
@@ -52,7 +54,7 @@ export default function AppShell() {
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 px-3 pb-6">
-          {NAV.map(({ to, label, icon: Icon, end }) => (
+          {NAV.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -67,6 +69,9 @@ export default function AppShell() {
             >
               <Icon size={16} />
               <span className="flex-1">{label}</span>
+              {badge && (
+                <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">{badge}</span>
+              )}
             </NavLink>
           ))}
         </nav>

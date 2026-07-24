@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # configured. Empty = open (local development only).
     api_token: str = ""
 
+    # Pipeline delegation: the schedule-runner Lambda cannot execute workflow
+    # scripts (no Node in its runtime), so when this is set (Lambda env) a
+    # pipeline schedule is delegated to the backend API instead, authenticated
+    # as the portal admin via the named secret.
+    portal_api_url: str = ""
+    portal_admin_secret: str = "agent-platform/portal-admin"
+
     # CORS origins for the portal frontend
     cors_origins: str = "http://localhost:5173"
 

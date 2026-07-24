@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Loader2, RefreshCw, Save, Shield } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import { api, type AuditEvent, type GovernancePolicy, type UsageToday } from '@/services/api'
+import { fmtTs } from '@/services/format'
 
 export default function GovernancePage() {
   const [policy, setPolicy] = useState<GovernancePolicy | null>(null)
@@ -137,7 +138,7 @@ export default function GovernancePage() {
                 <tbody>
                   {audit.map((a, i) => (
                     <tr key={i} className="border-b border-slate-50">
-                      <td className="whitespace-nowrap px-5 py-2 text-xs text-slate-400">{a.ts.replace('T', ' ').slice(0, 19)}</td>
+                      <td className="whitespace-nowrap px-5 py-2 text-xs text-slate-400">{fmtTs(a.ts)}</td>
                       <td className="px-3 py-2 text-xs text-slate-600">{a.user}</td>
                       <td className="px-3 py-2"><span className="badge bg-slate-100 text-slate-600">{a.action}</span></td>
                       <td className="px-3 py-2 font-mono text-xs text-slate-500">{a.resource}</td>
