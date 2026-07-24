@@ -9,6 +9,13 @@
 - Amazon Bedrock AgentCore available in your target region
 - Python ≥ 3.11, Node.js ≥ 20
 
+> **Deploying into a permission-controlled account?** Read
+> [permissions.md](permissions.md) first. It enumerates the four IAM roles the
+> platform creates (exact actions, resource scopes, conditions), the deployer
+> permissions `cdk deploy` itself needs, and how to hand the security team a
+> single reviewable artifact (`cdk synth --all`) instead of granting
+> speculative access. §8 and §10 there are written for exactly this case.
+
 ## 1. Network + platform resources
 
 ```bash
@@ -197,6 +204,45 @@ Auth modes (backend resolves in this order):
    manual walkthroughs of each page, see the
    [user guide](user-guide.md).
 
+## 7. (Optional) Content pipelines — Phase 5
+
+The workflow engine and the sample daily-topic / topic-selection pipelines are
+optional. Enable them only if you want scheduled, multi-step agent
+orchestration.
+
+1. **Store the Exa (or other remote-MCP) key** — the feed layer resolves a
+   `{{secret:agent-platform/exa-api-key}}` placeholder at session start; the key
+   is never stored in the registry:
+
+   ```bash
+   aws secretsmanager put-secret-value \
+     --secret-id agent-platform/exa-api-key \
+     --secret-string '{"api_key":"exa-your-key"}'
+   ```
+
+   The runtime role's `McpSecrets` statement is scoped to
+   `agent-platform/exa-api-key*` only — see [permissions.md §2](permissions.md#2-runtime-execution-role).
+
+2. **Register the sample pipelines** (writes pipeline definitions to DynamoDB
+   and the MCP/skill registry — no new infra):
+
+   ```bash
+   PLATFORM_WORKSPACE_BUCKET=agent-platform-workspaces-<account>-<region> \
+     python3 scripts/seed_topic_pipeline.py
+   ```
+
+3. **Stage the pipeline inputs** into the workspace bucket:
+
+   ```bash
+   PLATFORM_WORKSPACE_BUCKET=agent-platform-workspaces-<account>-<region> \
+     ./scripts/stage_topic_inputs.sh
+   ```
+
+These operator scripts run with **your CLI identity**, not a stack role —
+they need `s3:PutObject` on the workspace bucket and `dynamodb:PutItem` on the
+`agent-platform` table. The Workflow page (marked Experimental) then shows the
+registered pipelines and their phase→agent run tree.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -209,6 +255,8 @@ Auth modes (backend resolves in this order):
 | Built-in tool call fails with AccessDenied | Runtime execution role missing `StartCodeInterpreterSession` / `StartBrowserSession` (+ connect/invoke actions) on the account's `code-interpreter/*` / `browser/*` resources — see `RuntimeStack` `BuiltinTools` policy |
 | Schedules never fire (hosted) | Check the schedule-runner Lambda's logs (`/aws/lambda/agent-platform-schedule-runner`) and the `agent-platform-schedule-dlq` queue; a `RuntimeError: code not deployed` means `scripts/deploy-schedule-lambda.sh` hasn't been run. Verify the mirror exists: `aws scheduler get-schedule --group-name agent-platform --name sched-<id>` |
 | Schedules never fire (local dev) | The fallback tick loop runs inside the backend process — `uvicorn` must be running; check `enabled` and `next_run_at` on the Scheduler page |
+| Pipeline feed agent fails on the Exa MCP | `agent-platform/exa-api-key` secret not set, or the runtime role lacks `secretsmanager:GetSecretValue` on it (`McpSecrets` statement in `RuntimeStack`) |
+| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the `agent-platform/portal-admin` secret exists and the Lambda role's `PortalAdminSecret` grant, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB) |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |
 | Memory retrieval returns nothing right after a conversation | Long-term extraction is asynchronous (typically under a minute); raw events are visible immediately on the Memory page |
