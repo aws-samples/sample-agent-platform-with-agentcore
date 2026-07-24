@@ -304,6 +304,35 @@ free.
   an append-only audit log of every mutating platform action. Model
   allow-lists and budgets stay in the LLM gateway.
 
+### Workflow engine — pipeline-as-data (Phase 5, experimental)
+
+Multi-step agent orchestration expressed as a **Workflow-dialect script**
+(the same `agent()`/`parallel()`/`pipeline()`/`phase()`/`log()` primitives as
+the Claude Code Workflow tool) and registered as a named platform *pipeline*.
+
+- **Execution model** (`workflow_engine.py` + `backend/app/workflow/runner.mjs`)
+  — the script runs in a short-lived **Node subprocess**; every host primitive
+  is bridged back to the Python engine over a stdio NDJSON channel. The Node
+  shim makes **no AWS calls of its own** — `agent()` routes back into the same
+  governed invocation pipeline (quota → invoke → ledger), and
+  `s3read/s3write/s3list` are confined to the workspace bucket by the backend.
+  This keeps a workflow's trust model equivalent to a CI pipeline definition:
+  it is code, but its only I/O is the metered bridge.
+- **Feed layer** — remote MCP targets (e.g. Exa) carry a `{{secret:...}}`
+  placeholder that the **SDK kernel** resolves from Secrets Manager at session
+  start, so the API key is never stored in the registry in plaintext. Feed
+  agents that exceed the 15-minute synchronous invoke ceiling run as
+  **AgentCore async tasks** (up to the 8-hour async ceiling), writing their
+  answer + a status sidecar to dated S3 artifacts.
+- **Scheduling** — a schedule whose target is `pipeline:{name}` is fired by the
+  EventBridge Scheduler Lambda. Because workflow scripts need Node (only the
+  backend container has it), the Lambda **delegates** pipeline runs to the
+  backend API, authenticating as the portal admin via the
+  `agent-platform/portal-admin` secret.
+- **Tracing** — each run emits a root → phase → agent span trace to X-Ray
+  (`PutTraceSegments`); with Transaction Search enabled it renders in the
+  CloudWatch Traces console. The Workflow portal page shows the same tree live.
+
 ### 5. Frontend portal (`frontend/`)
 
 React + Vite + Tailwind. Information architecture:
@@ -321,6 +350,7 @@ React + Vite + Tailwind. Information architecture:
 | Memory | ✅ live | AgentCore Memory stores, event browser, semantic record search |
 | Evaluation | ✅ live | datasets, LLM-judged runs with per-case verdicts |
 | Governance | ✅ live | usage policy editor, today's usage, audit log |
+| Workflow | 🧪 experimental | register Workflow-dialect pipeline scripts; phase→agent run tree (Phase 5) |
 
 ### 6. Infrastructure (`infrastructure/`, CDK Python)
 
@@ -342,10 +372,21 @@ a new runtime version automatically).
   isolation comes from AgentCore microVMs plus the VPC egress security group.
 - Pre-signed WSS URLs expire in 5 minutes and are minted per connect request by
   the backend; the container's IAM role cannot mint URLs.
-- Runtime IAM role follows least privilege: S3 workspace prefix, specific
-  secrets, ECR pull, CloudWatch Logs.
+- Runtime IAM role follows least privilege: S3 workspace bucket, three
+  specifically-named secrets, ECR pull, CloudWatch Logs, AgentCore
+  memory/built-in-tool data-plane actions. No `bedrock:*` at all in the default
+  LLM-gateway mode.
 - No secrets are baked into images; keys are read from Secrets Manager at
-  container start.
+  container/Lambda start.
+- The browser and end users hold **no AWS credentials** — all AWS access is
+  server-side under four IAM roles.
 - If your LLM gateway is HTTP-only, traffic from NAT → gateway crosses the
   network unencrypted; put a TLS listener or PrivateLink in front for
   production.
+
+For the full, code-verified account of every IAM principal — exact actions,
+resource scopes, conditions, the handful of wildcard-resource statements
+(and why each is unavoidable), what is deliberately *not* granted, deployer
+permissions, and how to tighten for a locked-down environment — see
+[**permissions.md**](permissions.md). That document is written specifically for
+a security team approving a controlled deployment.

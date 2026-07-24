@@ -34,7 +34,7 @@ supported as an alternative.
 ├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Channels, Memory, Observability, Eval, Governance
 ├── infrastructure/           # CDK (Python): VPC/NAT network, platform resources, AgentCore runtimes, portal hosting + scheduler engine
 ├── scripts/                  # Image build & deployment helpers
-└── docs/                     # Architecture, deployment and user guides
+└── docs/                     # Architecture, deployment, permissions, user guide
 ```
 
 **Ecosystem (Phase 2)**: the portal keeps a registry of **MCP servers** (hosted
@@ -152,6 +152,12 @@ on every API call). The web terminal grants a shell **inside the runtime
 container**; isolation relies on AgentCore microVM session isolation plus the
 VPC egress security group. Review [docs/architecture.md — Security notes](docs/architecture.md#security-notes)
 before exposing the portal beyond a demo audience.
+
+Deploying into a permission-controlled account? [**docs/permissions.md**](docs/permissions.md)
+is the code-verified IAM reference — every role's exact actions and resource
+scopes, the wildcard statements and why each is unavoidable, deployer
+permissions, and how to tighten for a locked-down environment. Written for a
+security team approving the deployment.
 
 ### Static-analysis suppressions
 
