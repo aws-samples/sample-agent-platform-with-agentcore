@@ -57,8 +57,9 @@ The platform hosts two kinds of agent kernels behind one control plane:
 
 This sketch shows the two kernel paths; the full picture — including the
 EventBridge Scheduler → Lambda firing engine, channel webhooks, AgentCore
-Memory and the data stores — is the animated diagram in the README
-(`docs/images/architecture.svg`).
+Memory, the data stores, and the AgentCore Gateway that turns existing
+enterprise APIs into MCP tools carrying the caller's own identity — is the
+animated diagram in the README (`docs/images/architecture.svg`).
 
 ## Components
 
