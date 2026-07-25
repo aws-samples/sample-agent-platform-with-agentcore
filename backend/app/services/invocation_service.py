@@ -16,6 +16,7 @@ import time
 import boto3
 
 from app.config import settings
+from app.context import IDENTITY_PLACEHOLDER, get_caller_token
 from app.services.agent_service import agent_service
 from app.services.ecosystem_service import ecosystem_service
 from app.services.governance_service import governance_service
@@ -23,6 +24,44 @@ from app.services.kernel_service import kernel_service
 from app.services.observability_service import observability_service
 
 logger = logging.getLogger(__name__)
+
+
+class IdentityRequired(Exception):
+    """An attached MCP server forwards the caller's identity, but this call
+    path has no end-user token (internal caller, or non-OIDC auth mode)."""
+
+
+def forward_identity(mcp_servers: list[dict]) -> list[dict]:
+    """Resolve ``{{user_token}}`` in attachment headers to the caller's token.
+
+    Attachments that authenticate the end user themselves (an AgentCore
+    Gateway with a JWT authorizer, for example) store only the placeholder;
+    the real token exists solely for the duration of this request. Everything
+    else is passed through untouched.
+    """
+    out: list[dict] = []
+    for server in mcp_servers:
+        headers = server.get("headers") or {}
+        if not any(IDENTITY_PLACEHOLDER in str(v) for v in headers.values()):
+            out.append(server)
+            continue
+        token = get_caller_token()
+        if not token:
+            raise IdentityRequired(
+                f"MCP server '{server.get('name')}' forwards the caller's identity, "
+                "which requires an end-user token (portal in OIDC mode). "
+                "Internal callers (scheduler, channels) cannot use it."
+            )
+        out.append(
+            {
+                **server,
+                "headers": {
+                    k: str(v).replace(IDENTITY_PLACEHOLDER, token)
+                    for k, v in headers.items()
+                },
+            }
+        )
+    return out
 
 
 def _resolve_target(
@@ -74,7 +113,7 @@ def invoke(
     # -------- resolve the target into kernel payload pieces --------
     cfg = _resolve_target(target, system, max_turns, memory_id, mcp_server_ids, skill_ids)
     label, system, memory_id = cfg["label"], cfg["system"], cfg["memory_id"]
-    mcp_servers, skills = cfg["mcp_servers"], cfg["skills"]
+    mcp_servers, skills = forward_identity(cfg["mcp_servers"]), cfg["skills"]
 
     # -------- governance: policy + quota (counts the call) --------
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
@@ -153,6 +192,7 @@ def invoke_async_and_wait(
     Returns ``{ok, output_key, usage, error, runtime_session_id}``.
     """
     cfg = _resolve_target(target, system, max_turns, "", None, None)
+    cfg["mcp_servers"] = forward_identity(cfg["mcp_servers"])
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
 
     s3 = boto3.client("s3", region_name=settings.aws_region)

@@ -6,6 +6,13 @@
     "anthropic_model": "",
     "anthropic_small_fast_model": "",
     "image_tag": "latest",
+    "claude_code_image_tag": "",
+    "sdk_image_tag": "",
+    "mcp_tools_image_tag": "",
+    "backend_image_tag": "",
+    "team_auth_image_tag": "",
+    "team_demo_image_tag": "",
+    "oidc_issuer": "",
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:checkSecretUsage": true
   }

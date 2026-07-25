@@ -16,6 +16,8 @@ from stacks.network_stack import NetworkStack
 from stacks.platform_stack import PlatformStack
 from stacks.portal_stack import PortalStack
 from stacks.runtime_stack import RuntimeStack
+from stacks.team_auth_stack import TeamAuthStack
+from stacks.team_demo_stack import TeamDemoStack
 
 app = cdk.App()
 
@@ -35,6 +37,22 @@ PortalStack(
     network=network,
     platform=platform,
     runtime=runtime,
+    env=env,
+)
+
+# Optional: enterprise-SSO auth chain demo (Keycloak IdP + team APIs, then a
+# JWT-inbound runtime). Deploy TeamAuth first, push its images, verify
+# Keycloak is up, then deploy TeamDemo and run scripts/deploy_team_gateway.py.
+team_auth = TeamAuthStack(
+    app, "AgentPlatformTeamAuth", network=network, platform=platform, env=env
+)
+TeamDemoStack(
+    app,
+    "AgentPlatformTeamDemo",
+    network=network,
+    platform=platform,
+    runtime=runtime,
+    team_auth=team_auth,
     env=env,
 )
 

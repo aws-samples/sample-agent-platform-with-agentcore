@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     scheduler_role_arn: str = ""
     scheduler_dlq_arn: str = ""
 
+    # Generic OIDC provider guarding the API (enterprise-SSO mode — e.g. the
+    # Keycloak realm from TeamAuthStack). Takes precedence over Cognito. The
+    # frontend runs authorization-code + PKCE against the issuer and sends the
+    # ACCESS token as the Bearer header, so IdP claims (team, groups) survive
+    # all the way into JWT-protected runtimes/gateways.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_audience: str = ""
+
     # Cognito user pool guarding the API (production mode). When set, every
     # /api request must carry a valid Cognito ID token as a Bearer header.
     cognito_pool_id: str = ""

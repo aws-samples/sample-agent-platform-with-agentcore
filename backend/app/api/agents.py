@@ -90,5 +90,7 @@ def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: str = Depends(get
         raise HTTPException(status_code=404, detail="Agent not found")
     except (QuotaExceeded, SourceDisabled) as e:
         raise HTTPException(status_code=429, detail=str(e))
+    except invocation_service.IdentityRequired as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Runtime invocation failed: {e}")

@@ -14,6 +14,7 @@ import EvalPage from '@/pages/EvalPage'
 import PipelinePage from '@/pages/PipelinePage'
 import ChannelsPage from '@/pages/ChannelsPage'
 import GovernancePage from '@/pages/GovernancePage'
+import GatewayPage from '@/pages/GatewayPage'
 import { getPublicConfig, getToken } from '@/services/auth'
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -60,6 +61,7 @@ export default function App() {
         <Route path="/eval" element={<EvalPage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/governance" element={<GovernancePage />} />
+        <Route path="/gateway" element={<GatewayPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

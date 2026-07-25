@@ -55,6 +55,11 @@ class McpServerCreateRequest(BaseModel):
     description: str = Field(default="", max_length=400)
     kind: str = Field(pattern="^(agentcore-runtime|url)$")
     target: str = Field(min_length=1, max_length=500)  # runtime ARN or URL
+    # Optional request headers for ``url`` servers. Values may reference
+    # {{secret:<name>}} (resolved inside the kernel) or {{user_token}} (the
+    # calling user's own bearer token, substituted per invocation) — a literal
+    # credential must never be stored here.
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class SkillCreateRequest(BaseModel):
@@ -70,6 +75,8 @@ class EcosystemEntry(BaseModel):
     description: str = ""
     kind: str = ""
     target: str = ""
+    # header names/placeholders only — see McpServerCreateRequest.headers
+    headers: dict[str, str] = Field(default_factory=dict)
     s3_prefix: str = ""
     builtin: bool = False
     created_at: str = ""

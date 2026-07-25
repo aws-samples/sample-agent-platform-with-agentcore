@@ -13,7 +13,8 @@ Payload contract::
         "max_turns": 10,
         "mcp_servers": [            // optional tools from the platform registry
             {"name": "platform-tools", "kind": "agentcore-runtime", "target": "arn:..."},
-            {"name": "ext", "kind": "url", "target": "https://..."},
+            {"name": "ext", "kind": "url", "target": "https://...",
+             "headers": {"Authorization": "Bearer ..."}},  // optional (e.g. user JWT for a gateway)
             {"name": "browser", "kind": "builtin", "target": "browser"}
         ],
         "memory": {                 // optional AgentCore Memory binding
@@ -161,7 +162,16 @@ def build_mcp_config(servers: list[dict]) -> dict:
             }
         elif kind == "url":
             try:
-                cfg[name] = {"type": "http", "url": resolve_secret_placeholders(target)}
+                entry: dict = {"type": "http", "url": resolve_secret_placeholders(target)}
+                # optional per-invocation headers — e.g. the caller's own
+                # OIDC access token as `Authorization` so a JWT-protected
+                # AgentCore Gateway sees the *end user's* identity
+                if isinstance(s.get("headers"), dict):
+                    entry["headers"] = {
+                        str(k): resolve_secret_placeholders(str(v))
+                        for k, v in s["headers"].items()
+                    }
+                cfg[name] = entry
             except Exception:
                 logger.exception("secret resolution failed for MCP %s — skipping it", name)
         elif kind == "builtin":

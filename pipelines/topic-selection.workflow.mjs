@@ -81,8 +81,12 @@ const scored = (await parallel(survivors.map((c) => () =>
 // harness 里执行,模型只出判断
 const isReal = (s) => s.verdict === 'keep' && s.nature !== 'PR' && s.sowhat_honest !== false
 const toInt = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0 }
-const keep = scored.filter(isReal).sort((a, b) => toInt(b.score) - toInt(a.score))
-const killed = scored.filter((s) => !isReal(s))
+const byScore = (a, b) => toInt(b.score) - toInt(a.score)
+// borderline = scorer 自报低置信度的边界条目,单独成节:判决照旧生效,
+// 但翻转风险暴露给用户(同一条目重跑可能翻,别当铁判决读)
+const keep = scored.filter((s) => isReal(s) && !s.borderline).sort(byScore)
+const borderline = scored.filter((s) => s.borderline).sort(byScore)
+const killed = scored.filter((s) => !isReal(s) && !s.borderline)
 
 // ---------- Phase 4 · 排序(纯代码)----------
 phase('排序')
@@ -102,6 +106,16 @@ keep.forEach((s, i) => {
   }
   lines.push('')
 })
+if (borderline.length) {
+  lines.push('## 边界区(低置信度,重跑可能翻转)', '')
+  lines.push('> scorer 自报拿不准的条目:本次判决照常给出,但同样输入重跑可能得到相反结论,拍板权在你。', '')
+  for (const s of borderline) {
+    const v = isReal(s) ? '本次判收' : '本次判杀'
+    lines.push(`- **${s.title}**(${v} · ${toInt(s.score)} 分)— ${s.borderline_why || '未说明'}`)
+    lines.push(`  说白了就是:${s.reduces_to || s.summary || ''}`)
+  }
+  lines.push('')
+}
 const discarded = dropped.filter((c) => c.dedup.status === 'discarded')
 lines.push('## 剔除记录(透明)', '')
 if (discarded.length) lines.push(`> 本期 ${discarded.length} 条命中废弃名单(用户主动不想做),已不再推荐。`, '')
@@ -132,6 +146,7 @@ return {
     discarded: discarded.length,
     keep: keep.length,
     kill: killed.length,
+    borderline: borderline.length,
   },
   shortlist_key: shortlistKey,
   shortlist_md: md.slice(0, 20000),

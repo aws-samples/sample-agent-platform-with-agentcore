@@ -1,0 +1,147 @@
+{
+  "realm": "agent-platform",
+  "enabled": true,
+  "displayName": "Agent Platform SSO",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 43200,
+  "ssoSessionMaxLifespan": 43200,
+  "groups": [
+    { "name": "team-a", "path": "/team-a" },
+    { "name": "team-b", "path": "/team-b" },
+    { "name": "team-c", "path": "/team-c" }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "TeamA",
+      "groups": ["/team-a"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.com",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "TeamB",
+      "groups": ["/team-b"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@example.com",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "TeamC",
+      "groups": ["/team-c"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "gateway-delegate",
+      "name": "AgentCore Gateway delegate (RFC 8693 token exchange)",
+      "description": "Confidential client AgentCore Identity uses to exchange the inbound user token for a fresh team-API token (OBO). The secret is set by scripts/seed_team_idp.py, never stored in this file.",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "team-membership",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "team",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "agent-platform-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "agent-platform",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "portal-web",
+      "name": "Agent Platform Portal",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "comment-redirectUris": "Local development only. Keycloak matches wildcards at the END of a URI, so a pattern like https://*.cloudfront.net/* does NOT work — scripts/seed_team_idp.py registers the deployed portal's real origin here.",
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://localhost:8000/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "protocolMappers": [
+        {
+          "name": "team-membership",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "team",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "agent-platform-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "agent-platform",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "gateway-delegate-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "gateway-delegate",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

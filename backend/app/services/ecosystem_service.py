@@ -81,7 +81,7 @@ class EcosystemService:
         )
         return resp.get("Items", [])
 
-    def _put_mcp(self, name, description, kind, target, builtin=False) -> dict:
+    def _put_mcp(self, name, description, kind, target, builtin=False, headers=None) -> dict:
         item = {
             "PK": PK,
             "SK": f"MCP#{uuid.uuid4().hex[:12]}",
@@ -89,6 +89,11 @@ class EcosystemService:
             "description": description,
             "kind": kind,  # agentcore-runtime | url | builtin
             "target": target,  # runtime ARN | http(s) URL
+            # optional request headers for ``url`` servers. Values may contain
+            # {{secret:name}} (resolved in the kernel) or {{user_token}}
+            # (resolved per invocation from the caller's own token) — no
+            # credential is ever stored here.
+            "headers": headers or {},
             "builtin": builtin,
             "created_at": _now(),
         }
@@ -123,6 +128,7 @@ class EcosystemService:
             "description": item.get("description", ""),
             "kind": item.get("kind", ""),
             "target": item.get("target", ""),
+            "headers": dict(item.get("headers") or {}),
             "s3_prefix": item.get("s3_prefix", ""),
             "builtin": bool(item.get("builtin")),
             "created_at": item.get("created_at", ""),
@@ -144,8 +150,10 @@ class EcosystemService:
             key=lambda x: x["created_at"],
         )
 
-    def create_mcp_server(self, name, description, kind, target) -> dict:
-        return self._to_public(self._put_mcp(name, description, kind, target))
+    def create_mcp_server(self, name, description, kind, target, headers=None) -> dict:
+        return self._to_public(
+            self._put_mcp(name, description, kind, target, headers=headers)
+        )
 
     def create_skill(self, name, description, skill_md) -> dict:
         return self._to_public(self._put_skill(name, description, skill_md))
@@ -170,7 +178,12 @@ class EcosystemService:
         skills = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("SKILL#")}
         return {
             "mcp_servers": [
-                {"name": mcp[i]["name"], "kind": mcp[i]["kind"], "target": mcp[i]["target"]}
+                {
+                    "name": mcp[i]["name"],
+                    "kind": mcp[i]["kind"],
+                    "target": mcp[i]["target"],
+                    **({"headers": mcp[i]["headers"]} if mcp[i].get("headers") else {}),
+                }
                 for i in mcp_server_ids
                 if i in mcp
             ],

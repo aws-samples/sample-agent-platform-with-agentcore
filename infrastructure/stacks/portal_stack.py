@@ -39,8 +39,21 @@ class PortalStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        image_tag = self.node.try_get_context("image_tag") or "latest"
+        # backend image can rev independently of the (pinned) kernel images
+        image_tag = (
+            self.node.try_get_context("backend_image_tag")
+            or self.node.try_get_context("image_tag")
+            or "latest"
+        )
         vpc = network.vpc
+
+        # Enterprise-SSO mode (TeamAuthStack): pass the Keycloak issuer via
+        # context and the backend verifies OIDC access tokens instead of
+        # Cognito ID tokens (the Cognito pool below still deploys, unused).
+        #   cdk deploy AgentPlatformPortal -c oidc_issuer=https://<cf>/realms/agent-platform
+        oidc_issuer = self.node.try_get_context("oidc_issuer") or ""
+        oidc_client_id = self.node.try_get_context("oidc_client_id") or "portal-web"
+        oidc_audience = self.node.try_get_context("oidc_audience") or "agent-platform"
 
         # ------------------------------- auth -----------------------------
         # Cognito user pool guarding the portal. Self-signup is disabled —
@@ -131,11 +144,36 @@ class PortalStack(Stack):
                 ],
             )
         )
+        # Team-auth demo: the backend reads the gateway/runtime wiring that
+        # scripts/deploy_team_gateway.py stores in SSM (read-only, demo-scoped).
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="TeamDemoParam",
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/agent-platform/team-gateway"
+                ],
+            )
+        )
         task_role.add_to_policy(
             iam.PolicyStatement(
                 sid="AgentCoreMemoryList",
                 # ListMemories is not resource-scoped
                 actions=["bedrock-agentcore:ListMemories"],
+                resources=["*"],
+            )
+        )
+        # The Gateway page reads gateway/target configuration (read-only: no
+        # Create/Update/Delete). ListGateways is not resource-scoped.
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="AgentCoreGatewayRead",
+                actions=[
+                    "bedrock-agentcore:ListGateways",
+                    "bedrock-agentcore:GetGateway",
+                    "bedrock-agentcore:ListGatewayTargets",
+                    "bedrock-agentcore:GetGatewayTarget",
+                ],
                 resources=["*"],
             )
         )
@@ -289,6 +327,15 @@ class PortalStack(Stack):
                 "PLATFORM_CORS_ORIGINS": "*",
                 "PLATFORM_COGNITO_POOL_ID": user_pool.user_pool_id,
                 "PLATFORM_COGNITO_CLIENT_ID": user_pool_client.user_pool_client_id,
+                **(
+                    {
+                        "PLATFORM_OIDC_ISSUER": oidc_issuer,
+                        "PLATFORM_OIDC_CLIENT_ID": oidc_client_id,
+                        "PLATFORM_OIDC_AUDIENCE": oidc_audience,
+                    }
+                    if oidc_issuer
+                    else {}
+                ),
                 # switches the scheduler into eventbridge mode
                 "PLATFORM_SCHEDULER_GROUP": schedule_group.name,
                 "PLATFORM_SCHEDULER_LAMBDA_ARN": runner_fn.function_arn,

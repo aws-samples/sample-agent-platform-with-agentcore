@@ -345,6 +345,7 @@ React + Vite + Tailwind. Information architecture:
 | Debug | ✅ live | invoke the raw kernel or any published agent, with memory binding |
 | Scheduler | ✅ live | recurring prompts (visual interval/cron builder) with run-now and pause |
 | MCP & Skills | ✅ live | ecosystem registry, session attachments, per-invoke MCP tools, AgentCore built-in tools (Code Interpreter + Browser) |
+| Gateway | ✅ live | read-only inventory of the account's AgentCore Gateways: inbound authorizer, interceptors, per-target outbound credential (and therefore [where authorization is decided](enterprise-sso.md#where-authorization-happens)), plus the catalog resolved with the caller's own token |
 | Channels | ✅ live | webhook endpoints with one-time tokens, curl snippets + an in-portal test dialog |
 | Observability | ✅ live | invocation ledger: stats tiles + per-call table |
 | Memory | ✅ live | AgentCore Memory stores, event browser, semantic record search |
@@ -358,8 +359,10 @@ React + Vite + Tailwind. Information architecture:
 |---|---|
 | `NetworkStack` | VPC, private/public subnets, NAT GW + EIP, egress SG |
 | `PlatformStack` | S3 workspace bucket, ECR repos, DynamoDB table, Secrets Manager placeholders |
-| `RuntimeStack` | `AWS::BedrockAgentCore::Runtime` (L1) × 2 kernels, execution role, VPC network config |
+| `RuntimeStack` | `AWS::BedrockAgentCore::Runtime` (L1) × 3 kernels (interactive, headless, MCP server), execution role, VPC network config. Image tags can be pinned per kernel (`claude_code_image_tag` / `sdk_image_tag` / `mcp_tools_image_tag`, falling back to `image_tag`) |
 | `PortalStack` | ECS Fargate backend + ALB + CloudFront + frontend S3 + Cognito user pool + scheduler engine (EventBridge Scheduler group, schedule-runner Lambda, SQS DLQ) — optional; backend can also run locally |
+| `TeamAuthStack` | **Optional** ([enterprise SSO](enterprise-sso.md)): Keycloak (OIDC IdP) + the team-scoped backend APIs behind one ALB + CloudFront |
+| `TeamDemoStack` | **Optional**: a second headless runtime with a **CUSTOM_JWT** inbound authorizer, so the user's own IdP token — not SigV4 — reaches the agent. The AgentCore Gateway, its credential providers and its interceptor are provisioned by `scripts/deploy_team_gateway.py` (API-only resources) |
 
 AgentCore runtimes are created through CloudFormation rather than
 `create-agent-runtime` CLI calls — CloudFormation is the reliable path in fresh
@@ -372,10 +375,11 @@ a new runtime version automatically).
   isolation comes from AgentCore microVMs plus the VPC egress security group.
 - Pre-signed WSS URLs expire in 5 minutes and are minted per connect request by
   the backend; the container's IAM role cannot mint URLs.
-- Runtime IAM role follows least privilege: S3 workspace bucket, three
-  specifically-named secrets, ECR pull, CloudWatch Logs, AgentCore
-  memory/built-in-tool data-plane actions. No `bedrock:*` at all in the default
-  LLM-gateway mode.
+- Runtime IAM role follows least privilege: S3 workspace bucket, two
+  specifically-named secrets (the LLM gateway key and `agent-platform/exa-api-key`
+  for `{{secret:…}}` placeholders in the registry), ECR pull, CloudWatch Logs,
+  AgentCore memory/built-in-tool data-plane actions. No `bedrock:*` at all in
+  the default LLM-gateway mode.
 - No secrets are baked into images; keys are read from Secrets Manager at
   container/Lambda start.
 - The browser and end users hold **no AWS credentials** — all AWS access is
@@ -383,6 +387,13 @@ a new runtime version automatically).
 - If your LLM gateway is HTTP-only, traffic from NAT → gateway crosses the
   network unencrypted; put a TLS listener or PrivateLink in front for
   production.
+
+- Portal authentication is pluggable: a Cognito user pool by default, or an
+  **external OIDC IdP** (`PLATFORM_OIDC_ISSUER`) when you want the enterprise
+  identity — including group / team claims — to travel past the portal into
+  runtimes and gateways. That option, and the two places authorization can be
+  enforced behind a gateway, are covered in
+  [enterprise-sso.md](enterprise-sso.md#where-authorization-happens).
 
 For the full, code-verified account of every IAM principal — exact actions,
 resource scopes, conditions, the handful of wildcard-resource statements
