@@ -92,6 +92,11 @@ class AgentService:
                     "name": mcp_by_name[n]["name"],
                     "kind": mcp_by_name[n]["kind"],
                     "target": mcp_by_name[n]["target"],
+                    **(
+                        {"headers": mcp_by_name[n]["headers"]}
+                        if mcp_by_name[n].get("headers")
+                        else {}
+                    ),
                 }
                 for n in mcp_names
             ],

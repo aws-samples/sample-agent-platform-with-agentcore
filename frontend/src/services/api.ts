@@ -20,6 +20,7 @@ export interface EcosystemEntry {
   description: string
   kind: string
   target: string
+  headers?: Record<string, string>
   s3_prefix: string
   builtin: boolean
   created_at: string
@@ -39,6 +40,51 @@ export interface Kernel {
   runtime_arn: string
   status: string
   available: boolean
+}
+
+export interface Identity {
+  user: string
+  teams: string[]
+  issuer: string
+  audience: string | string[]
+  subject: string
+}
+
+export interface GatewayTarget {
+  name: string
+  status: string
+  description: string
+  endpoint: string
+  credential_type: string
+  grant_type: string
+  enforcement: string
+}
+
+export interface GatewayInterceptor {
+  points: string[]
+  lambda_arn: string
+  pass_request_headers: boolean
+}
+
+export interface Gateway {
+  id: string
+  name: string
+  description: string
+  status: string
+  protocol: string
+  mcp_url: string
+  authorizer_type: string
+  discovery_url: string
+  allowed_audience: string[]
+  interceptors: GatewayInterceptor[]
+  targets: GatewayTarget[]
+}
+
+export interface GatewayTool {
+  name: string
+  target: string
+  description: string
+  enforcement: string
 }
 
 export interface InvokeResult {
@@ -253,7 +299,7 @@ export interface ArtifactContent {
   truncated: boolean
 }
 
-import { getToken, signOut } from './auth'
+import { clearLocalSession, getToken } from './auth'
 
 const BASE = ''
 
@@ -264,8 +310,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const resp = await fetch(`${BASE}${path}`, { ...init, headers })
   if (resp.status === 401) {
-    // Expired/invalid token — force a fresh sign-in
-    signOut()
+    // Expired/invalid token — force a fresh sign-in (the IdP session, if any,
+    // is left alone so re-authentication can be silent)
+    clearLocalSession()
     window.location.href = '/login'
     throw new Error('401 Unauthorized')
   }
@@ -399,6 +446,14 @@ export const api = {
     request<EcosystemEntry>('/api/v1/ecosystem/mcp-servers', { method: 'POST', body: JSON.stringify(body) }),
   deleteMcpServer: (id: string) =>
     request<{ ok: boolean }>(`/api/v1/ecosystem/mcp-servers/${id}`, { method: 'DELETE' }),
+  // Identity + gateways
+  getMe: () => request<Identity>('/api/v1/me'),
+  listGateways: () => request<Gateway[]>('/api/v1/gateways'),
+  listGatewayTools: (id: string) =>
+    request<{ gateway_id: string; mcp_url: string; tools: GatewayTool[] }>(
+      `/api/v1/gateways/${id}/tools`,
+    ),
+
   listSkills: () => request<EcosystemEntry[]>('/api/v1/ecosystem/skills'),
   createSkill: (body: { name: string; description: string; skill_md: string }) =>
     request<EcosystemEntry>('/api/v1/ecosystem/skills', { method: 'POST', body: JSON.stringify(body) }),

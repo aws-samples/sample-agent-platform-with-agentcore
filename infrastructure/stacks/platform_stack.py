@@ -45,6 +45,20 @@ class PlatformStack(Stack):
             for name in ["claude-code-kernel", "agent-sdk-kernel", "mcp-tools-kernel", "backend"]
         }
 
+        # Images for the optional team-auth demo (TeamAuthStack). Created here
+        # so the deploy order stays "create repos -> push images -> deploy the
+        # stack that runs them", same as the kernel images.
+        self.team_auth_repos = {
+            name: ecr.Repository(
+                self,
+                f"Repo{name.title().replace('-', '')}",
+                repository_name=f"agent-platform/{name}",
+                removal_policy=RemovalPolicy.DESTROY,
+                empty_on_delete=True,
+            )
+            for name in ["keycloak", "team-api"]
+        }
+
         # Placeholder — put your real gateway key with:
         #   aws secretsmanager put-secret-value --secret-id agent-platform/llm-gateway-key \
         #     --secret-string '{"api_key":"sk-..."}'

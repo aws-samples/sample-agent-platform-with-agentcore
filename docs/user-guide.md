@@ -14,13 +14,14 @@ provisioning the platform itself see the
 4. [Publish — ship an agent from your workspace](#publish)
 5. [Debug — invoke anything](#debug)
 6. [MCP & Skills — the tool registry](#mcp--skills)
-7. [Scheduler — recurring runs](#scheduler)
-8. [Channels — webhooks for external systems](#channels)
-9. [Memory — recall across sessions](#memory)
-10. [Observability — what ran, how it went](#observability)
-11. [Evaluation — score before rollout](#evaluation)
-12. [Governance — quotas and audit](#governance)
-13. [Calling the platform from code](#calling-the-platform-from-code)
+7. [Gateway — existing APIs as tools](#gateway)
+8. [Scheduler — recurring runs](#scheduler)
+9. [Channels — webhooks for external systems](#channels)
+10. [Memory — recall across sessions](#memory)
+11. [Observability — what ran, how it went](#observability)
+12. [Evaluation — score before rollout](#evaluation)
+13. [Governance — quotas and audit](#governance)
+14. [Calling the platform from code](#calling-the-platform-from-code)
 
 ---
 
@@ -32,6 +33,17 @@ you out automatically when the token expires.
 
 There is no self-signup — ask your operator to run `admin-create-user`
 (see [deployment guide](deployment.md#portal-sign-in-cognito)).
+
+If your deployment uses **enterprise SSO** instead
+([enterprise-sso.md](enterprise-sso.md)), the page offers a single *Sign in
+with corporate SSO* button and your IdP handles the credentials.
+
+**Who am I signed in as?** The bottom of the sidebar shows your username and,
+in SSO mode, the group claims the backend verified from your token — the same
+claims your agents carry when they call identity-aware tools. *Sign out* is
+there too. In SSO mode it ends the session **at your IdP as well**, so the
+next sign-in really asks who you are; without that step the IdP would silently
+hand back the same identity.
 
 ## Five concepts in sixty seconds
 
@@ -160,6 +172,31 @@ in manifests.
 Seeded entries (`platform-tools`, sample skills, built-in tools) are marked
 *built-in* and cannot be deleted. Adding your own is a form fill — no code,
 no rebuild.
+
+## Gateway
+
+Read-only inventory of the **AgentCore Gateways** in the account. A gateway
+fronts APIs your company already runs and exposes them as MCP tools, so an
+agent reaches them without any per-API integration code.
+
+Per gateway the page shows:
+
+- **Inbound auth** — how callers are authenticated (for a JWT gateway, the
+  IdP discovery URL and accepted audience).
+- **Interceptors** — the Lambda hooks that run on every request, if any.
+- **Targets** — each backend behind the gateway, its **outbound credential**,
+  and *where authorization is decided* for it. That last column is the one to
+  read: an outbound credential carrying your identity (OAuth token exchange)
+  means the backend decides; a static API key means the gateway's interceptor
+  decides, because the backend never learns who you are. See
+  [enterprise-sso.md](enterprise-sso.md#where-authorization-happens).
+- **Connectivity** — the tool catalog listed live with *your* token, so it is
+  the tool set an agent gets when **you** invoke it. Two people can see
+  different tools here.
+
+To actually run these tools, attach the gateway in MCP & Skills and invoke an
+agent (Debug, a channel, a schedule). The page deliberately has no
+tool-runner: the platform's rule is that tools are called by agents.
 
 ## Scheduler
 

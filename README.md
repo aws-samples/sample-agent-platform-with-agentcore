@@ -31,7 +31,7 @@ supported as an alternative.
 │   ├── agent-sdk-kernel/     # Headless kernel: Claude Agent SDK behind the AgentCore /invocations contract
 │   └── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
 ├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry
-├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Channels, Memory, Observability, Eval, Governance
+├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Gateway, Channels, Memory, Observability, Eval, Governance
 ├── infrastructure/           # CDK (Python): VPC/NAT network, platform resources, AgentCore runtimes, portal hosting + scheduler engine
 ├── scripts/                  # Image build & deployment helpers
 └── docs/                     # Architecture, deployment, permissions, user guide
@@ -152,6 +152,30 @@ on every API call). The web terminal grants a shell **inside the runtime
 container**; isolation relies on AgentCore microVM session isolation plus the
 VPC egress security group. Review [docs/architecture.md — Security notes](docs/architecture.md#security-notes)
 before exposing the portal beyond a demo audience.
+
+Need enterprise SSO instead of Cognito? The optional
+[**team-auth setup**](docs/enterprise-sso.md) swaps the portal onto an external
+OIDC IdP (Keycloak) and carries the IdP's team claim end to end — JWT-inbound
+runtime → AgentCore Gateway → team-scoped backend APIs — showing both
+enforcement models side by side:
+
+![Where authorization happens](docs/images/authorization-layers.svg)
+
+The gateway always **authenticates**; who **authorizes** depends on whether the
+outbound credential still carries the user's identity. A backend that can
+validate IdP tokens gets an OBO-exchanged token and enforces the team claim
+itself (authorization stays in your application code). A backend with no SSO
+support — the new internal API nobody has adapted yet — is covered by the
+gateway's Lambda REQUEST interceptor instead, with a static API key injected
+outbound. Both live on one gateway, per target:
+[where authorization happens](docs/enterprise-sso.md#where-authorization-happens).
+
+That identity then flows through the *ordinary* platform: a gateway is
+registered as one MCP server whose header holds a `{{user_token}}`
+placeholder, so any agent it is attached to carries the caller's own identity
+— the same published agent returns different results per signed-in user, and
+the **Gateway** page shows, per target, where authorization is decided. Two
+E2E suites cover it (20 + 15 checks).
 
 Deploying into a permission-controlled account? [**docs/permissions.md**](docs/permissions.md)
 is the code-verified IAM reference — every role's exact actions and resource

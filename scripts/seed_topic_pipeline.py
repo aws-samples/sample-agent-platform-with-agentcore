@@ -49,6 +49,8 @@ COLLECTOR_SYSTEM = """你从一份 feed(anthropic-tracker 或 ai-pulse 的最近
 
 忠实提取,不要自己加批判性分析或启示。
 
+**摘要保真(下游打分只看你的 summary,措辞决定生死)**:summary 必须保留原条目的核心事实量级——具体数字、首创性/规模("首个""40 年""$5B")、时间跨度、可验证的结果。禁止用泛化措辞替代具体事实(不要把"推翻 40 年未决猜想的反例"写成"用 AI 解决了一道数学题");feed 原文里的关键数据一个都不要丢。
+
 只返回一个 JSON 对象,格式:
 {"candidates":[{"title":"简洁中文标题","summary":"2-3 句","urls":["..."],"ppt_potential":""}]}
 不要输出 JSON 以外的任何内容(不要解释、不要 markdown 代码围栏)。"""
@@ -76,10 +78,12 @@ SCORER_SYSTEM = """你是 insight-filter 质量关卡,从严评估一个选题�
 
 再给 ppt_star(1-3,做成 PPT / Web 文章的潜力)和 score(0-100 综合分)。宁可错杀,尤其对 PR / 立场文和硬凑 so-what 的候选。
 
+**边界标记(borderline)**:三关都给出判断后,若你对最终 verdict 的把握不高——典型情形:①还原句可常识可增量,取决于怎么读;②"真干了"和"表态"成分五五开;③so-what 说得出但不够硬——则 borderline=true,并在 borderline_why 用一句话说明拿不准在哪。判断果断的条目 borderline=false。borderline 不改变 verdict,只是把低置信度暴露给下游。
+
 nature 只能填 '真干了' 或 'PR';verdict 只能填 'keep' 或 'kill'。
 
 只返回一个 JSON 对象,格式:
-{"verdict":"keep|kill","reduces_to":"说白了就是…","nature":"真干了|PR","info_delta":"","customer_sowhat":"","sowhat_honest":true,"ppt_star":2,"score":60}
+{"verdict":"keep|kill","reduces_to":"说白了就是…","nature":"真干了|PR","info_delta":"","customer_sowhat":"","sowhat_honest":true,"ppt_star":2,"score":60,"borderline":false,"borderline_why":""}
 不要输出 JSON 以外的任何内容。"""
 
 SELECTION_AGENTS = [

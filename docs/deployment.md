@@ -243,6 +243,22 @@ they need `s3:PutObject` on the workspace bucket and `dynamodb:PutItem` on the
 `agent-platform` table. The Workflow page (marked Experimental) then shows the
 registered pipelines and their phase→agent run tree.
 
+## 8. (Optional) Enterprise SSO auth chain — team-auth demo
+
+Rebuild the auth layer around an external OIDC IdP (Keycloak) and demonstrate
+IdP-issued team membership enforced by the backend APIs themselves, end to
+end through a JWT-inbound runtime and an AgentCore Gateway with on-behalf-of
+token exchange — plus a backend with no SSO support, authorized by a gateway
+interceptor instead. The gateway then becomes a normal registry entry that
+forwards the caller's identity, so ordinary Debug / published-agent calls
+differ per signed-in user. Full runbook, acceptance suites and operational
+notes: [**enterprise-sso.md**](enterprise-sso.md).
+
+Kernel images can be pinned individually (`claude_code_image_tag`,
+`sdk_image_tag`, `mcp_tools_image_tag`), falling back to `image_tag`. Identity
+forwarding needs a headless-kernel build that supports per-attachment MCP
+headers.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

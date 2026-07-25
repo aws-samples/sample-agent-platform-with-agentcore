@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -10,12 +11,14 @@ import {
   Database,
   FlaskConical,
   Shield,
+  KeyRound,
   Cloud,
   LogOut,
   Webhook,
   Workflow,
 } from 'lucide-react'
 import { getUser, signOut } from '@/services/auth'
+import { api, type Identity } from '@/services/api'
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -24,6 +27,7 @@ const NAV = [
   { to: '/debug', label: 'Debug', icon: MessagesSquare },
   { to: '/scheduler', label: 'Scheduler', icon: ListTodo },
   { to: '/ecosystem', label: 'MCP & Skills', icon: Boxes },
+  { to: '/gateway', label: 'Gateway', icon: KeyRound },
   { to: '/channels', label: 'Channels', icon: Webhook },
   { to: '/observability', label: 'Observability', icon: Activity },
   { to: '/memory', label: 'Memory', icon: Database },
@@ -34,11 +38,21 @@ const NAV = [
 
 export default function AppShell() {
   const navigate = useNavigate()
-  const user = getUser()
+  const [identity, setIdentity] = useState<Identity | null>(null)
+  // localStorage name is available immediately; /me adds the claims the
+  // backend actually verified (team membership above all), which is what
+  // every identity-aware attachment will carry.
+  const user = identity?.user || getUser() || ''
 
-  const handleSignOut = () => {
-    signOut()
-    navigate('/login', { replace: true })
+  useEffect(() => {
+    api.getMe().then(setIdentity).catch(() => {})
+  }, [])
+
+  const handleSignOut = async () => {
+    // In OIDC mode this leaves for the IdP to end its session too; only the
+    // local-only case needs us to route to /login ourselves.
+    const redirecting = await signOut()
+    if (!redirecting) navigate('/login', { replace: true })
   }
 
   return (
@@ -75,20 +89,44 @@ export default function AppShell() {
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-slate-100 px-5 py-4">
+        <div className="border-t border-slate-100 px-3 py-3">
           {user && (
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="truncate text-xs text-slate-500">{user}</span>
+            <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold uppercase text-brand-700">
+                  {user.slice(0, 1)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium leading-tight text-slate-900" title={user}>
+                    {user}
+                  </p>
+                  <p className="text-[11px] leading-tight text-slate-400">
+                    {identity?.issuer ? 'signed in via SSO' : 'signed in'}
+                  </p>
+                </div>
+              </div>
+              {identity && identity.teams.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {identity.teams.map((team) => (
+                    <span
+                      key={team}
+                      className="rounded bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-600 ring-1 ring-slate-200"
+                      title="Group membership from your IdP token — carried to every identity-aware attachment"
+                    >
+                      {team}
+                    </span>
+                  ))}
+                </div>
+              )}
               <button
-                className="flex items-center gap-1 text-xs text-slate-400 transition hover:text-red-600"
+                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white py-1.5 text-xs text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
                 onClick={handleSignOut}
-                title="Sign out"
               >
-                <LogOut size={12} /> Sign out
+                <LogOut size={13} /> Sign out
               </button>
             </div>
           )}
-          <p className="text-[11px] text-slate-400">Sample · MIT-0</p>
+          <p className="px-2 text-[11px] text-slate-400">Sample · MIT-0</p>
         </div>
       </aside>
       <main className="min-w-0 flex-1">

@@ -21,7 +21,7 @@ def list_mcp_servers(user: str = Depends(get_current_user)):
 @router.post("/mcp-servers", response_model=EcosystemEntry)
 def create_mcp_server(req: McpServerCreateRequest, user: str = Depends(get_current_user)):
     return ecosystem_service.create_mcp_server(
-        req.name, req.description, req.kind, req.target
+        req.name, req.description, req.kind, req.target, headers=req.headers
     )
 
 

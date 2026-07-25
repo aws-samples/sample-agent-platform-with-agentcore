@@ -34,6 +34,13 @@ class RuntimeStack(Stack):
         # -------- configuration (cdk.json context or -c overrides) --------
         ctx = self.node.try_get_context
         image_tag = ctx("image_tag") or "latest"
+        # each kernel can pin its own build (they evolve independently);
+        # image_tag remains the shared default
+        kernel_tag = {
+            "claude-code-kernel": ctx("claude_code_image_tag") or image_tag,
+            "agent-sdk-kernel": ctx("sdk_image_tag") or image_tag,
+            "mcp-tools-kernel": ctx("mcp_tools_image_tag") or image_tag,
+        }
         llm_gateway_url = ctx("llm_gateway_url") or ""
         use_bedrock = str(ctx("use_bedrock") or ("" if llm_gateway_url else "1"))
         anthropic_model = ctx("anthropic_model") or ""
@@ -125,7 +132,7 @@ class RuntimeStack(Stack):
             description="Interactive Claude Code kernel with browser web terminal",
             agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
                 container_configuration=agentcore.CfnRuntime.ContainerConfigurationProperty(
-                    container_uri=f"{platform.kernel_repos['claude-code-kernel'].repository_uri}:{image_tag}"
+                    container_uri=f"{platform.kernel_repos['claude-code-kernel'].repository_uri}:{kernel_tag['claude-code-kernel']}"
                 )
             ),
             role_arn=role.role_arn,
@@ -146,7 +153,7 @@ class RuntimeStack(Stack):
             description="Headless Claude Agent SDK kernel behind the /invocations contract",
             agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
                 container_configuration=agentcore.CfnRuntime.ContainerConfigurationProperty(
-                    container_uri=f"{platform.kernel_repos['agent-sdk-kernel'].repository_uri}:{image_tag}"
+                    container_uri=f"{platform.kernel_repos['agent-sdk-kernel'].repository_uri}:{kernel_tag['agent-sdk-kernel']}"
                 )
             ),
             role_arn=role.role_arn,
@@ -165,7 +172,7 @@ class RuntimeStack(Stack):
             description="Demo MCP server (mock internal tools) hosted on AgentCore",
             agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
                 container_configuration=agentcore.CfnRuntime.ContainerConfigurationProperty(
-                    container_uri=f"{platform.kernel_repos['mcp-tools-kernel'].repository_uri}:{image_tag}"
+                    container_uri=f"{platform.kernel_repos['mcp-tools-kernel'].repository_uri}:{kernel_tag['mcp-tools-kernel']}"
                 )
             ),
             role_arn=role.role_arn,
@@ -239,6 +246,9 @@ class RuntimeStack(Stack):
         self.interactive_runtime_arn = interactive.attr_agent_runtime_arn
         self.sdk_runtime_arn = sdk.attr_agent_runtime_arn
         self.mcp_tools_runtime_arn = mcp_tools.attr_agent_runtime_arn
+        # exposed for TeamDemoStack: its JWT-inbound kernel runs the same
+        # image with the same AWS needs, so it shares this role
+        self.execution_role = role
 
         CfnOutput(self, "InteractiveRuntimeArn", value=self.interactive_runtime_arn)
         CfnOutput(self, "SdkRuntimeArn", value=self.sdk_runtime_arn)

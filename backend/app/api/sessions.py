@@ -11,6 +11,7 @@ from app.models.schemas import (
     SessionCreateRequest,
     SessionResponse,
 )
+from app.services import invocation_service
 from app.services.audit_service import audit_service
 from app.services.ecosystem_service import ecosystem_service
 from app.services.session_service import session_service
@@ -43,7 +44,12 @@ def _session_config(item: dict) -> dict | None:
     ids_s = list(item.get("skill_ids", []))
     if not ids_m and not ids_s:
         return None
-    return ecosystem_service.resolve_session_config(ids_m, ids_s)
+    cfg = ecosystem_service.resolve_session_config(ids_m, ids_s)
+    # Identity-forwarding attachments get the caller's token resolved at
+    # warmup. Note the token has the IdP's normal lifetime — a workspace that
+    # outlives it must be restarted to pick up a fresh one.
+    cfg["mcp_servers"] = invocation_service.forward_identity(cfg["mcp_servers"])
+    return cfg
 
 
 @router.post("", response_model=SessionResponse)
