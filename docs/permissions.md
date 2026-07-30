@@ -18,7 +18,7 @@ stacks template these automatically.
 ## Contents
 
 1. [Principals at a glance](#1-principals-at-a-glance)
-2. [Runtime execution role](#2-runtime-execution-role)
+2. [Runtime execution roles](#2-runtime-execution-roles)
 3. [Backend (ECS task) role](#3-backend-ecs-task-role)
 4. [Wildcard resource statements](#4-wildcard-resource-statements)
 5. [Scheduler engine roles](#5-scheduler-engine-roles-lambda--eventbridge)
@@ -32,15 +32,20 @@ stacks template these automatically.
 
 ## 1. Principals at a glance
 
-The platform runs under four IAM principals. Three are execution roles for
-compute; one is a service role EventBridge Scheduler assumes.
+The platform runs under seven IAM principals: one execution role **per
+kernel** (so each container holds only what its code calls), a per-session
+workspace-access role the backend assumes, the backend/Lambda execution
+roles, and a service role EventBridge Scheduler assumes.
 
 | # | Principal | Created in | Assumed by | Purpose |
 |---|---|---|---|---|
-| 1 | **`agent-platform-runtime-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The IAM identity *inside* every kernel container (interactive, headless, MCP). Everything an agent does at runtime uses this role. |
-| 2 | **Backend task role** (`PortalStack/TaskRole`) | `PortalStack` | `ecs-tasks.amazonaws.com` | The control-plane API on ECS Fargate: session routing, invoking runtimes, memory/scheduler/eval management. |
-| 3 | **Schedule-runner Lambda role** (`PortalStack/ScheduleRunner`) | `PortalStack` | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
-| 4 | **Scheduler role** (`PortalStack/SchedulerRole`) | `PortalStack` | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
+| 1 | **`agent-platform-interactive-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The identity inside the interactive (Dev Workbench) kernel. **No `workspaces/*` access** — workspace sync uses per-session credentials (#4). |
+| 2 | **`agent-platform-sdk-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The identity inside the headless kernel — the one that executes published agents and externally supplied prompts. **No workspace access at all.** |
+| 3 | **`agent-platform-mcp-tools-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The demo MCP server. ECR pull + logs only — **no S3, no secrets, no data-plane actions**. |
+| 4 | **`agent-platform-workspace-access`** | `RuntimeStack` | The account (in practice: only the backend task role holds `sts:AssumeRole` on it) | The **only** principal that can touch `workspaces/*`. The backend assumes it per session with an inline session policy narrowing to `workspaces/{sessionId}/*` and hands the 1h credentials to that session's container. |
+| 5 | **Backend task role** (`PortalStack/TaskRole`) | `PortalStack` | `ecs-tasks.amazonaws.com` | The control-plane API on ECS Fargate: session routing, invoking runtimes, memory/scheduler/eval management, minting workspace credentials. |
+| 6 | **Schedule-runner Lambda role** (`PortalStack/ScheduleRunner`) | `PortalStack` | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
+| 7 | **Scheduler role** (`PortalStack/SchedulerRole`) | `PortalStack` | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
 
 The single most important property for a security review: **the browser and
 end users never hold AWS credentials.** All AWS access is server-side under
@@ -50,38 +55,73 @@ container's own role cannot mint such URLs.
 
 ---
 
-## 2. Runtime execution role
+## 2. Runtime execution roles
 
-`agent-platform-runtime-role` — shared by all three kernel runtimes
-(`claude_code_kernel`, `agent_sdk_kernel`, `mcp_tools_kernel`). This is the role
-a security team should scrutinize most, because it is the identity an agent's
-own code (and any tool it runs) executes under.
+One role **per kernel runtime**, each holding only what that kernel's code
+actually calls. These are the roles a security team should scrutinize most,
+because they are the identities an agent's own code (and any tool it runs)
+executes under — and anything inside a microVM can read its container role's
+credentials from the metadata endpoint.
 
-**Trust policy:** assumed only by `bedrock-agentcore.amazonaws.com`.
+**Trust policy (all three):** assumed only by `bedrock-agentcore.amazonaws.com`.
+
+Statements common to the agent kernels (#1 interactive, #2 sdk); the MCP
+tools role (#3) carries **only** the first three rows:
 
 | Sid | Actions | Resource scope | Why |
 |---|---|---|---|
 | *(ECR pull, granted by `repo.grant_pull`)* | `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:BatchCheckLayerAvailability` | The four `agent-platform/*` ECR repos only | Pull the kernel image at container start. |
 | `EcrAuth` | `ecr:GetAuthorizationToken` | `*` | Token endpoint is not resource-scopable (AWS API constraint). See [§4](#4-wildcard-resource-statements). |
 | `Logs` | `logs:CreateLogGroup`, `CreateLogStream`, `PutLogEvents`, `DescribeLogGroups`, `DescribeLogStreams` | `arn:aws:logs:{region}:{account}:log-group:/aws/bedrock-agentcore/*` | Kernel + AgentCore runtime logs. Scoped to the AgentCore log-group prefix. |
-| *(S3 workspace, `grant_read_write`)* | `s3:GetObject`, `PutObject`, `DeleteObject`, `GetBucket*`, `List*`, `Abort*` | `agent-platform-workspaces-{account}-{region}` bucket **and its objects only** | Per-session workspace + Claude Code state sync (`workspaces/{sessionId}/`), skill packages (`skills/`), and pipeline feed artifacts. |
+| `Skills` / `SkillsList` | `s3:GetObject`; `s3:ListBucket` conditioned on `s3:prefix` | `skills/*` in the workspace bucket only | Mount skill packages before the agent starts. Read-only. |
 | *(LLM gateway secret, `grant_read`)* | `secretsmanager:GetSecretValue`, `DescribeSecret` | `agent-platform/llm-gateway-key-*` only | Read the gateway API key at container start (never baked into the image). |
-| `McpSecrets` | `secretsmanager:GetSecretValue` | `agent-platform/exa-api-key-*` only | **(Phase 5)** Resolve `{{secret:...}}` placeholders in remote-MCP registry targets (e.g. the Exa API key) at session start, so the key is never stored in the registry in plaintext. |
 | `InvokeMcpRuntimes` | `bedrock-agentcore:InvokeAgentRuntime` | `runtime/mcp_tools_kernel-*` and its `runtime-endpoint/*` only | Kernels reach the AgentCore-hosted MCP server through `mcp-proxy-for-aws`, which SigV4-signs with this role. Scoped to the MCP runtime name — **not** all runtimes. |
 | `BuiltinTools` | `bedrock-agentcore:StartCodeInterpreterSession`, `InvokeCodeInterpreter`, `StopCodeInterpreterSession`, `GetCodeInterpreterSession`, `StartBrowserSession`, `StopBrowserSession`, `GetBrowserSession`, `UpdateBrowserStream`, `ConnectBrowserAutomationStream`, `ConnectBrowserLiveViewStream` | `code-interpreter/aws.codeinterpreter.v1`, `browser/aws.browser.v1` (AWS-managed), plus `{account}:code-interpreter/*` and `{account}:browser/*` (custom variants) | Code Interpreter and Browser built-in tools run in AWS-managed sandboxes under this role — no separate tool runtime to deploy. |
-| `MemoryData` | `bedrock-agentcore:CreateEvent`, `GetEvent`, `ListEvents`, `ListActors`, `ListSessions`, `GetMemoryRecord`, `ListMemoryRecords`, `RetrieveMemoryRecords` | `memory/*` in this account/region | **Data plane only.** A memory-bound kernel retrieves long-term records before a run and appends the exchange as an event after. It **cannot** create, update, or delete memory stores — that is the backend's job (control plane). |
-| `BedrockInvoke` *(only when `use_bedrock=1`)* | `bedrock:InvokeModel`, `InvokeModelWithResponseStream` | `*` | Direct-Bedrock mode only. Cross-region inference profiles span regions, so this cannot be region-pinned. **Not present** in the default LLM-gateway mode. See [§4](#4-wildcard-resource-statements). |
+| `BedrockInvoke` | `bedrock:InvokeModel`, `InvokeModelWithResponseStream` | `*` | The model control plane (Governance → Model backends) can route any agent to Bedrock per invocation. Cross-region inference profiles span regions, so this cannot be region-pinned. See [§4](#4-wildcard-resource-statements). |
+
+Role-specific statements:
+
+| Role | Sid | Actions | Resource scope | Why |
+|---|---|---|---|---|
+| **sdk** only | `AsyncArtifacts` / `AsyncArtifactsList` | `s3:GetObject`, `PutObject`, `AbortMultipartUpload`; `ListBucket` prefix-conditioned | `feeds/*`, `topic-selection/*` in the workspace bucket | Async task outputs + pipeline feed artifacts. The headless kernel has **no other S3 write path** and no `workspaces/*` access at all. |
+| **sdk** only | `McpSecrets` | `secretsmanager:GetSecretValue` | `agent-platform/exa-api-key-*` only | **(Phase 5)** Resolve `{{secret:...}}` placeholders in remote-MCP registry targets at session start (only the SDK kernel implements the placeholder). |
+| **sdk** only | `MemoryData` | `bedrock-agentcore:CreateEvent`, `GetEvent`, `ListEvents`, `ListActors`, `ListSessions`, `GetMemoryRecord`, `ListMemoryRecords`, `RetrieveMemoryRecords` | `memory/*` in this account/region | **Data plane only.** Memory-bound invocations run on the headless kernel: it retrieves long-term records before a run and appends the exchange after. It **cannot** create, update, or delete memory stores — that is the backend's job (control plane). |
+
+### The workspace-access role (per-session S3 credentials)
+
+Neither kernel role can touch `workspaces/*`. The only principal that can is
+`agent-platform-workspace-access`, and it is never given to a container as
+its execution role. Instead:
+
+1. The backend (which owns the session↔user mapping) calls `sts:AssumeRole`
+   on it at session connect, attaching an **inline session policy** that
+   narrows S3 to `workspaces/{runtimeSessionId}/*` (object actions) plus a
+   prefix-conditioned `ListBucket`. A session policy can only *narrow* — even
+   a backend bug can never grant beyond the role's own `workspaces/*` bound.
+2. The resulting credentials (1 hour — the role-chaining cap) ride the warmup
+   payload to that session's container, which writes them to a dedicated AWS
+   profile file used **only** by the workspace-sync `aws s3` calls; the
+   container's default credential chain stays on the execution role.
+3. A per-session refresh token (also delivered in the warmup payload, stored
+   on the session record, constant-time compared — the same pattern as
+   channel tokens) lets the container renew the credentials through
+   `POST /api/v1/sessions/workspace-credentials` for syncs beyond the first
+   hour.
+
+Net effect: code inside a session's microVM that reads the metadata endpoint
+gets a role with **no workspace permissions**; the only S3 credential it
+holds is pinned to its own session prefix and expires hourly.
 
 Notes for reviewers:
 
-- In the **default (LLM-gateway) mode**, the runtime role has **no `bedrock:*`
-  permission at all** — models are reached over HTTPS through your gateway, not
-  the Bedrock API. The `BedrockInvoke` statement is added *only* if you deploy
-  with `-c use_bedrock=1`.
-- The workspace S3 grant is bucket-scoped, but a session's role can read *any*
-  session's prefix within that bucket (there is no per-session prefix
-  condition). If cross-session isolation of workspace files is a requirement,
-  see [§10](#10-tightening-for-a-locked-down-environment).
+- The `BedrockInvoke` statement is unconditional on both agent kernels
+  because the Governance → Model backends control plane routes per published
+  agent at invocation time; a deployment that disables the Bedrock backend in
+  that control plane can also delete the statement (see
+  [§10](#10-tightening-for-a-locked-down-environment)).
+- Cross-session workspace isolation is enforced by the session policy in the
+  credential-minting path above — it no longer depends on trusting code
+  inside the container.
 
 ---
 
@@ -93,7 +133,8 @@ by `ecs-tasks.amazonaws.com`.
 | Sid | Actions | Resource scope | Why |
 |---|---|---|---|
 | *(DynamoDB, `grant_read_write_data`)* | `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `Scan`, `BatchGet*`, `BatchWrite*`, `ConditionCheckItem`, `DescribeTable` | The `agent-platform` table (+ its indexes) only | Single-table store: sessions, published agents, ecosystem registry, schedules, channels, eval runs, invocation ledger, governance policy, audit log. |
-| *(S3 workspace, `grant_read_write`)* | as runtime role above | `agent-platform-workspaces-*` bucket + objects only | Browse session artifacts (read) and write skill packages / self-service publish manifests / pipeline outputs. |
+| *(S3 workspace, `grant_read_write`)* | full S3 object actions | `agent-platform-workspaces-*` bucket + objects only | Browse session artifacts (read) and write skill packages / self-service publish manifests / pipeline outputs. The backend is trusted platform code (not agent-reachable), so it keeps the bucket-wide grant the kernels no longer have. |
+| `AssumeWorkspaceAccess` | `sts:AssumeRole` | The `agent-platform-workspace-access` role ARN only | Mint per-session workspace credentials (see [§2](#2-runtime-execution-roles)): assume with an inline session policy narrowed to `workspaces/{sessionId}/*` and deliver to that session's container. |
 | `AgentCoreInvoke` | `bedrock-agentcore:InvokeAgentRuntime`, `InvokeAgentRuntimeWithWebSocketStream`, `GetAgentRuntime`, `GetAgentRuntimeEndpoint` | `runtime/*` in this account/region | Warmup + invoke kernels; the WebSocket action is required to pre-sign the terminal `/ws` URL. Scoped to runtimes in this account/region. |
 | `AgentCoreMemory` | `bedrock-agentcore:CreateMemory`, `GetMemory`, `UpdateMemory`, `DeleteMemory`, `GetEvent`, `ListEvents`, `ListActors`, `ListSessions`, `GetMemoryRecord`, `ListMemoryRecords`, `RetrieveMemoryRecords` | `memory/*` in this account/region | Memory page: full control plane (create/update/delete stores) + data-plane browsing. |
 | `AgentCoreMemoryList` | `bedrock-agentcore:ListMemories` | `*` | `ListMemories` is not resource-scopable (AWS API constraint). See [§4](#4-wildcard-resource-statements). |
@@ -187,9 +228,12 @@ Negative space matters as much as the grants. None of the platform roles can:
   is write-only.
 - **Manage networking** (VPC, security groups, route tables, EIPs) at runtime.
   Those are created once by the CDK deployer, not by any running role.
-- **Invoke arbitrary runtimes from inside a kernel.** The runtime role's only
+- **Invoke arbitrary runtimes from inside a kernel.** The kernel roles' only
   `InvokeAgentRuntime` grant is scoped to the MCP tools runtime name — a kernel
   cannot invoke the backend's targets or other kernels.
+- **Read another session's workspace from inside a container.** No kernel role
+  carries `workspaces/*`; the only workspace credential a container holds is
+  session-policy-pinned to its own prefix (see [§2](#2-runtime-execution-roles)).
 - **Reach the internet outside the VPC egress path.** All runtime egress leaves
   through the single NAT Gateway EIP; there is no public IP on the runtime ENIs.
 
@@ -302,12 +346,13 @@ Concrete changes for a customer whose security bar is stricter than a
 demo's. Each is a small, local edit — the platform is built to be forked
 (see [EXTENDING.md](../EXTENDING.md)).
 
-1. **Per-session workspace isolation.** Today any session's runtime role can
-   read any prefix in the workspace bucket. If sessions must not read each
-   other's files, split the runtime role per session or add an
-   `s3:prefix`/`aws:PrincipalTag` condition keyed to the session ID. (This
-   requires session-scoped roles or ABAC — a non-trivial change; scope it with
-   the customer.)
+1. **Per-session workspace isolation — already implemented.** Kernel roles
+   hold no `workspaces/*` permission; the backend mints per-session STS
+   credentials through `agent-platform-workspace-access` with a
+   prefix-narrowing session policy (see [§2](#2-runtime-execution-roles)).
+   Nothing to tighten here beyond reviewing that role's trust policy if your
+   account hosts other principals with `sts:AssumeRole` on `agent-platform-*`
+   role names.
 2. **Customer-managed KMS keys.** Swap `BucketEncryption.S3_MANAGED` and the
    DynamoDB default key for a CMK, and add `kms:Decrypt`/`GenerateDataKey`
    (scoped to that key ARN) to the roles that touch the store. Gives you a key

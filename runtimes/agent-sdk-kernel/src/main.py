@@ -22,6 +22,13 @@ Payload contract::
         },
         "async": {                  // optional: run as an AgentCore async task
             "bucket": "…", "key": "feeds/ai-pulse/2026-07-23.md"
+        },
+        "model": {                  // optional: per-invocation model routing
+            "backend": "bedrock" | "gateway",
+            "model": "global.anthropic.claude-… | gateway alias",
+            "base_url": "https://…",        // gateway only
+            "secret_name": "agent-platform/llm-gateway-key",  // gateway only
+            "small_fast_model": "…"         // background/haiku-class calls
         }
     }
 
@@ -105,6 +112,23 @@ resolve_model_env()
 _SECRET_CACHE: dict[str, str] = {}
 
 
+def _secret_value(name: str) -> str:
+    """Fetch a Secrets Manager secret (cached per process). Accepts either a
+    raw string or ``{"api_key": "..."}`` JSON."""
+    if name not in _SECRET_CACHE:
+        sm = boto3.client(
+            "secretsmanager", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        )
+        raw = sm.get_secret_value(SecretId=name)["SecretString"]
+        try:
+            parsed = json.loads(raw)
+            raw = parsed.get("api_key", raw) if isinstance(parsed, dict) else raw
+        except (json.JSONDecodeError, ValueError):
+            pass
+        _SECRET_CACHE[name] = raw
+    return _SECRET_CACHE[name]
+
+
 def resolve_secret_placeholders(target: str) -> str:
     """Replace ``{{secret:NAME}}`` tokens in a URL target with values from
     Secrets Manager (cached per process).
@@ -117,21 +141,62 @@ def resolve_secret_placeholders(target: str) -> str:
     import re
 
     def _lookup(match: re.Match) -> str:
-        name = match.group(1)
-        if name not in _SECRET_CACHE:
-            sm = boto3.client(
-                "secretsmanager", region_name=os.environ.get("AWS_REGION", "us-east-1")
-            )
-            raw = sm.get_secret_value(SecretId=name)["SecretString"]
-            try:  # allow either a raw string or {"api_key": "..."} JSON
-                parsed = json.loads(raw)
-                raw = parsed.get("api_key", raw) if isinstance(parsed, dict) else raw
-            except (json.JSONDecodeError, ValueError):
-                pass
-            _SECRET_CACHE[name] = raw
-        return _SECRET_CACHE[name]
+        return _secret_value(match.group(1))
 
     return re.sub(r"\{\{secret:([A-Za-z0-9/_+=.@-]+)\}\}", _lookup, target)
+
+
+def build_model_env(spec: dict) -> tuple[dict[str, str], str | None]:
+    """Per-invocation model routing → (env overrides, model override).
+
+    The Claude Agent SDK spawns a fresh CLI subprocess per query and merges
+    ``options.env`` over the process environment, so one shared kernel
+    container can serve Bedrock-backed and gateway-backed agents side by
+    side. Empty-string values deliberately *clear* a baked-in variable (the
+    CLI treats "" as unset), so switching direction works regardless of which
+    mode the container was deployed with. An empty/absent spec keeps the
+    container defaults (resolve_model_env at process start).
+    """
+    backend = str(spec.get("backend") or "")
+    model = str(spec.get("model") or "") or None
+    small = str(spec.get("small_fast_model") or "")
+    if backend == "bedrock":
+        env = {
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "ANTHROPIC_BASE_URL": "",
+            "ANTHROPIC_AUTH_TOKEN": "",
+        }
+        if model:
+            env["ANTHROPIC_MODEL"] = model
+        if small:
+            env["ANTHROPIC_SMALL_FAST_MODEL"] = small
+        return env, model
+    if backend == "gateway":
+        base_url = str(spec.get("base_url") or "")
+        secret_name = str(spec.get("secret_name") or "agent-platform/llm-gateway-key")
+        if not base_url:
+            raise ValueError("model.backend=gateway requires model.base_url")
+        env = {
+            "CLAUDE_CODE_USE_BEDROCK": "",
+            "ANTHROPIC_BASE_URL": base_url,
+            "ANTHROPIC_AUTH_TOKEN": _secret_value(secret_name),
+        }
+        if model:
+            env["ANTHROPIC_MODEL"] = model
+        # a baked-in Bedrock haiku ID must not leak into gateway calls —
+        # fall back to the main model when no gateway-side small model is set
+        if small or model:
+            env["ANTHROPIC_SMALL_FAST_MODEL"] = small or model
+        # same leak via the alias-steering variables (the CLI's model aliases
+        # and background tasks consult these): replace with this backend's
+        # catalog picks, clear families it lacks ("" = unset for the CLI)
+        aliases = spec.get("alias_models") or {}
+        for family in ("opus", "sonnet", "haiku"):
+            env[f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL"] = str(
+                aliases.get(family) or ""
+            )
+        return env, model
+    raise ValueError(f"unknown model backend: {backend!r}")
 
 
 def build_mcp_config(servers: list[dict]) -> dict:
@@ -383,6 +448,19 @@ async def invoke(payload: dict, context) -> dict:
                 "conversations — use it when helpful):\n" + context
             )
 
+    model_spec = (payload or {}).get("model") or {}
+    model_env: dict[str, str] = {}
+    model_override: str | None = None
+    if model_spec:
+        try:
+            model_env, model_override = build_model_env(model_spec)
+            logger.info(
+                "model routing: backend=%s model=%s",
+                model_spec.get("backend"), model_override or "(default)",
+            )
+        except Exception as e:
+            return {"ok": False, "error": f"model routing failed: {e}"}
+
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
         max_turns=int((payload or {}).get("max_turns") or DEFAULT_MAX_TURNS),
@@ -390,6 +468,8 @@ async def invoke(payload: dict, context) -> dict:
         # Auto-approve tools from the attached MCP servers/skills; the kernel
         # is the sandbox boundary here, not per-tool prompts.
         allowed_tools=allowed,
+        env=model_env,
+        model=model_override,
         **extra,
     )
 

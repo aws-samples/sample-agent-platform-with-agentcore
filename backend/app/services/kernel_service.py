@@ -68,6 +68,7 @@ class KernelService:
         mcp_servers: list[dict] | None = None,
         skills: list[dict] | None = None,
         memory: dict | None = None,
+        model: dict | None = None,
         async_output: dict | None = None,
     ) -> dict:
         """Proxy an invocation to the headless kernel.
@@ -94,6 +95,9 @@ class KernelService:
             payload["skills"] = skills
         if memory and memory.get("memory_id"):
             payload["memory"] = memory
+        if model:
+            # per-invocation model routing (see model_config_service.resolve)
+            payload["model"] = model
         if async_output and async_output.get("key"):
             payload["async"] = async_output
 

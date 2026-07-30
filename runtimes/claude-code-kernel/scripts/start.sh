@@ -60,6 +60,22 @@ SESSION_ID_FILE="/tmp/.runtime-session-id"
 STARTUP_LOG="/tmp/.startup-log"
 echo -n "" > "$STARTUP_LOG"
 
+# Session-scoped S3 credentials for workspace sync. The container's own role
+# has no workspaces/* access; the backend delivers per-session credentials in
+# the warmup payload and contract-server writes them to this profile file
+# (and keeps them refreshed). Only the s3 sync/ls calls below use them —
+# everything else stays on the execution role.
+WS_CREDS_FILE="/tmp/.aws-workspace-creds"
+WS_CREDS_NONE="/tmp/.ws-creds-none"
+
+ws_aws() {
+  if [ -f "$WS_CREDS_FILE" ]; then
+    AWS_SHARED_CREDENTIALS_FILE="$WS_CREDS_FILE" AWS_PROFILE="workspace" aws "$@"
+  else
+    aws "$@"
+  fi
+}
+
 log_startup() {
   local msg="[startup] $(date -u +%H:%M:%S) $1"
   echo "$msg" >> /proc/1/fd/1 2>/dev/null || echo "$msg"
@@ -83,7 +99,7 @@ save_workspace() {
     return
   fi
   local s3_path="s3://${S3_BUCKET}/${S3_PREFIX}/${sid}"
-  aws s3 sync "${WORKSPACE}/" "${s3_path}/" \
+  ws_aws s3 sync "${WORKSPACE}/" "${s3_path}/" \
     --quiet \
     --exclude "node_modules/*" \
     --exclude ".venv/*" \
@@ -94,7 +110,7 @@ save_workspace() {
     2>/dev/null || true
   # Claude Code state (conversation transcripts, project registry) lives in
   # /root/.claude — persist it so a dormant session resumes with history.
-  aws s3 sync /root/.claude/ "${s3_path}/.claude-home/" \
+  ws_aws s3 sync /root/.claude/ "${s3_path}/.claude-home/" \
     --quiet --exclude "*.lock" 2>/dev/null || true
   echo "[workspace] saved to ${s3_path} at $(date -u +%H:%M:%S)" >> /proc/1/fd/1 2>/dev/null || true
 }
@@ -230,6 +246,13 @@ if [ -z "$CLAUDE_STARTED" ] && [ -n "$PS1" ]; then
     sleep 1
     WAIT=$((WAIT + 1))
   done
+  # Per-session model routing (written by contract-server from the warmup
+  # payload's config.model). Overrides the container's baked-in model env for
+  # this session's Claude Code only. Also applies on every reconnect, since
+  # ttyd spawns a fresh login shell per WebSocket client.
+  if [ -f /tmp/.model-env ]; then
+    source /tmp/.model-env
+  fi
   # ttyd spawns a new shell per WebSocket client, so a browser reconnect (or
   # a dormant-session resume) starts a fresh `claude` process. Continue the
   # previous conversation when transcripts exist — locally or restored from S3.
@@ -261,15 +284,24 @@ NODE_PID=$!
   else
     S3_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${SESSION_ID}"
     log_startup "session: ${SESSION_ID}"
+    # The restore needs the session-scoped credentials, which arrive in the
+    # same warmup that delivered the session ID (contract-server writes the
+    # profile file). Wait briefly; WS_CREDS_NONE marks a legacy backend that
+    # sends none — then the container role is the only (legacy) option.
+    CREDS_WAIT=0
+    while [ ! -f "$WS_CREDS_FILE" ] && [ ! -f "$WS_CREDS_NONE" ] && [ $CREDS_WAIT -lt 15 ]; do
+      sleep 1
+      CREDS_WAIT=$((CREDS_WAIT + 1))
+    done
     log_startup "restoring from ${S3_PATH}…"
-    if aws s3 ls "${S3_PATH}/" >/dev/null 2>&1; then
+    if ws_aws s3 ls "${S3_PATH}/" >/dev/null 2>&1; then
       # .mcp.json is owned by the warmup config (session attachments), not by
       # the restored snapshot — never let restore clobber it.
-      aws s3 sync "${S3_PATH}/" "${WORKSPACE}/" --quiet \
+      ws_aws s3 sync "${S3_PATH}/" "${WORKSPACE}/" --quiet \
         --exclude ".claude/settings.json" --exclude ".claude-home/*" \
         --exclude ".mcp.json" 2>/dev/null || true
-      if aws s3 ls "${S3_PATH}/.claude-home/" >/dev/null 2>&1; then
-        aws s3 sync "${S3_PATH}/.claude-home/" /root/.claude/ --quiet \
+      if ws_aws s3 ls "${S3_PATH}/.claude-home/" >/dev/null 2>&1; then
+        ws_aws s3 sync "${S3_PATH}/.claude-home/" /root/.claude/ --quiet \
           --exclude "settings.json" 2>/dev/null || true
         log_startup "Claude Code state restored"
       fi

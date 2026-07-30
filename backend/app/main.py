@@ -16,6 +16,7 @@ from app.api import (
     governance,
     kernels,
     memory,
+    model_config,
     observability,
     pipelines,
     schedules,
@@ -69,6 +70,7 @@ app.include_router(evals.router)
 app.include_router(memory.router)
 app.include_router(observability.router)
 app.include_router(governance.router)
+app.include_router(model_config.router)
 app.include_router(pipelines.router)
 app.include_router(gateways.router)
 app.include_router(team_demo.router)

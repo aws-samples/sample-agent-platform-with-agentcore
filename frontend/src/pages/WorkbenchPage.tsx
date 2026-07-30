@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { FileText, Loader2, Plus, RefreshCw, Square, Trash2, TerminalSquare } from 'lucide-react'
 import { Modal, SectionTitle, StatusBadge } from '@/components/common/ui'
 import WebTerminal from '@/components/terminal/WebTerminal'
-import { api, type ArtifactFile, type EcosystemEntry, type Session } from '@/services/api'
+import { api, type ArtifactFile, type EcosystemEntry, type ModelConfig, type Session } from '@/services/api'
 
 export default function WorkbenchPage() {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -15,6 +15,9 @@ export default function WorkbenchPage() {
   const [skillOptions, setSkillOptions] = useState<EcosystemEntry[]>([])
   const [selMcp, setSelMcp] = useState<string[]>([])
   const [selSkills, setSelSkills] = useState<string[]>([])
+  const [modelCfg, setModelCfg] = useState<ModelConfig | null>(null)
+  const [selBackend, setSelBackend] = useState('')
+  const [selModel, setSelModel] = useState('')
 
   const [active, setActive] = useState<Session | null>(null)
   const [wssUrl, setWssUrl] = useState<string | null>(null)
@@ -44,7 +47,12 @@ export default function WorkbenchPage() {
     // best-effort: the modal renders instantly, options fill in when loaded
     api.listMcpServers().then(setMcpOptions).catch(() => {})
     api.listSkills().then(setSkillOptions).catch(() => {})
+    api.getModelConfig().then(setModelCfg).catch(() => {})
   }
+
+  // model options for the chosen backend ('' = platform default backend)
+  const backendModels = (b: string): string[] =>
+    (b && modelCfg?.backends[b]?.models) || []
 
   const toggle = (list: string[], set: (v: string[]) => void, id: string) =>
     set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id])
@@ -52,11 +60,13 @@ export default function WorkbenchPage() {
   const handleCreate = async () => {
     setCreating(true)
     try {
-      const s = await api.createSession(newName, 'claude-code', selMcp, selSkills)
+      const s = await api.createSession(newName, 'claude-code', selMcp, selSkills, selBackend, selModel)
       setCreateOpen(false)
       setNewName('')
       setSelMcp([])
       setSelSkills([])
+      setSelBackend('')
+      setSelModel('')
       await refresh()
       await handleConnect(s)
     } catch (e) {
@@ -164,6 +174,12 @@ export default function WorkbenchPage() {
               </div>
               <p className="mt-1 font-mono text-[11px] text-slate-400">{s.session_id.slice(0, 8)}</p>
               <p className="mt-1 text-[11px] text-slate-400">Claude Code · created {new Date(s.created_at).toLocaleString()}</p>
+              {(s.model_backend || s.model) && (
+                <p className="mt-1 truncate font-mono text-[10px] text-slate-500">
+                  ⚡ {s.model_backend || 'default'}
+                  {s.model ? ` · ${s.model}` : ''}
+                </p>
+              )}
               {(s.mcp_servers?.length > 0 || s.skills?.length > 0) && (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {s.mcp_servers?.map((n) => (
@@ -295,6 +311,46 @@ export default function WorkbenchPage() {
         />
         <p className="mt-2 text-xs text-slate-500">
           Kernel: Claude Code · Workspace persists to S3 under this session's ID.
+        </p>
+
+        <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">Model</label>
+        <div className="flex gap-2">
+          <select
+            className="input !w-40"
+            value={selBackend}
+            onChange={(e) => {
+              setSelBackend(e.target.value)
+              setSelModel('')
+            }}
+          >
+            <option value="">Platform default</option>
+            {modelCfg &&
+              Object.entries(modelCfg.backends)
+                .filter(([, b]) => b.enabled)
+                .map(([name]) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+          </select>
+          <select
+            className="input flex-1"
+            value={selModel}
+            onChange={(e) => setSelModel(e.target.value)}
+            disabled={!selBackend}
+          >
+            <option value="">
+              {selBackend ? 'Backend default model' : '—'}
+            </option>
+            {backendModels(selBackend).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <p className="mt-1 text-xs text-slate-400">
+          Backends and model catalogs come from Governance → Model backends; the choice applies on every connect.
         </p>
 
         {mcpOptions.length > 0 && (

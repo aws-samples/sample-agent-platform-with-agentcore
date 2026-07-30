@@ -105,6 +105,17 @@ class PortalStack(Stack):
         platform.table.grant_read_write_data(task_role)
         # read: session artifacts browsing; write: skill packages under skills/
         platform.workspace_bucket.grant_read_write(task_role)
+        # Per-session workspace credentials: the backend assumes the
+        # workspace-access role with a session policy narrowing S3 to
+        # workspaces/{sessionId}/* and hands the credentials to that
+        # session's interactive container (warmup payload + refresh API).
+        task_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="AssumeWorkspaceAccess",
+                actions=["sts:AssumeRole"],
+                resources=[runtime.workspace_access_role.role_arn],
+            )
+        )
         task_role.add_to_policy(
             iam.PolicyStatement(
                 sid="AgentCoreInvoke",
@@ -324,6 +335,7 @@ class PortalStack(Stack):
                 "PLATFORM_INTERACTIVE_RUNTIME_ARN": runtime.interactive_runtime_arn,
                 "PLATFORM_SDK_RUNTIME_ARN": runtime.sdk_runtime_arn,
                 "PLATFORM_MCP_TOOLS_RUNTIME_ARN": runtime.mcp_tools_runtime_arn,
+                "PLATFORM_WORKSPACE_ACCESS_ROLE_ARN": runtime.workspace_access_role.role_arn,
                 "PLATFORM_CORS_ORIGINS": "*",
                 "PLATFORM_COGNITO_POOL_ID": user_pool.user_pool_id,
                 "PLATFORM_COGNITO_CLIENT_ID": user_pool_client.user_pool_client_id,

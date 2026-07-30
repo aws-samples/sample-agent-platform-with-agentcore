@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Seed the topic-selection pipeline's published agents into the platform.
+"""Seed the daily-topic pipeline's published agents into the platform.
 
-The topic-selection pipeline (ported from a local Claude Code workflow) runs as
-platform-native published agents. This script registers them so the orchestrator
-(topic_selection_service) can target them by name.
+The daily-topic pipeline (ported from a local Claude Code workflow) runs its
+judgment steps as platform-native published agents. This script registers them
+so the pipeline can target them by name.
 
 Idempotent: agent_service.publish() re-publishes by name (version bump), and the
 Exa MCP / skill seeds guard on existing names, so re-running is safe.
@@ -115,10 +115,12 @@ def seed_selection_agents() -> None:
 
 
 PIPELINES = [
-    ("topic-selection.workflow.mjs", "topic-selection",
-     "选题流水线:收集 → 去重 → 打分 → 排序,产出 ranked shortlist"),
+    ("anthropic-tracker.workflow.mjs", "anthropic-tracker",
+     "tracker feed 流水线:25 条检索 fan-out → 代码归并去重 → 预筛 → 判定 → 抓取 → 渲染落盘"),
+    ("ai-pulse.workflow.mjs", "ai-pulse",
+     "ai-pulse feed 流水线:33 条检索 fan-out + 会议二跳 → 代码归并 → 预筛 → Gate-1 判定 → 抓取 → 渲染落盘"),
     ("daily-topic.workflow.mjs", "daily-topic",
-     "今日选题全链:新鲜度门 → 按需刷新 feed(异步 Exa 搜索)→ 选题流水线"),
+     "今日选题全链:新鲜度门 → 按需刷新 feed(两路各自嵌套子 pipeline)→ 收集 → 去重 → 打分 → 排序"),
 ]
 
 
@@ -161,7 +163,7 @@ EXA_SECRET_NAME = "agent-platform/exa-api-key"
 EXA_MCP_TARGET = (
     "https://mcp.exa.ai/mcp"
     f"?exaApiKey={{{{secret:{EXA_SECRET_NAME}}}}}"
-    "&tools=web_search_exa,crawling_exa,linkedin_search_exa"
+    "&tools=web_search_exa,web_search_advanced_exa,crawling_exa,linkedin_search_exa"
 )
 
 
@@ -226,6 +228,104 @@ def seed_feed_layer() -> None:
         },
     ]
     for a in feed_agents:
+        r = agent_service.publish(user=SEED_USER, source="seed", **a)
+        print(f"  published agent  {r['name']:<22} v{r['version']}  id={r['id']}")
+
+    # feed pipeline 的 thin agents:平台的裸 agent-sdk kernel 不挂 MCP,
+    # 需要 Exa 工具的阶段(检索/判定/抓取)走这些 published agents。
+    # 平台只给裸 kernel 自动内联 schema,所以输出契约写死在 system prompt 里。
+    # exa-searcher 是通用检索执行器,tracker 和 ai-pulse 两条流水线共用;
+    # judge / crawler 因输出契约不同各配一个。
+    pipeline_thin_agents = [
+        {
+            "name": "exa-searcher",
+            "description": "tracker 流水线 · 检索执行器:发一次 Exa 搜索原样搬回(HITS_SCHEMA)",
+            "system_prompt": (
+                "你是一个检索执行器:按用户消息给定的 query 和参数发一次 Exa 搜索,"
+                "把结果原样搬回,不做任何判断、筛选,也不改写 query。只用 mcp__exa__ 工具。"
+                "最终答复只返回一个 JSON 对象(不要解释、不要 markdown 围栏):"
+                '{"query_sent":"实际发出的 query 原文","tool_used":"实际调用的工具名",'
+                '"results":[{"title":"","url":"","published_date":"YYYY-MM-DD,工具没给就留空、不要猜","snippet":"200 字内"}]}。'
+                "搜不到结果 results 给空数组,不要换 query 再试。"
+            ),
+            # 一次 MCP 工具往返吃 2-3 个 turn:4 会大面积撞上限(kernel 500),8 才稳
+            "max_turns": 8,
+            "mcp_server_names": [EXA_MCP_NAME],
+        },
+        {
+            "name": "tracker-judge",
+            "description": "tracker 流水线 · 判定评审:一手性/归类/窗口/去重复审(JUDGE_SCHEMA)",
+            "system_prompt": (
+                "你是 anthropic-tracker feed 的判定评审:按用户消息给定的判据,对一批候选"
+                "逐条判断是否入选。必要时可用 mcp__exa__crawling_exa 打开候选 URL 核对发布"
+                "日期,除此之外不要抓取。最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
+                '{"results":[{"num":候选编号,"in_window":bool,"date_basis":"判断依据",'
+                '"is_backfill":bool,"dup_of_prev":bool,'
+                '"section":"官方动态|研究论文|内部实践|播客访谈|人员观点",'
+                '"firsthand":"官方原文|当事人发言|完整一手转录|媒体转述",'
+                '"keep":bool,"priority":0到100的整数,"borderline_note":"","why":""}]}。'
+                "每条候选一个对象,num 用输入编号指认,不要复述标题。"
+            ),
+            "max_turns": 12,
+            "mcp_server_names": [EXA_MCP_NAME],
+        },
+        {
+            "name": "exa-crawler",
+            "description": "tracker 流水线 · 正文抓取 + 中文摘要(SUMMARY_SCHEMA)",
+            "system_prompt": (
+                "你抓取给定 URL 的正文并写中文摘要:用 mcp__exa__crawling_exa 抓取,"
+                "按用户消息的要求提取。最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
+                '{"summary":"1-3 句中文摘要,保留原文具体数字/规模/时间跨度",'
+                '"title_fix":"给定标题明显不是文章真实标题时从正文取真实标题,否则留空",'
+                '"speaker":"人员观点/播客类填 姓名(职位),其余留空",'
+                '"platform":"播客/访谈平台名,其余留空",'
+                '"metrics":"内部实践类效率数据,无则留空","crawl_ok":bool}。'
+                "抓取失败时 crawl_ok=false 并基于已有标题摘要写一句保守 summary,不要编造正文。"
+            ),
+            "max_turns": 8,
+            "mcp_server_names": [EXA_MCP_NAME],
+        },
+        {
+            "name": "pulse-judge",
+            "description": "ai-pulse 流水线 · Gate-1 判定:说白了还原/三大类归类/排除规则/去重复审(JUDGE_SCHEMA)",
+            "system_prompt": (
+                "你是 ai-pulse 深度洞察 feed 的判定评审:按用户消息给定的判据(Gate-1 还原、"
+                "三大类归类、硬性排除规则、窗口与去重复审),对一批候选逐条判断是否入选。"
+                "必要时可用 mcp__exa__crawling_exa 打开候选 URL 核对发布日期,除此之外不要抓取。"
+                "最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
+                '{"results":[{"num":候选编号,"in_window":bool,"date_basis":"判断依据",'
+                '"is_backfill":bool,"dup_of_prev":bool,'
+                '"category":"架构决策|趋势拐点|落地Pattern",'
+                '"reduces_to":"说白了就是…(入选与淘汰都要填)",'
+                '"evidence_type":"数据型|做法型|(其余类留空)",'
+                '"keep":bool,"kill_reason":"keep=false 时填淘汰类型",'
+                '"priority":0到100的整数,"borderline_note":""}]}。'
+                "每条候选一个对象,num 用输入编号指认,不要复述标题。"
+            ),
+            "max_turns": 12,
+            "mcp_server_names": [EXA_MCP_NAME],
+        },
+        {
+            "name": "pulse-crawler",
+            "description": "ai-pulse 流水线 · 正文抓取 + 洞察/证据/So-What 提取(ENRICH_SCHEMA)",
+            "system_prompt": (
+                "你抓取给定 URL 的正文并按 ai-pulse 口径提取深度洞察:用 mcp__exa__crawling_exa "
+                "抓取(maxCharacters: 5000),按用户消息的要求提取。"
+                "最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
+                '{"insight":"一句话核心洞察(非显而易见的事)",'
+                '"evidence":"关键证据,保留原文具体数字/规模/时间跨度",'
+                '"sowhat":"客户 So What:他们该怎么想/怎么行动",'
+                '"source":"[官方]或[第三方] + 作者/团队",'
+                '"ppt_star":1到3的整数,'
+                '"title_fix":"给定标题明显不是文章真实标题时从正文取真实标题,否则留空",'
+                '"crawl_ok":bool}。'
+                "抓取失败时 crawl_ok=false 并基于已有标题摘要保守填写,不要编造正文内容。"
+            ),
+            "max_turns": 8,
+            "mcp_server_names": [EXA_MCP_NAME],
+        },
+    ]
+    for a in pipeline_thin_agents:
         r = agent_service.publish(user=SEED_USER, source="seed", **a)
         print(f"  published agent  {r['name']:<22} v{r['version']}  id={r['id']}")
 

@@ -45,6 +45,12 @@ lookup). Pass the same `-c` flags to every subsequent `cdk deploy`.
 
 ## 2. Choose your model access mode
 
+This picks the **container default** — what a call uses when nothing else is
+specified. After deployment the Governance page's *Model backends* card can
+enable both backends side by side and route per published agent at
+invocation time (see the user guide); the options below only decide the
+baked-in fallback.
+
 ### Option A — LLM gateway (LiteLLM etc.)
 
 1. Store the gateway API key:
@@ -73,8 +79,32 @@ Leave `llm_gateway_url` empty and set:
 "anthropic_model": "global.anthropic.claude-<model-id>"
 ```
 
-Use cross-region inference profile IDs (`global.` prefix). The runtime role
-gets `bedrock:InvokeModel*` automatically in this mode.
+Use cross-region inference profile IDs (`global.` prefix). The agent kernel
+roles always get `bedrock:InvokeModel*` (the model control plane may route to
+Bedrock even in gateway-default deployments).
+
+Optionally steer the in-terminal `/model` aliases (`opus`, `sonnet`, `haiku`)
+in Dev Workbench sessions. Without these, the aliases resolve to Anthropic API
+model names, which Bedrock rejects with a 400:
+
+```json
+"anthropic_default_opus_model": "global.anthropic.claude-opus-5",
+"anthropic_default_sonnet_model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+"anthropic_default_haiku_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+```
+
+(`sonnet`/`haiku` default to `anthropic_model`/`anthropic_small_fast_model`
+when unset; `opus` has no fallback.) Users can also pick a backend + model per
+session when creating one in Dev Workbench — the catalog comes from
+Governance → Model backends, and the backend resolves the choice into the
+warmup payload on every connect.
+
+These context values only steer **Bedrock-routed** sessions. A session routed
+through the gateway backend gets its `/model` aliases from that backend's own
+catalog instead: the resolver picks one catalog model per Claude family
+(opus/sonnet/haiku, substring match) and the kernel overrides the baked-in
+variables — clearing any family the catalog lacks — so the picker never
+offers a Bedrock profile ID that the gateway would reject.
 
 ## 3. Build & push images
 
@@ -206,9 +236,12 @@ Auth modes (backend resolves in this order):
 
 ## 7. (Optional) Content pipelines — Phase 5
 
-The workflow engine and the sample daily-topic / topic-selection pipelines are
+The workflow engine and the sample content pipelines (daily-topic, plus the
+two nested feed pipelines it calls: anthropic-tracker and ai-pulse) are
 optional. Enable them only if you want scheduled, multi-step agent
-orchestration.
+orchestration. daily-topic is the single entry point — the feed pipelines are
+invoked from it via nested `workflow()` calls and are not scheduled on their
+own.
 
 1. **Store the Exa (or other remote-MCP) key** — the feed layer resolves a
    `{{secret:agent-platform/exa-api-key}}` placeholder at session start; the key
@@ -220,8 +253,8 @@ orchestration.
      --secret-string '{"api_key":"exa-your-key"}'
    ```
 
-   The runtime role's `McpSecrets` statement is scoped to
-   `agent-platform/exa-api-key*` only — see [permissions.md §2](permissions.md#2-runtime-execution-role).
+   The SDK kernel role's `McpSecrets` statement is scoped to
+   `agent-platform/exa-api-key*` only — see [permissions.md §2](permissions.md#2-runtime-execution-roles).
 
 2. **Register the sample pipelines** (writes pipeline definitions to DynamoDB
    and the MCP/skill registry — no new infra):
@@ -265,13 +298,15 @@ headers.
 |---|---|
 | Terminal stuck on `Reconnecting…` | Caller's IAM lacks `bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStream` |
 | Model calls fail inside the kernel | Gateway key not set in Secrets Manager, or NAT EIP not allow-listed on the gateway |
+| `/model` switch fails with a 400 in a Dev Workbench terminal | On Bedrock: the alias resolves to an Anthropic API model name — set the `anthropic_default_*_model` context values (§2 Option B). On a gateway session: the picker offered a model the gateway doesn't serve — make sure the backend's catalog (Governance → Model backends) lists the models your gateway actually routes |
+| Interactive workspace never syncs to S3 / restore is empty | The kernel's sync uses backend-minted per-session credentials, not the container role. Check the backend logs for AssumeRole errors on `agent-platform-workspace-access`, and that `PLATFORM_WORKSPACE_ACCESS_ROLE_ARN` is set on the backend (PortalStack does this) |
 | Terminal glyphs render as `_` / broken borders | tmux running without a UTF-8 locale — keep `LANG=C.UTF-8` and the `tmux -u` flag if you change the base image |
 | Conversation restarts instead of resuming on reconnect | The runtime session expired (AgentCore idle timeout); expected — history is restored via `claude --continue`, but the previous process is gone |
 | Interactive terminal drops to a bare `bash` prompt instead of Claude Code | Claude Code 2.1.x+ gates bypassPermissions mode behind a launch dialog; keep `skipDangerousModePermissionPrompt: true` in the kernel's `settings.json` (a new base-image build can pull a CLI version that adds such gates) |
 | Built-in tool call fails with AccessDenied | Runtime execution role missing `StartCodeInterpreterSession` / `StartBrowserSession` (+ connect/invoke actions) on the account's `code-interpreter/*` / `browser/*` resources — see `RuntimeStack` `BuiltinTools` policy |
 | Schedules never fire (hosted) | Check the schedule-runner Lambda's logs (`/aws/lambda/agent-platform-schedule-runner`) and the `agent-platform-schedule-dlq` queue; a `RuntimeError: code not deployed` means `scripts/deploy-schedule-lambda.sh` hasn't been run. Verify the mirror exists: `aws scheduler get-schedule --group-name agent-platform --name sched-<id>` |
 | Schedules never fire (local dev) | The fallback tick loop runs inside the backend process — `uvicorn` must be running; check `enabled` and `next_run_at` on the Scheduler page |
-| Pipeline feed agent fails on the Exa MCP | `agent-platform/exa-api-key` secret not set, or the runtime role lacks `secretsmanager:GetSecretValue` on it (`McpSecrets` statement in `RuntimeStack`) |
+| Pipeline feed agent fails on the Exa MCP | `agent-platform/exa-api-key` secret not set, or the SDK kernel role lacks `secretsmanager:GetSecretValue` on it (`McpSecrets` statement in `RuntimeStack`) |
 | `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the `agent-platform/portal-admin` secret exists and the Lambda role's `PortalAdminSecret` grant, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB) |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |

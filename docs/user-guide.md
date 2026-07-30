@@ -61,8 +61,12 @@ Your cloud coding environment: a full Claude Code CLI running in an isolated
 AgentCore microVM, used from the browser.
 
 **Start a session** — *New Session* → name it, optionally tick MCP servers and
-skills to attach (they are wired up *before* Claude Code starts). The first
-connect cold-starts a container (~30–60 s); after that it's instant.
+skills to attach (they are wired up *before* Claude Code starts), and
+optionally pick a **model backend + model** (catalog from Governance → Model
+backends; leave on *Platform default* to use the deployment's baked-in model).
+The choice is re-resolved on every connect, and the in-terminal `/model`
+picker offers models from the session's own backend. The first connect
+cold-starts a container (~30–60 s); after that it's instant.
 
 **What to expect from the terminal:**
 
@@ -338,8 +342,37 @@ no way around them from any entry point):
   channel/dataset lifecycle, policy changes, eval starts) with who did what
   when.
 
-Model-level governance — allow-lists, per-team budgets, cost attribution —
-belongs in your LLM gateway (e.g. LiteLLM), not here.
+### Model backends
+
+The **Model backends** card on the Governance page is the routing control
+plane for every model call — headless invocations and Dev Workbench
+sessions alike:
+
+- **Two backends** — Amazon Bedrock (direct, via the kernel container's IAM
+  role; use `global.` cross-region inference profile IDs) and an
+  Anthropic-compatible **LLM gateway** (e.g. LiteLLM; the API key lives in
+  Secrets Manager, only its *name* is stored here). Each has an enable
+  switch and a model catalog that feeds the dropdowns elsewhere.
+- **Platform default** — which backend an agent uses when it doesn't pick
+  one.
+- **Per-agent choice** — the Publish page's edit dialog has a *Model
+  backend* selector; re-publishing applies it on the agent's **next
+  invocation**. Agents are configuration, not resident processes — there is
+  nothing to restart or drain, and in-flight runs simply finish on the
+  routing they started with. The invocation ledger records the
+  `backend:model` each call actually used, so before/after a change is
+  auditable.
+- **Per-session choice** — the Dev Workbench's *New Session* dialog has the
+  same selector; the choice is re-resolved on every connect, and the
+  terminal's `/model` aliases follow the chosen backend's catalog.
+- **Connectivity test** — fires one real 1-turn invocation through the
+  selected backend + model and shows the reply, latency and cost. It goes
+  through the same governed pipeline as everything else (counts against
+  quota, lands in the ledger).
+
+Per-key budgets and cost attribution still belong in your LLM gateway
+(e.g. LiteLLM); this card decides *where calls go*, the gateway decides
+*how much they may spend*.
 
 ## Calling the platform from code
 

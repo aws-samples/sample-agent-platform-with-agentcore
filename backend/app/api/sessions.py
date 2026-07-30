@@ -1,5 +1,7 @@
 """Interactive session endpoints (Dev Workbench)."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.dependencies import get_current_user
@@ -14,8 +16,12 @@ from app.models.schemas import (
 from app.services import invocation_service
 from app.services.audit_service import audit_service
 from app.services.ecosystem_service import ecosystem_service
+from app.services.model_config_service import model_config_service
 from app.services.session_service import session_service
+from app.services.workspace_credentials_service import workspace_credentials_service
 from app.services.workspace_service import workspace_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
@@ -36,6 +42,8 @@ def _to_response(item: dict) -> SessionResponse:
         ),
         mcp_servers=item.get("attached_mcp_names", []),
         skills=item.get("attached_skill_names", []),
+        model_backend=item.get("model_backend", ""),
+        model=item.get("model", ""),
     )
 
 
@@ -52,10 +60,39 @@ def _session_config(item: dict) -> dict | None:
     return cfg
 
 
+@router.post("/workspace-credentials")
+def refresh_workspace_credentials(body: dict):
+    """Container-facing: renew the session-scoped S3 credentials.
+
+    Authenticated by the per-session refresh token delivered in the warmup
+    payload (constant-time compare) — the container has no Cognito identity.
+    Deliberately NOT behind get_current_user."""
+    creds = workspace_credentials_service.refresh(
+        str(body.get("runtime_session_id", "")), str(body.get("token", ""))
+    )
+    if not creds:
+        raise HTTPException(status_code=401, detail="Invalid session or token")
+    return {"workspace_credentials": creds}
+
+
 @router.post("", response_model=SessionResponse)
 def create_session(req: SessionCreateRequest, user: str = Depends(get_current_user)):
+    # Fail fast on a bad model reference (disabled backend, missing gateway
+    # model, …) — better a 400 here than a session whose terminal can't talk
+    # to its model.
+    if req.model_backend or req.model:
+        try:
+            model_config_service.resolve(req.model_backend, req.model)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     item = session_service.create_session(
-        user, req.name, req.kernel, req.mcp_server_ids, req.skill_ids
+        user,
+        req.name,
+        req.kernel,
+        req.mcp_server_ids,
+        req.skill_ids,
+        req.model_backend,
+        req.model,
     )
     # denormalize names for display
     cfg = _session_config(item) or {"mcp_servers": [], "skills": []}
@@ -88,7 +125,43 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
     if not item:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    status = session_service.warmup(item["runtime_session_id"], _session_config(item))
+    config = _session_config(item) or {}
+    # Model routing (same control plane as published agents): resolve the
+    # session's (backend, model) reference now so a model-config edit applies
+    # on the next connect. Resolution failure (e.g. the backend was disabled
+    # after the session was created) falls back to the container default
+    # rather than bricking the terminal.
+    if item.get("model_backend") or item.get("model"):
+        try:
+            spec = model_config_service.resolve(
+                item.get("model_backend", ""), item.get("model", "")
+            )
+            if spec:
+                config["model"] = spec
+        except ValueError as e:
+            logger.warning(
+                "session %s model resolve failed (%s), using container default",
+                session_id,
+                e,
+            )
+    # Workspace-sync credentials: the kernel's own role has no workspaces/*
+    # access — the backend mints session-scoped STS credentials and delivers
+    # them in the warmup payload, plus a refresh token the container uses to
+    # renew them (role chaining caps each grant at 1h).
+    if workspace_credentials_service.enabled:
+        creds = workspace_credentials_service.mint(item["runtime_session_id"])
+        if creds:
+            config["workspace_credentials"] = creds
+            config["workspace_credentials_refresh"] = {
+                "url": f"{settings.portal_api_url}/api/v1/sessions/workspace-credentials"
+                if settings.portal_api_url
+                else "",
+                "token": workspace_credentials_service.issue_refresh_token(
+                    user, session_id
+                ),
+            }
+
+    status = session_service.warmup(item["runtime_session_id"], config or None)
     wss_url = session_service.generate_presigned_wss_url(item["runtime_session_id"])
     session_service.set_status(user, session_id, "active")
     return ConnectResponse(wss_url=wss_url, expires_in=300, runtime_status=status)

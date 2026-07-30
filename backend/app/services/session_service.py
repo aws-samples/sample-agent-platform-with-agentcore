@@ -39,6 +39,8 @@ class SessionService:
         kernel: str,
         mcp_server_ids: list[str] | None = None,
         skill_ids: list[str] | None = None,
+        model_backend: str = "",
+        model: str = "",
     ) -> dict:
         session_id = str(uuid.uuid4())
         # uuid4 hex is 32 chars; the prefix pushes it past AgentCore's
@@ -57,6 +59,10 @@ class SessionService:
             "last_activity": now,
             "mcp_server_ids": mcp_server_ids or [],
             "skill_ids": skill_ids or [],
+            # model routing: resolved to a kernel spec at every connect, so a
+            # model-config change applies to the session's next warmup
+            "model_backend": model_backend,
+            "model": model,
         }
         self.table.put_item(Item=item)
         return item

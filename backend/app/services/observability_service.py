@@ -54,6 +54,7 @@ class ObservabilityService:
         runtime_session_id: str = "",
         error: str = "",
         ref: str = "",
+        model: str = "",
     ) -> None:
         """Append an invocation record. Never raises."""
         try:
@@ -70,6 +71,8 @@ class ObservabilityService:
                 "runtime_session_id": runtime_session_id,
                 "error": error[:300],
                 "ref": ref,  # schedule/channel/eval-run id, when applicable
+                # "backend:model" routing actually used, "" = container default
+                "model": model,
             }
             if duration_ms is not None:
                 item["duration_ms"] = int(duration_ms)
@@ -104,6 +107,7 @@ class ObservabilityService:
                     "runtime_session_id": i.get("runtime_session_id", ""),
                     "error": i.get("error", ""),
                     "ref": i.get("ref", ""),
+                    "model": i.get("model", ""),
                 }
             )
         return out

@@ -164,6 +164,7 @@ class PipelineService:
             "pipeline": item.get("pipeline", ""),
             "status": item.get("status", ""),
             "source": item.get("source", ""),
+            "parent_run": item.get("parent_run", ""),
             "started_by": item.get("started_by", ""),
             "started_at": item.get("started_at", ""),
             "finished_at": item.get("finished_at", ""),
@@ -215,14 +216,18 @@ class PipelineService:
             ExpressionAttributeValues={":empty": [], ":e": [_decimalize(entry)]},
         )
 
-    def _create_run(self, pipeline: str, user: str, source: str) -> str:
+    def _create_run(self, pipeline: str, user: str, source: str,
+                    parent_run: str | None = None) -> str:
         run_id = uuid.uuid4().hex[:12]
         sk = f"{_now()}#{run_id}"
-        self.table.put_item(Item={
+        item = {
             "PK": PK_RUN, "SK": sk, "run_id": run_id, "pipeline": pipeline,
             "status": "running", "source": source, "started_by": user,
             "started_at": _now(), "phase": "", "agents": [], "logs": [],
-        })
+        }
+        if parent_run:
+            item["parent_run"] = parent_run
+        self.table.put_item(Item=item)
         return sk
 
     # ------------------------------------------------------------ entrypoints
@@ -243,14 +248,15 @@ class PipelineService:
             "id": sk.partition("#")[2], "pipeline": name, "status": "running"}
 
     def run_sync(self, name: str, user: str = "scheduler", *, args=None,
-                 source: str = "schedule", nested: bool = False) -> dict:
+                 source: str = "schedule", nested: bool = False,
+                 parent_run: str | None = None) -> dict:
         """Scheduler / nested-workflow path (in-backend): run to completion,
         return a summary. Nested runs (a script's ``workflow()`` call) cannot
         nest further — one level, same as the platform contract."""
         pipe = self.get_pipeline(name)
         if not pipe:
             raise ValueError(f"pipeline {name} not found")
-        sk = self._create_run(name, user, source)
+        sk = self._create_run(name, user, source, parent_run=parent_run)
         self._execute(sk, pipe, user, args, allow_nested=not nested)
         run = self.get_run(sk.partition("#")[2]) or {}
         return {"ok": run.get("status") == "completed", "run_id": run.get("id"),
@@ -279,9 +285,11 @@ class PipelineService:
 
         def run_workflow(child: str, child_args):
             # a nested pipeline gets its own run record + trace; the parent
-            # script receives its {ok, run_id, result} summary
+            # script receives its {ok, run_id, result} summary. parent_run
+            # lets the run list show the child under its caller instead of
+            # as a sibling that looks independently scheduled.
             return self.run_sync(child, user=user, args=child_args,
-                                 source=SOURCE, nested=True)
+                                 source=SOURCE, nested=True, parent_run=run_id)
 
         try:
             out = workflow_engine.run(

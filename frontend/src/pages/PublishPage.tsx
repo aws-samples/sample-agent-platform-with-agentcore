@@ -20,6 +20,7 @@ import {
   type EcosystemEntry,
   type Kernel,
   type MemoryStore,
+  type ModelConfig,
   type PublishedAgent,
   type Session,
 } from '@/services/api'
@@ -57,11 +58,14 @@ export default function PublishPage() {
   const [editMcp, setEditMcp] = useState<string[]>([])
   const [editSkills, setEditSkills] = useState<string[]>([])
   const [editMemory, setEditMemory] = useState('')
+  const [editBackend, setEditBackend] = useState('')
+  const [editModel, setEditModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState('')
   const [mcpOptions, setMcpOptions] = useState<EcosystemEntry[]>([])
   const [skillOptions, setSkillOptions] = useState<EcosystemEntry[]>([])
   const [memoryStores, setMemoryStores] = useState<MemoryStore[]>([])
+  const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
 
   const refresh = async () => {
     try {
@@ -79,6 +83,7 @@ export default function PublishPage() {
     api.listMcpServers().then(setMcpOptions).catch(() => {})
     api.listSkills().then(setSkillOptions).catch(() => {})
     api.listMemoryStores().then(setMemoryStores).catch(() => {})
+    api.getModelConfig().then(setModelConfig).catch(() => {})
   }, [])
 
   const publishFromSession = async () => {
@@ -105,6 +110,8 @@ export default function PublishPage() {
     setEditMcp(a.mcp_server_names)
     setEditSkills(a.skill_names)
     setEditMemory(a.memory_id)
+    setEditBackend(a.model_backend || '')
+    setEditModel(a.model || '')
     setEditError('')
   }
 
@@ -121,6 +128,8 @@ export default function PublishPage() {
         mcp_server_names: editMcp,
         skill_names: editSkills,
         memory_id: editMemory,
+        model_backend: editBackend,
+        model: editModel,
       })
       setEditing(null)
       setPublished(agent)
@@ -218,6 +227,11 @@ export default function PublishPage() {
                 <span key={n} className="badge bg-violet-50 text-violet-700">skill: {n}</span>
               ))}
               {a.memory_id && <span className="badge bg-indigo-50 text-indigo-700">memory</span>}
+              {a.model_backend && (
+                <span className="badge bg-cyan-50 text-cyan-700" title={a.model || 'backend default model'}>
+                  {a.model_backend}{a.model ? ` · ${a.model.length > 28 ? a.model.slice(0, 28) + '…' : a.model}` : ''}
+                </span>
+              )}
               <span className="badge bg-slate-100 text-slate-500">{a.max_turns} turns</span>
             </div>
             <p className="mt-2 font-mono text-[10px] text-slate-400">
@@ -329,6 +343,33 @@ export default function PublishPage() {
               type="number" min={1} max={50} className="input !w-28"
               value={editTurns} onChange={(e) => setEditTurns(Number(e.target.value))}
             />
+
+            <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">
+              Model backend <span className="font-normal text-slate-400">(configured in Governance → Model backends; takes effect on the next invocation)</span>
+            </label>
+            <div className="flex gap-2">
+              <select
+                className="input !w-56"
+                value={editBackend}
+                onChange={(e) => { setEditBackend(e.target.value); setEditModel('') }}
+              >
+                <option value="">platform default{modelConfig ? ` (${modelConfig.default_backend})` : ''}</option>
+                {modelConfig && Object.entries(modelConfig.backends).map(([n, b]) => (
+                  <option key={n} value={n} disabled={!b.enabled}>{n}{b.enabled ? '' : ' — disabled'}</option>
+                ))}
+              </select>
+              <select
+                className="input flex-1 font-mono !text-xs"
+                value={editModel}
+                onChange={(e) => setEditModel(e.target.value)}
+                disabled={!editBackend}
+              >
+                <option value="">{editBackend ? 'backend default model' : '—'}</option>
+                {editBackend && (modelConfig?.backends[editBackend]?.models ?? []).map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
 
             {mcpOptions.length > 0 && (
               <>

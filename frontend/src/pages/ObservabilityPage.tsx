@@ -74,7 +74,14 @@ export default function ObservabilityPage() {
               <tr key={i} className="border-b border-slate-50">
                 <td className="px-4 py-2.5 whitespace-nowrap text-xs text-slate-500">{fmtTs(r.ts)}</td>
                 <td className="px-4 py-2.5"><span className={`badge ${SOURCE_STYLES[r.source] ?? 'bg-slate-100 text-slate-600'}`}>{r.source}</span></td>
-                <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{r.target}</td>
+                <td className="px-4 py-2.5 font-mono text-xs text-slate-600">
+                  {r.target}
+                  {r.model && (
+                    <span className="ml-1.5 badge bg-cyan-50 text-cyan-700" title={`model routing: ${r.model}`}>
+                      {r.model.length > 30 ? r.model.slice(0, 30) + '…' : r.model}
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-2.5 text-xs text-slate-600">{r.user}</td>
                 <td className="px-4 py-2.5 max-w-72"><p className="truncate text-xs text-slate-600" title={r.prompt_preview}>{r.prompt_preview}</p></td>
                 <td className="px-4 py-2.5">

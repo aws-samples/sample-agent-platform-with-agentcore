@@ -35,6 +35,8 @@ def publish_agent(req: AgentPublishRequest, user: str = Depends(get_current_user
             mcp_server_names=req.mcp_server_names,
             skill_names=req.skill_names,
             memory_id=req.memory_id,
+            model_backend=req.model_backend,
+            model=req.model,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

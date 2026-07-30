@@ -21,6 +21,7 @@ from app.services.agent_service import agent_service
 from app.services.ecosystem_service import ecosystem_service
 from app.services.governance_service import governance_service
 from app.services.kernel_service import kernel_service
+from app.services.model_config_service import model_config_service
 from app.services.observability_service import observability_service
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def _resolve_target(
     label = target
     mcp_servers: list[dict] = []
     skills: list[dict] = []
+    model_backend = model = ""
     if target.startswith("agent:"):
         cfg = agent_service.resolve_invoke_config(target.partition(":")[2])
         label = cfg["label"]
@@ -83,13 +85,19 @@ def _resolve_target(
         max_turns = max_turns or cfg["max_turns"]
         memory_id = memory_id or cfg["memory_id"]
         mcp_servers, skills = cfg["mcp_servers"], cfg["skills"]
+        model_backend, model = cfg["model_backend"], cfg["model"]
     elif mcp_server_ids or skill_ids:
         cfg = ecosystem_service.resolve_session_config(
             mcp_server_ids or [], skill_ids or []
         )
         mcp_servers, skills = cfg["mcp_servers"], cfg["skills"]
+    # agent reference (or platform default) → concrete kernel routing spec;
+    # None = container default. A disabled/misconfigured backend raises here,
+    # before any quota is consumed.
+    model_spec = model_config_service.resolve(model_backend, model)
     return {"label": label, "system": system, "max_turns": max_turns,
-            "memory_id": memory_id, "mcp_servers": mcp_servers, "skills": skills}
+            "memory_id": memory_id, "mcp_servers": mcp_servers, "skills": skills,
+            "model_spec": model_spec}
 
 
 def invoke(
@@ -106,14 +114,19 @@ def invoke(
     memory_id: str = "",
     memory_actor_id: str = "",
     ref: str = "",
+    model_spec: dict | None = None,
 ) -> dict:
     """Run one governed, recorded invocation. Raises ``QuotaExceeded`` /
-    ``SourceDisabled`` (governance) and ``KeyError`` (unknown agent target)."""
+    ``SourceDisabled`` (governance) and ``KeyError`` (unknown agent target).
+    ``model_spec`` overrides the target's own model routing (used by the
+    model-config connectivity test)."""
 
     # -------- resolve the target into kernel payload pieces --------
     cfg = _resolve_target(target, system, max_turns, memory_id, mcp_server_ids, skill_ids)
     label, system, memory_id = cfg["label"], cfg["system"], cfg["memory_id"]
     mcp_servers, skills = forward_identity(cfg["mcp_servers"]), cfg["skills"]
+    model_spec = model_spec if model_spec is not None else cfg["model_spec"]
+    model_label = f"{model_spec['backend']}:{model_spec.get('model', '')}" if model_spec else ""
 
     # -------- governance: policy + quota (counts the call) --------
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
@@ -135,6 +148,7 @@ def invoke(
             mcp_servers=mcp_servers or None,
             skills=skills or None,
             memory=memory,
+            model=model_spec,
         )
     except Exception as e:
         observability_service.record(
@@ -146,6 +160,7 @@ def invoke(
             duration_ms=int((time.monotonic() - started) * 1000),
             error=str(e),
             ref=ref,
+            model=model_label,
         )
         raise
 
@@ -162,6 +177,7 @@ def invoke(
         runtime_session_id=result.get("runtime_session_id", ""),
         error="" if result.get("ok") else str(result.get("raw", {}))[:300],
         ref=ref,
+        model=model_label,
     )
     return result
 
@@ -214,6 +230,8 @@ def invoke_async_and_wait(
             runtime_session_id=None,
             mcp_servers=cfg["mcp_servers"] or None,
             skills=cfg["skills"] or None,
+            memory=None,
+            model=cfg["model_spec"],
             async_output={"bucket": settings.workspace_bucket, "key": output_key},
         )
         out["runtime_session_id"] = accept.get("runtime_session_id", "")
@@ -239,6 +257,7 @@ def invoke_async_and_wait(
     except Exception as e:  # noqa: BLE001 — recorded below, caller sees the error
         out["error"] = str(e)[:300]
 
+    spec = cfg["model_spec"]
     observability_service.record(
         user=user,
         source=source,
@@ -251,5 +270,6 @@ def invoke_async_and_wait(
         runtime_session_id=out["runtime_session_id"],
         error=out["error"],
         ref=ref,
+        model=f"{spec['backend']}:{spec.get('model', '')}" if spec else "",
     )
     return out

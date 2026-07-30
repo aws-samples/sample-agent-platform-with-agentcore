@@ -215,6 +215,22 @@ Both kernels resolve their model through environment configuration, in order:
 | **LLM gateway** (default in this sample) | `ANTHROPIC_BASE_URL` → your LiteLLM/gateway endpoint; API key read at startup from Secrets Manager (`LLM_GATEWAY_SECRET_NAME`) | Centralized model governance: allow-lists, budgets, cost attribution per team |
 | **Bedrock direct** | `CLAUDE_CODE_USE_BEDROCK=1` + cross-region inference profile (`global.` model ID prefix) | No gateway in place; simplest path |
 
+The environment sets the **container default**; the model control plane
+(Governance → Model backends) overrides it per workload. Published agents
+carry a `(backend, model)` reference resolved at every invocation, and Dev
+Workbench sessions carry the same reference resolved at every connect — the
+interactive kernel renders the resolved spec into a shell env file that the
+terminal's Claude Code sources at launch. Both paths reuse one resolver
+(`model_config_service.resolve`), so the catalog, defaults, and disabled-backend
+rules apply identically to headless and interactive workloads.
+
+A gateway spec also carries `alias_models`: one catalog model per Claude
+family, which the kernels export as the `ANTHROPIC_DEFAULT_*_MODEL` steering
+variables (clearing families the catalog lacks). This keeps Claude Code's
+`/model` picker and background tasks on the session's own backend — without
+it, a gateway session would inherit the container's baked-in Bedrock profile
+IDs, which the gateway rejects.
+
 The gateway pattern is why **networking matters** (next section): enterprise
 gateways typically enforce source-IP allow-lists.
 
@@ -376,11 +392,15 @@ a new runtime version automatically).
   isolation comes from AgentCore microVMs plus the VPC egress security group.
 - Pre-signed WSS URLs expire in 5 minutes and are minted per connect request by
   the backend; the container's IAM role cannot mint URLs.
-- Runtime IAM role follows least privilege: S3 workspace bucket, two
-  specifically-named secrets (the LLM gateway key and `agent-platform/exa-api-key`
-  for `{{secret:…}}` placeholders in the registry), ECR pull, CloudWatch Logs,
-  AgentCore memory/built-in-tool data-plane actions. No `bedrock:*` at all in
-  the default LLM-gateway mode.
+- Each kernel runs under its own least-privilege IAM role (interactive / sdk /
+  mcp-tools). No kernel role can touch `workspaces/*`: the interactive
+  kernel's workspace sync uses per-session STS credentials the backend mints
+  (AssumeRole + a session policy pinned to `workspaces/{sessionId}/*`), so
+  one session's code cannot read another session's files even with the
+  container's own credentials. The headless kernel has skills read + async
+  artifact prefixes; the MCP kernel has no S3 at all. Secrets are limited to
+  two specifically-named entries (LLM gateway key; `agent-platform/exa-api-key`
+  for `{{secret:…}}` placeholders, SDK kernel only).
 - No secrets are baked into images; keys are read from Secrets Manager at
   container/Lambda start.
 - The browser and end users hold **no AWS credentials** — all AWS access is

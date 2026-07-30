@@ -7,7 +7,7 @@ these land in the ``aws/spans`` log group and render as an expandable trace
 tree in the CloudWatch Traces console; the portal deep-links to it by trace ID.
 
 Segments are buffered in memory and sent once at the end of the run — a
-topic-selection run lasts minutes, so nothing is gained by streaming, and one
+daily-topic run lasts minutes, so nothing is gained by streaming, and one
 ``PutTraceSegments`` batch keeps this dependency-free (plain boto3, identical
 behavior on ECS and Lambda — no OTEL SDK, no collector sidecar).
 """

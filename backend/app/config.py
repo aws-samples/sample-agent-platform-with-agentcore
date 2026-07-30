@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     # S3 bucket where kernels persist per-session workspaces
     workspace_bucket: str = ""
     workspace_prefix: str = "workspaces"
+    # Role the backend assumes per session (with a prefix-narrowing session
+    # policy) to mint the interactive kernel's workspace-sync credentials.
+    # Empty = legacy mode: the kernel falls back to its container role, which
+    # only works against a stack that still grants it workspaces/*.
+    workspace_access_role_arn: str = ""
 
     # EventBridge Scheduler wiring (outputs of the PortalStack). When all of
     # group/lambda/role are set, the scheduler runs in "eventbridge" mode:

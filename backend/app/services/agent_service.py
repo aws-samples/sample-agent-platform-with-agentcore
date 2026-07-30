@@ -65,6 +65,8 @@ class AgentService:
             "mcp_server_names": item.get("mcp_server_names", []),
             "skill_names": item.get("skill_names", []),
             "memory_id": item.get("memory_id", ""),
+            "model_backend": item.get("model_backend", ""),
+            "model": item.get("model", ""),
             "version": int(item.get("version", 1)),
             "source": item.get("source", "manual"),
             "created_by": item.get("created_by", ""),
@@ -138,6 +140,8 @@ class AgentService:
         mcp_server_names: list[str] | None = None,
         skill_names: list[str] | None = None,
         memory_id: str = "",
+        model_backend: str = "",
+        model: str = "",
         source: str = "manual",
     ) -> dict:
         """Create or re-publish (version bump) an agent by name."""
@@ -145,6 +149,10 @@ class AgentService:
             raise ValueError("agent name must be alphanumeric with - or _")
         # validate attachments up front
         self._resolve_names(mcp_server_names or [], skill_names or [])
+        if model_backend or model:
+            # fail the publish, not the future invocation, on a bad reference
+            from app.services.model_config_service import model_config_service
+            model_config_service.resolve(model_backend, model)
 
         existing = next((a for a in self.list_agents() if a["name"] == name), None)
         now = _now()
@@ -168,6 +176,8 @@ class AgentService:
             "mcp_server_names": mcp_server_names or [],
             "skill_names": skill_names or [],
             "memory_id": memory_id,
+            "model_backend": model_backend,
+            "model": model,
             "version": version,
             "source": source,
             "created_by": user,
@@ -212,6 +222,8 @@ class AgentService:
             mcp_server_names=[str(x) for x in manifest.get("mcp_servers", []) or []],
             skill_names=[str(x) for x in manifest.get("skills", []) or []],
             memory_id=str(manifest.get("memory_id", "")),
+            model_backend=str(manifest.get("model_backend", "")),
+            model=str(manifest.get("model", "")),
             source=f"workspace:{runtime_session_id[:16]}",
         )
 
@@ -234,6 +246,8 @@ class AgentService:
             "system_prompt": agent["system_prompt"],
             "max_turns": agent["max_turns"],
             "memory_id": agent["memory_id"],
+            "model_backend": agent["model_backend"],
+            "model": agent["model"],
             **cfg,
         }
 

@@ -8,6 +8,9 @@ class SessionCreateRequest(BaseModel):
     kernel: str = Field(default="claude-code", pattern="^(claude-code|agent-sdk)$")
     mcp_server_ids: list[str] = Field(default_factory=list, max_length=10)
     skill_ids: list[str] = Field(default_factory=list, max_length=10)
+    # "" = platform default backend; otherwise a backend from the model config
+    model_backend: str = Field(default="", pattern="^(|bedrock|litellm)$")
+    model: str = Field(default="", max_length=200)
 
 
 class SessionResponse(BaseModel):
@@ -21,6 +24,8 @@ class SessionResponse(BaseModel):
     s3_prefix: str = ""
     mcp_servers: list[str] = []  # attached server names (display)
     skills: list[str] = []  # attached skill names (display)
+    model_backend: str = ""
+    model: str = ""
 
 
 class ConnectResponse(BaseModel):
@@ -107,6 +112,9 @@ class AgentPublishRequest(BaseModel):
     mcp_server_names: list[str] = Field(default_factory=list, max_length=10)
     skill_names: list[str] = Field(default_factory=list, max_length=10)
     memory_id: str = ""
+    # "" = platform default backend; otherwise a backend from the model config
+    model_backend: str = Field(default="", pattern="^(|bedrock|litellm)$")
+    model: str = Field(default="", max_length=200)
 
 
 class AgentPublishFromSessionRequest(BaseModel):
@@ -164,6 +172,25 @@ class GovernancePolicyUpdate(BaseModel):
     daily_limit_total: int | None = Field(default=None, ge=0)
     max_turns_cap: int | None = Field(default=None, ge=0, le=50)
     sources_enabled: dict[str, bool] | None = None
+
+
+class ModelBackendPatch(BaseModel):
+    enabled: bool | None = None
+    base_url: str | None = Field(default=None, max_length=500)
+    secret_name: str | None = Field(default=None, max_length=200)
+    models: list[str] | None = Field(default=None, max_length=50)
+    default_model: str | None = Field(default=None, max_length=200)
+    small_fast_model: str | None = Field(default=None, max_length=200)
+
+
+class ModelConfigUpdate(BaseModel):
+    default_backend: str | None = Field(default=None, pattern="^(bedrock|litellm)$")
+    backends: dict[str, ModelBackendPatch] | None = None
+
+
+class ModelTestRequest(BaseModel):
+    backend: str = Field(pattern="^(bedrock|litellm)$")
+    model: str = Field(default="", max_length=200)
 
 
 class ArtifactContent(BaseModel):

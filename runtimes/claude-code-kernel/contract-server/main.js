@@ -15,7 +15,7 @@
 const http = require("http");
 const fs = require("fs");
 const url = require("url");
-const { spawn, execFile } = require("child_process");
+const { spawn, execFile, execFileSync } = require("child_process");
 const WebSocket = require("ws");
 
 const PORT = 8080;
@@ -29,6 +29,148 @@ let activeConnections = 0;
 let lastActivityTime = Math.floor(Date.now() / 1000);
 let runtimeSessionId = null;
 let lastSyncTime = 0;
+
+// ---------------------------------------------------------------------------
+// Session-scoped workspace credentials.
+//
+// The container's execution role has NO access to workspaces/* — the backend
+// assumes agent-platform-workspace-access with a session policy narrowed to
+// this session's prefix and delivers the credentials in the warmup payload.
+// They are written as an AWS shared-credentials profile that ONLY the
+// workspace-sync `aws s3` calls use (via AWS_SHARED_CREDENTIALS_FILE), so the
+// container's default credential chain — skills mount, Secrets Manager,
+// mcp-proxy — stays on the execution role. Role chaining caps each grant at
+// 1h; a refresh token (also from the warmup payload) renews them through the
+// backend. WS_CREDS_NONE marks a legacy warmup that carried no credentials,
+// so start.sh's restore doesn't wait for a file that will never appear.
+// ---------------------------------------------------------------------------
+const WS_CREDS_FILE = "/tmp/.aws-workspace-creds";
+const WS_CREDS_NONE = "/tmp/.ws-creds-none";
+let wsCredsExpiry = 0; // epoch ms
+let wsCredsRefresh = null; // {url, token}
+
+function saveWorkspaceCredentials(creds) {
+  const ini = [
+    "[workspace]",
+    `aws_access_key_id = ${creds.access_key_id}`,
+    `aws_secret_access_key = ${creds.secret_access_key}`,
+    `aws_session_token = ${creds.session_token}`,
+    "",
+  ].join("\n");
+  fs.writeFileSync(WS_CREDS_FILE, ini, { mode: 0o600 });
+  wsCredsExpiry = Date.parse(creds.expiration) || Date.now() + 3600_000;
+  console.log(`[creds] workspace credentials valid until ${creds.expiration}`);
+}
+
+function workspaceSyncEnv() {
+  if (!fs.existsSync(WS_CREDS_FILE)) return process.env;
+  return {
+    ...process.env,
+    AWS_SHARED_CREDENTIALS_FILE: WS_CREDS_FILE,
+    AWS_PROFILE: "workspace",
+    // Guard against a stray env override redirecting the profile lookup.
+    AWS_SDK_LOAD_CONFIG: "0",
+  };
+}
+
+async function refreshWorkspaceCredentials() {
+  if (!wsCredsRefresh || !wsCredsRefresh.url || !runtimeSessionId) return;
+  // Renew once within 20 minutes of expiry.
+  if (wsCredsExpiry - Date.now() > 20 * 60_000) return;
+  try {
+    const resp = await fetch(wsCredsRefresh.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runtime_session_id: runtimeSessionId,
+        token: wsCredsRefresh.token,
+      }),
+    });
+    if (!resp.ok) {
+      console.log(`[creds] refresh failed: HTTP ${resp.status}`);
+      return;
+    }
+    const body = await resp.json();
+    if (body.workspace_credentials) saveWorkspaceCredentials(body.workspace_credentials);
+  } catch (e) {
+    console.log(`[creds] refresh error: ${e.message}`);
+  }
+}
+setInterval(refreshWorkspaceCredentials, 5 * 60_000);
+
+// ---------------------------------------------------------------------------
+// Per-session model routing.
+//
+// The warmup payload may carry config.model — the same spec shape the
+// headless kernel consumes (backend "bedrock" | "gateway", model,
+// small_fast_model, base_url, secret_name). The interactive kernel can't set
+// per-process env like the SDK does (Claude Code runs in a tmux login shell),
+// so the spec is rendered into a shell env file that .bash_profile sources
+// right before starting `claude`. Written synchronously in the warmup handler,
+// which always completes before the backend mints the WSS URL — so it's in
+// place before the first shell spawns. An empty/absent spec keeps the
+// container defaults baked into the runtime environment.
+// ---------------------------------------------------------------------------
+const MODEL_ENV_FILE = "/tmp/.model-env";
+
+// Single-quote shell escaping: safe for arbitrary values in `export X='…'`.
+function shq(v) {
+  return "'" + String(v).replace(/'/g, "'\\''") + "'";
+}
+
+function applyModelSpec(spec) {
+  const backend = String(spec.backend || "");
+  const lines = [];
+  // /model picker aliases (opus/sonnet/haiku). The container bakes in
+  // Bedrock profile IDs; a gateway session must replace them with names from
+  // its own backend's catalog — and clear families the catalog lacks, so the
+  // picker never offers an ID the gateway would reject.
+  const aliasEnv = (aliases) => {
+    for (const family of ["opus", "sonnet", "haiku"]) {
+      const envName = `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+      if (aliases && aliases[family]) lines.push(`export ${envName}=${shq(aliases[family])}`);
+      else lines.push(`unset ${envName}`);
+    }
+  };
+  if (backend === "bedrock") {
+    lines.push("export CLAUDE_CODE_USE_BEDROCK=1");
+    lines.push("unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN");
+    if (spec.model) lines.push(`export ANTHROPIC_MODEL=${shq(spec.model)}`);
+    if (spec.small_fast_model)
+      lines.push(`export ANTHROPIC_SMALL_FAST_MODEL=${shq(spec.small_fast_model)}`);
+    // keep the container's baked-in (Bedrock) alias steering
+  } else if (backend === "gateway") {
+    if (!spec.base_url) throw new Error("gateway spec missing base_url");
+    const secretName = String(spec.secret_name || "agent-platform/llm-gateway-key");
+    const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
+    // execFileSync (no shell); uses the container's default credential chain —
+    // the execution role holds the read grant for the gateway-key secret.
+    const raw = execFileSync(
+      "aws",
+      ["secretsmanager", "get-secret-value", "--secret-id", secretName,
+       "--region", region, "--query", "SecretString", "--output", "text"],
+      { timeout: 15_000 },
+    ).toString().trim();
+    let key = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.api_key) key = parsed.api_key;
+    } catch { /* raw string secret */ }
+    lines.push("unset CLAUDE_CODE_USE_BEDROCK");
+    lines.push(`export ANTHROPIC_BASE_URL=${shq(spec.base_url)}`);
+    lines.push(`export ANTHROPIC_AUTH_TOKEN=${shq(key)}`);
+    if (spec.model) lines.push(`export ANTHROPIC_MODEL=${shq(spec.model)}`);
+    // a baked-in Bedrock haiku ID must not leak into gateway calls
+    lines.push(
+      `export ANTHROPIC_SMALL_FAST_MODEL=${shq(spec.small_fast_model || spec.model || "")}`,
+    );
+    aliasEnv(spec.alias_models);
+  } else {
+    return;
+  }
+  fs.writeFileSync(MODEL_ENV_FILE, lines.join("\n") + "\n", { mode: 0o600 });
+  console.log(`[model] routing applied: ${backend}:${spec.model || "(backend default)"}`);
+}
 
 function startTtyd() {
   console.log(`[contract-server] starting ttyd on port ${TTYD_PORT}`);
@@ -86,12 +228,13 @@ function triggerSync() {
   const syncArgs = (src, dst, extra) => ["s3", "sync", src, dst, "--quiet", "--region", region, ...extra];
   const excludes = ["node_modules/*", ".venv/*", "__pycache__/*", ".git/objects/*", "*.pyc", "cdk.out/*"]
     .flatMap((p) => ["--exclude", p]);
-  execFile("aws", syncArgs("/workspace/", `${base}/`, excludes), { timeout: 20_000 }, (err) => {
+  const env = workspaceSyncEnv();
+  execFile("aws", syncArgs("/workspace/", `${base}/`, excludes), { timeout: 20_000, env }, (err) => {
     if (err) return console.log(`[workspace] sync error: ${err.message}`);
     execFile(
       "aws",
       syncArgs("/root/.claude/", `${base}/.claude-home/`, ["--exclude", "*.lock"]),
-      { timeout: 20_000 },
+      { timeout: 20_000, env },
       (err2) => {
         if (err2) console.log(`[workspace] sync error: ${err2.message}`);
         else console.log(`[workspace] synced at ${new Date().toISOString()}`);
@@ -217,6 +360,29 @@ function handleHttp(req, res) {
 
       if (action === "warmup") {
         lastActivityTime = Math.floor(Date.now() / 1000);
+        const cfg = payload.config || {};
+        if (cfg.workspace_credentials) {
+          try {
+            saveWorkspaceCredentials(cfg.workspace_credentials);
+          } catch (e) {
+            console.log(`[creds] failed to save workspace credentials: ${e.message}`);
+          }
+          if (cfg.workspace_credentials_refresh) {
+            wsCredsRefresh = cfg.workspace_credentials_refresh;
+          }
+        } else if (!fs.existsSync(WS_CREDS_FILE)) {
+          // Legacy backend (no credential minting): unblock start.sh's
+          // restore, which otherwise waits for the credentials file.
+          fs.writeFileSync(WS_CREDS_NONE, "1");
+        }
+        if (cfg.model) {
+          try {
+            applyModelSpec(cfg.model);
+          } catch (e) {
+            // keep container defaults — a broken spec must not brick the shell
+            console.log(`[model] failed to apply model spec: ${e.message}`);
+          }
+        }
         if (payload.config) applySessionConfig(payload.config);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(

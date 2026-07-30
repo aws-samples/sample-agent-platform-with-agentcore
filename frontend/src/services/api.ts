@@ -11,6 +11,8 @@ export interface Session {
   s3_prefix: string
   mcp_servers: string[]
   skills: string[]
+  model_backend: string // '' = platform default
+  model: string
 }
 
 export interface EcosystemEntry {
@@ -110,6 +112,8 @@ export interface PublishedAgent {
   mcp_server_names: string[]
   skill_names: string[]
   memory_id: string
+  model_backend: string // '' = platform default
+  model: string
   version: number
   source: string
   created_by: string
@@ -210,6 +214,7 @@ export interface PipelineRun {
   pipeline: string
   status: string
   source: string
+  parent_run?: string
   started_by: string
   started_at: string
   finished_at: string
@@ -251,6 +256,7 @@ export interface InvocationRecord {
   user: string
   source: string
   target: string
+  model?: string // "backend:model" routing used; '' = container default
   prompt_preview: string
   ok: boolean
   duration_ms: number | null
@@ -277,6 +283,30 @@ export interface GovernancePolicy {
   daily_limit_total: number
   max_turns_cap: number
   sources_enabled: Record<string, boolean>
+}
+
+export interface ModelBackend {
+  enabled: boolean
+  base_url?: string
+  secret_name?: string
+  models: string[]
+  default_model: string
+  small_fast_model: string
+}
+
+export interface ModelConfig {
+  default_backend: string
+  backends: Record<string, ModelBackend>
+}
+
+export interface ModelTestResult {
+  ok: boolean
+  backend: string
+  model: string
+  reply: string
+  duration_ms: number
+  cost_usd?: number | null
+  error: string
 }
 
 export interface UsageToday {
@@ -325,10 +355,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listSessions: () => request<Session[]>('/api/v1/sessions'),
-  createSession: (name: string, kernel = 'claude-code', mcpServerIds: string[] = [], skillIds: string[] = []) =>
+  createSession: (
+    name: string,
+    kernel = 'claude-code',
+    mcpServerIds: string[] = [],
+    skillIds: string[] = [],
+    modelBackend = '',
+    model = '',
+  ) =>
     request<Session>('/api/v1/sessions', {
       method: 'POST',
-      body: JSON.stringify({ name, kernel, mcp_server_ids: mcpServerIds, skill_ids: skillIds }),
+      body: JSON.stringify({
+        name,
+        kernel,
+        mcp_server_ids: mcpServerIds,
+        skill_ids: skillIds,
+        model_backend: modelBackend,
+        model,
+      }),
     }),
   connectSession: (id: string) => request<ConnectInfo>(`/api/v1/sessions/${id}/connect`),
   stopSession: (id: string) => request<Session>(`/api/v1/sessions/${id}/stop`, { method: 'POST' }),
@@ -362,6 +406,8 @@ export const api = {
     mcp_server_names?: string[]
     skill_names?: string[]
     memory_id?: string
+    model_backend?: string
+    model?: string
   }) => request<PublishedAgent>('/api/v1/agents', { method: 'POST', body: JSON.stringify(body) }),
   publishAgentFromSession: (sessionId: string) =>
     request<PublishedAgent>('/api/v1/agents/publish-from-session', {
@@ -434,6 +480,15 @@ export const api = {
   // Observability
   listInvocations: () => request<InvocationRecord[]>('/api/v1/observability/invocations'),
   getObservabilityStats: () => request<ObservabilityStats>('/api/v1/observability/stats'),
+
+  // Model backend control plane
+  getModelConfig: () => request<ModelConfig>('/api/v1/model-config'),
+  updateModelConfig: (body: {
+    default_backend?: string
+    backends?: Record<string, Partial<ModelBackend>>
+  }) => request<ModelConfig>('/api/v1/model-config', { method: 'PUT', body: JSON.stringify(body) }),
+  testModelBackend: (body: { backend: string; model?: string }) =>
+    request<ModelTestResult>('/api/v1/model-config/test', { method: 'POST', body: JSON.stringify(body) }),
 
   // Governance
   getGovernancePolicy: () => request<GovernancePolicy>('/api/v1/governance/policy'),

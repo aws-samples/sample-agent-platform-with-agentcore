@@ -117,6 +117,11 @@ function RunCard({ run, region }: { run: PipelineRun; region: string }) {
         </span>
         <span className="text-sm font-medium text-slate-900">{run.pipeline}</span>
         <span className="font-mono text-xs text-slate-400">{run.id}</span>
+        {run.parent_run && (
+          <span className="badge bg-violet-50 text-violet-700" title={`invoked via workflow() by run ${run.parent_run}`}>
+            ↳ nested
+          </span>
+        )}
         <span className="text-xs text-slate-400">by {run.started_by} · {run.source}</span>
         {counts && (
           <span className="text-xs text-slate-500">
@@ -348,7 +353,28 @@ export default function PipelinePage() {
 
       <p className="mb-2 text-xs font-medium text-slate-500">Runs</p>
       <div className="space-y-3">
-        {runs.map((r) => <RunCard key={r.id} run={r} region={region} />)}
+        {(() => {
+          // group nested runs (workflow() children) under their parent so the
+          // list reads as one logical run per trigger, not parallel siblings.
+          // A child whose parent fell off the page renders top-level (badge
+          // still marks it as nested).
+          const ids = new Set(runs.map((r) => r.id))
+          const top = runs.filter((r) => !r.parent_run || !ids.has(r.parent_run))
+          const childrenOf = (id: string) => runs.filter((r) => r.parent_run === id)
+          return top.map((r) => {
+            const kids = childrenOf(r.id)
+            return (
+              <div key={r.id}>
+                <RunCard run={r} region={region} />
+                {kids.length > 0 && (
+                  <div className="ml-6 mt-2 space-y-2 border-l-2 border-violet-100 pl-3">
+                    {kids.map((c) => <RunCard key={c.id} run={c} region={region} />)}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        })()}
         {runs.length === 0 && <p className="text-sm text-slate-400">No runs yet.</p>}
       </div>
 
