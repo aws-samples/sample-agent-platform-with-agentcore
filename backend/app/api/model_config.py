@@ -1,5 +1,6 @@
 """Model backend control plane: config + connectivity test."""
 
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,8 @@ from app.services import invocation_service
 from app.services.audit_service import audit_service
 from app.services.governance_service import QuotaExceeded, SourceDisabled
 from app.services.model_config_service import model_config_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/model-config", tags=["model-config"])
 
@@ -59,11 +62,13 @@ def test_backend(req: ModelTestRequest, user: str = Depends(get_current_user)):
         )
     except (QuotaExceeded, SourceDisabled) as e:
         raise HTTPException(status_code=429, detail=str(e))
-    except Exception as e:
+    except Exception:
+        # Details go to the log, never into the HTTP response body.
+        logger.exception("model connectivity test failed (%s:%s)", req.backend, req.model)
         return {
             "ok": False, "backend": req.backend, "model": req.model,
             "reply": "", "duration_ms": int((time.monotonic() - started) * 1000),
-            "error": str(e)[:300],
+            "error": "connectivity test failed — see backend logs",
         }
     usage = res.get("usage") or {}
     return {

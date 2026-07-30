@@ -206,6 +206,7 @@ its reason; they are:
 | semgrep `detect-non-literal-fs-filename` | `claude-code-kernel/contract-server/main.js` | The skill mount directory is a fixed prefix plus a name stripped to `[a-zA-Z0-9_-]` — no dots or slashes survive sanitization, so `../` traversal is impossible. |
 | semgrep `dynamic-urllib-use-detected` | `scripts/e2e_platform.py` | Test harness only; the URL is the fixed https portal base plus literal API paths — no user-controlled input. |
 | CodeQL `py/clear-text-logging-sensitive-data` | `agent-sdk-kernel/src/main.py` | False positive — the logged value is the Secrets Manager secret *name* (in a "could not read" error), not the secret value. Dismissed on GitHub with this reason. |
+| CodeQL `py/clear-text-logging-sensitive-data` | `scripts/seed_team_idp.py`, `scripts/deploy_team_gateway.py`, `scripts/e2e_team_auth.py` | False positives — the flagged prints log secret/credential-provider *names* and the public OIDC issuer URL (CodeQL taints anything derived from `SecretString`); no password or key value is ever printed. Dismissed on GitHub with per-alert reasons. |
 
 ## License
 

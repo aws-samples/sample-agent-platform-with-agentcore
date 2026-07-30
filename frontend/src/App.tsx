@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router'
 import AppShell from '@/components/layout/AppShell'
 import OverviewPage from '@/pages/OverviewPage'
 import WorkbenchPage from '@/pages/WorkbenchPage'
