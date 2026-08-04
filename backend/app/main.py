@@ -20,6 +20,7 @@ from app.api import (
     observability,
     pipelines,
     schedules,
+    service_entry,
     sessions,
     team_demo,
 )
@@ -74,6 +75,7 @@ app.include_router(model_config.router)
 app.include_router(pipelines.router)
 app.include_router(gateways.router)
 app.include_router(team_demo.router)
+app.include_router(service_entry.router)
 
 
 @app.get("/health")
@@ -101,6 +103,8 @@ def whoami(
     team = claims.get("team") or claims.get("groups") or []
     return {
         "user": user,
+        "is_admin": getattr(user, "is_admin", False),
+        "groups": list(getattr(user, "groups", ())),
         "teams": [team] if isinstance(team, str) else [str(t).strip("/") for t in team],
         "issuer": claims.get("iss", ""),
         "audience": claims.get("aud", ""),

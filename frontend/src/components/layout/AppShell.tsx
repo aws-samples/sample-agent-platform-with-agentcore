@@ -20,21 +20,30 @@ import {
 import { getUser, signOut } from '@/services/auth'
 import { api, type Identity } from '@/services/api'
 
+// admin: management surface, hidden for regular users (the backend enforces
+// the same split with 403s — hiding is UX, not the security boundary).
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/workbench', label: 'Dev Workbench', icon: Terminal },
   { to: '/publish', label: 'Publish', icon: Rocket },
   { to: '/debug', label: 'Debug', icon: MessagesSquare },
-  { to: '/scheduler', label: 'Scheduler', icon: ListTodo },
-  { to: '/ecosystem', label: 'MCP & Skills', icon: Boxes },
-  { to: '/gateway', label: 'Gateway', icon: KeyRound },
-  { to: '/channels', label: 'Channels', icon: Webhook },
-  { to: '/observability', label: 'Observability', icon: Activity },
-  { to: '/memory', label: 'Memory', icon: Database },
-  { to: '/eval', label: 'Evaluation', icon: FlaskConical },
-  { to: '/pipeline', label: 'Workflow', icon: Workflow, badge: 'Exp' },
-  { to: '/governance', label: 'Governance', icon: Shield },
-]
+  { to: '/scheduler', label: 'Scheduler', icon: ListTodo, admin: true },
+  { to: '/ecosystem', label: 'MCP & Skills', icon: Boxes, admin: true },
+  { to: '/gateway', label: 'Gateway', icon: KeyRound, admin: true },
+  { to: '/channels', label: 'Channels', icon: Webhook, admin: true },
+  { to: '/observability', label: 'Observability', icon: Activity, admin: true },
+  { to: '/memory', label: 'Memory', icon: Database, admin: true },
+  { to: '/eval', label: 'Evaluation', icon: FlaskConical, admin: true },
+  { to: '/pipeline', label: 'Workflow', icon: Workflow, badge: 'Exp', admin: true },
+  { to: '/governance', label: 'Governance', icon: Shield, admin: true },
+] as Array<{
+  to: string
+  label: string
+  icon: typeof LayoutDashboard
+  end?: boolean
+  badge?: string
+  admin?: boolean
+}>
 
 export default function AppShell() {
   const navigate = useNavigate()
@@ -45,8 +54,12 @@ export default function AppShell() {
   const user = identity?.user || getUser() || ''
 
   useEffect(() => {
-    api.getMe().then(setIdentity).catch(() => {})
+    api.getMeCached().then(setIdentity).catch(() => {})
   }, [])
+
+  // Until /me answers, show only the developer surface — a brief flash of
+  // fewer items for admins beats flashing admin pages at regular users.
+  const nav = NAV.filter((item) => !item.admin || identity?.is_admin)
 
   const handleSignOut = async () => {
     // In OIDC mode this leaves for the IdP to end its session too; only the
@@ -68,7 +81,7 @@ export default function AppShell() {
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 px-3 pb-6">
-          {NAV.map(({ to, label, icon: Icon, end, badge }) => (
+          {nav.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -101,7 +114,8 @@ export default function AppShell() {
                     {user}
                   </p>
                   <p className="text-[11px] leading-tight text-slate-400">
-                    {identity?.issuer ? 'signed in via SSO' : 'signed in'}
+                    {identity?.is_admin ? 'Administrator' : identity ? 'Developer' : ''}
+                    {identity?.issuer ? ' · SSO' : identity ? ' · signed in' : 'signed in'}
                   </p>
                 </div>
               </div>

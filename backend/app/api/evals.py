@@ -2,12 +2,12 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.models.schemas import EvalDatasetCreateRequest, EvalRunRequest
 from app.services.audit_service import audit_service
 from app.services.eval_service import eval_service
 
-router = APIRouter(prefix="/api/v1/evals", tags=["evals"])
+router = APIRouter(prefix="/api/v1/evals", tags=["evals"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/datasets")

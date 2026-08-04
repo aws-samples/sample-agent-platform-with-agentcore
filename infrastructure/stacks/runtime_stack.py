@@ -181,13 +181,19 @@ class RuntimeStack(Stack):
         # Remote-MCP credentials: url-kind registry targets may carry
         # {{secret:…}} placeholders resolved at session start. Only the SDK
         # kernel implements the placeholder (runtimes/agent-sdk-kernel).
+        #
+        # Nothing the platform ships needs this — search runs on the managed
+        # Web Search connector, which authenticates with the kernel's own role
+        # and has no API key. The grant stays so that registering a third-party
+        # MCP server that *does* need a key works out of the box: store it as
+        # agent-platform/remote-mcp-key and reference it from the target.
         for _r in (sdk_role, legacy_role):
             _r.add_to_policy(
                 iam.PolicyStatement(
                     sid="McpSecrets",
                     actions=["secretsmanager:GetSecretValue"],
                     resources=[
-                        f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agent-platform/exa-api-key*"
+                        f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agent-platform/remote-mcp-key*"
                     ],
                 )
             )
@@ -318,6 +324,29 @@ class RuntimeStack(Stack):
                         f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/mcp_tools_kernel-*",
                         f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/mcp_tools_kernel-*/runtime-endpoint/*",
                     ],
+                )
+            )
+
+        # AgentCore Gateways reached as MCP servers (registry kind
+        # "agentcore-gateway") — same SigV4 proxy as a runtime. The feed
+        # pipelines search through one of these: the managed Web Search
+        # connector behind scripts/deploy_websearch_gateway.py.
+        #
+        # Gateway IDs are generated at deploy time, so this is scoped by
+        # account+region rather than to one gateway. us-east-1 is listed
+        # explicitly because the Web Search connector is only offered there —
+        # a platform deployed elsewhere still has to reach that gateway.
+        for r in (interactive_role, sdk_role, legacy_role):
+            r.add_to_policy(
+                iam.PolicyStatement(
+                    sid="InvokeGateways",
+                    actions=["bedrock-agentcore:InvokeGateway"],
+                    resources=sorted(
+                        {
+                            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:gateway/*",
+                            f"arn:aws:bedrock-agentcore:us-east-1:{self.account}:gateway/*",
+                        }
+                    ),
                 )
             )
 

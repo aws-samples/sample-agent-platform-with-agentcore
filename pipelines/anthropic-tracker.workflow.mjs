@@ -7,10 +7,14 @@
 // 与本地版的平台适配差异(其余逐段同构):
 // - 准备阶段纯代码化:平台 runner 允许 Date,s3list/s3read 原生可用,不再需要
 //   跑 bash 的 prep agent;去重基线从最近几份 dated feed 里用正则提 URL/标题。
-// - 需要 Exa 工具的阶段走 published thin agents(exa-searcher / tracker-judge /
-//   exa-crawler):平台的裸 agent-sdk kernel 不挂 MCP,工具能力跟着 published
+// - 需要工具的阶段走 published thin agents(web-searcher / tracker-judge /
+//   tracker-crawler):平台的裸 agent-sdk kernel 不挂 MCP,工具能力跟着 published
 //   agent 的注册走。这些 agent 的 system prompt 里带各自的 JSON 输出契约
 //   (平台只给裸 kernel 自动内联 schema,published agent 不内联)。
+// - 检索用 AgentCore 托管的 Web Search connector(经我们自己的 gateway,SigV4),
+//   抓正文用 AgentCore Browser 内置工具。两者都是账号内的 AWS 能力:没有第三方
+//   搜索 API key,query 也不出 AWS。Web Search 只回语义 snippet 不回全文,所以
+//   检索阶段不再有「一次搜索灌回几百 KB 正文」的风险(见下面检索阶段的注释)。
 // - 预筛跑平台默认模型:平台 invoke 没有 per-call model 覆盖,本地版的
 //   model:'haiku' 平移不了。任务不变(recall 导向的事件级去重),只是更贵一点。
 // - 渲染后直接 s3write 到 feeds/anthropic-tracker/{今天}.md,不再需要 writer
@@ -22,14 +26,14 @@
 
 export const meta = {
   name: 'anthropic-tracker',
-  description: 'tracker feed 流水线:25 条检索 fan-out → 代码归并去重 → 预筛 → 判定 → 抓取 → 渲染落盘 feeds/',
+  description: 'tracker feed 流水线:29 条检索 fan-out → 代码归并去重 → 预筛 → 判定 → 抓取 → 渲染落盘 feeds/',
   phases: [
     { title: '准备', detail: '纯代码:算日期窗口 + 读最近几期 feed 提 URL/标题当去重基线' },
-    { title: '检索', detail: 'fan-out:25 条 query 各一次独立 Exa 调用,带 query 回显校验' },
+    { title: '检索', detail: 'fan-out:29 条 query 各一次独立 Web Search 调用,带 query 回显校验' },
     { title: '归并', detail: '纯代码:回显校验 + URL 归一化去重 + 窗口过滤,不烧模型' },
     { title: '预筛', detail: 'fan-out:全量事件级去重(recall 导向,拿不准放过)' },
     { title: '判定', detail: 'fan-out:每批候选一个评审(一手性 / 归类 / 去重复审)' },
-    { title: '抓取', detail: '代码按优先级取 top N,每条一次正文抓取 + 中文摘要' },
+    { title: '抓取', detail: '代码按优先级取 top N,每条一次 Browser 正文抓取 + 中文摘要' },
     { title: '渲染', detail: '纯代码拼 feed markdown,s3write 落盘' },
   ],
 }
@@ -57,7 +61,12 @@ const START = new Date(new Date(`${TODAY}T00:00:00Z`).getTime() - DAYS * 8640000
 // 原样搬自 ~/.claude/skills/anthropic-tracker/SKILL.md 第二步。搬进代码的意义:
 // 清单执行不再是模型的自由裁量 —— 单个大 agent 一旦想省 turn 就合并或跳过
 // query,本地和云上漏掉的子集还不一样,这是两边候选池对不上的最大单一来源。
-// domain 字段走 includeDomains 硬参数,不再往 query 里塞 site:。
+// domain 字段走 filters.domainFilter.include 硬参数,不往 query 里塞 site:。
+//
+// query 一律是英文自然语言:Web Search 收的是自然语言 query(200 字符以内),
+// boolean OR / 引号短语 / site: 这些检索语法它不认,当普通关键词处理反而拉低
+// 召回。skill 原文里那条把 5 个播客用 OR 串起来的 query 因此拆成逐站单发 —— 多
+// 4 次调用,换回按站点精确命中(每站 n:5,总量跟原来一条 n:10 差不多)。
 const QUERIES = [
   // 官方渠道
   { g: '官方', q: 'Anthropic announcement research blog', domain: 'anthropic.com' },
@@ -66,17 +75,21 @@ const QUERIES = [
   { g: '官方', q: 'Anthropic blog case study product update', domain: 'claude.com' },
   // 内部实践 / dog-fooding
   { g: '内部实践', q: 'Anthropic uses Claude internally team workflow' },
-  { g: '内部实践', q: '"how Anthropic uses" Claude' },
+  { g: '内部实践', q: 'how Anthropic uses Claude inside the company' },
   // 员工实践 & 落地技巧
   { g: '员工实践', q: 'Claude Code workflow tips technique best practice' },
   { g: '员工实践', q: 'Anthropic engineer workflow productivity technique' },
   { g: '员工实践', q: 'Claude output format HTML artifacts prototype' },
   // LinkedIn 热帖
   { g: 'LinkedIn', q: 'Anthropic Claude', domain: 'linkedin.com', n: 8 },
-  // 播客 & 访谈
+  // 播客 & 访谈(skill 原文的 OR 链拆成逐站单发)
   { g: '播客访谈', q: 'Anthropic podcast interview episode' },
-  { g: '播客访谈', q: 'Anthropic Lenny OR "Lex Fridman" OR "Latent Space" OR "YC Lightcone" OR "Pragmatic Engineer"' },
   { g: '播客访谈', q: 'Claude AI YouTube interview talk' },
+  { g: '播客访谈', q: 'Anthropic guest interview', domain: 'lennysnewsletter.com', n: 5 },
+  { g: '播客访谈', q: 'Anthropic Claude conversation', domain: 'lexfridman.com', n: 5 },
+  { g: '播客访谈', q: 'Anthropic Claude episode', domain: 'latent.space', n: 5 },
+  { g: '播客访谈', q: 'Lightcone podcast Anthropic Claude', domain: 'ycombinator.com', n: 5 },
+  { g: '播客访谈', q: 'Anthropic Claude interview', domain: 'newsletter.pragmaticengineer.com', n: 5 },
   // 关键人员(skill 原文 numResults 保持 8)
   { g: '人员', q: 'Dario Amodei', n: 8 },
   { g: '人员', q: 'Amanda Askell Anthropic', n: 8 },
@@ -114,7 +127,7 @@ const agentJson = async (prompt, opts) => {
 // 条目又收一遍(skill 版靠 feed 头部手写「去重基准」清单维护跨期记忆,换成
 // 读最近几份的结构化标题/URL,同样的效果不依赖手写)。
 //
-// 已知限制:基线是 skill 版旧 feed 时,标题是中文改写的,跟 Exa 返回的英文
+// 已知限制:基线是 skill 版旧 feed 时,标题是中文改写的,跟搜索返回的英文
 // 原题 token 零交集 —— 代码的标题近似关会空转,去重靠预筛/判定的语义判断。
 // workflow 版自产的 feed 用英文原题,基线换代后代码关才真正接管。
 phase('准备')
@@ -137,32 +150,42 @@ const prevFile = baseKeys.map((k) => k.slice(FEED_DIR.length)).join(', ')
 log(`窗口 ${START} → ${TODAY}(${DAYS} 天)· 去重基线 ${prevFile || '(无历史 feed)'}:${prevUrls.length} 个 URL / ${prevTitles.length} 个标题`)
 
 // ===== Phase 2 · 检索(fan-out:一条 query = 一次调用)=====
-// 薄 agent(exa-searcher):只负责发一次搜索、把结果原样搬回来。不判断、不取舍、
+// 薄 agent(web-searcher):只负责发一次搜索、把结果原样搬回来。不判断、不取舍、
 // 不改写 query。query_sent 回显 + 下一阶段的代码校验,是防它偷偷改写 query 的
 // 唯一手段。
+//
+// 这一段的提示语刻意用英文写:它是整条流水线里唯一直接对搜索引擎说话的地方,
+// Web Search 目前对英文 query 的召回明显好于中文,提示语连同 query 一起用英文
+// 可以彻底断掉「模型顺手把 query 翻译一下」的可能。下游判定/摘要/渲染仍是中文
+// —— feed 本身是中文产物。
+//
+// 窗口和域名都走 filters 硬参数(connector 1.2.0 起支持),服务端过滤:出窗和
+// 站外的结果根本不会回到 context 里。也不再需要「限制每条结果正文长度」这类
+// 护栏 —— Web Search 只回按 query 语义抽好的 snippet,不回整页正文,一次搜索的
+// tool result 天然是小的。
 phase('检索')
+const SEARCH_TOOL = 'mcp__websearch__web-search___WebSearch'
+const searchPrompt = (q, opts) =>
+  `Run exactly one web search and bring the results back verbatim.\n\n` +
+  `query (send exactly as given — do not reword, translate or add operators):\n${q}\n\n` +
+  `Call \`${SEARCH_TOOL}\` (the tool whose name ends in \`___WebSearch\`) with:\n` +
+  `- query: the string above, unchanged\n` +
+  `- maxResults: ${opts.n || 10}\n` +
+  `- filters.publishedDateFilter.from: "${START}"\n` +
+  (opts.domain ? `- filters.domainFilter.include: ["${opts.domain}"]\n` : '') +
+  `\nThis tool accepts natural-language queries only. Never add boolean OR, quoted phrases ` +
+  `or a \`site:\` prefix, and never write the date window into the query text — domain and ` +
+  `date scoping belong in \`filters\`.\n\n` +
+  `Report every result as title / url / published_date (fill YYYY-MM-DD when the tool returns ` +
+  `publishedDate; **leave it empty when it does not — never guess**) / snippet (the tool's ` +
+  `\`text\` field trimmed to 200 chars, not your own paraphrase).\n` +
+  `Set query_sent to the query text you actually sent, and tool_used to the tool you actually called.\n` +
+  `An empty result array is a valid outcome — do not retry with a different query.`
+
 const raw = await parallel(QUERIES.map((item, i) => () =>
   agentJson(
-    `发一次网页搜索,把结果原样搬回来。\n\n` +
-    `query(原样使用,一个字都不要改):${item.q}\n` +
-    `numResults:${item.n || 10}\n` +
-    (item.domain ? `限定域名:${item.domain}\n` : '') +
-    `时间窗口起点:${START}\n\n` +
-    `工具选择:优先 \`mcp__exa__web_search_advanced_exa\`,并把窗口和域名作为**参数**传:\n` +
-    `- startPublishedDate: "${START}"\n` +
-    (item.domain ? `- includeDomains: ["${item.domain}"]\n` : '') +
-    `- numResults: ${item.n || 10}\n` +
-    // textMaxCharacters 必须传:advanced 工具默认带每条结果的全文,一次搜索
-    // 回几十到几百 KB,kernel 里 CLI 消化大 tool result 会烧掉成倍的 turn
-    // (实测宽泛 query 从 3 turn 涨到 7,超预算直接 500)。本阶段只要
-    // title/url/日期/snippet,400 字足够。
-    `- textMaxCharacters: 400\n` +
-    `该工具不可用时才退回 \`mcp__exa__web_search_exa\`,此时把窗口写成 query 尾巴的 \`after:${START}\`` +
-    (item.domain ? `、域名写成 \`site:${item.domain}\`` : '') + `。\n\n` +
-    `每条结果给 title / url / published_date(工具给了就填 YYYY-MM-DD,**没给就留空,绝对不要猜**)/ snippet。\n` +
-    `query_sent 填你实际发出的 query 文本,tool_used 填实际用的工具名。\n` +
-    `搜不到结果就返回空数组,这是正常结果,不要换个 query 再试。`,
-    { agent: 'exa-searcher', label: `search:${item.g}/${i + 1}`, schema: HITS_SCHEMA },
+    searchPrompt(item.q, { n: item.n, domain: item.domain }),
+    { agent: 'web-searcher', label: `search:${item.g}/${i + 1}`, schema: HITS_SCHEMA },
   ).then((r) => ({ item, r })).catch(() => ({ item, r: null })),
 ))
 
@@ -249,8 +272,8 @@ for (const { item, results } of ok) {
 const afterUrlDedup = pool.size
 
 // 3c. 标题近似聚类:同一事件的多家转述合成一条,留最靠一手的当代表。
-// 护栏:标题信息量太少(<3 个关键词)的不参与聚类 —— Exa 对某些站点抓回的
-// title 就是站名,字面相同会被当成同一事件合掉,那是实打实的丢内容。
+// 护栏:标题信息量太少(<3 个关键词)的不参与聚类 —— 有些站点回的 title 就是
+// 站名,字面相同会被当成同一事件合掉,那是实打实的丢内容。
 const poolItems = [...pool.values()].map((c) => ({ ...c, tok: tokens(c.title) }))
 const clusters = []
 for (const c of poolItems) {
@@ -390,8 +413,9 @@ const judgedBatches = await parallel(judgeBatches.map((batch, bi) => () =>
     `每条给一个结果对象,num 用上面的编号指认(不要复述标题)。逐条判断:\n\n` +
     `① **窗口判断**(in_window + date_basis):一律以**内容首次公开/可访问的时间**为准,不以事件发生时间为准。` +
     `旧事件的新披露(旧邮件被法庭文件公开、旧访谈 transcript 新放出)算窗口内新内容。\n` +
-    `「工具给的发布日期」为空时,可以用 \`mcp__exa__crawling_exa\` 打开 URL 找发布日期,或从 URL 路径里的日期推断;` +
-    `确实找不到就 in_window=false 且 date_basis='无法确认'。\n` +
+    `搜索已经按 ${START} 起的窗口在服务端过滤过,所以绝大多数候选的日期是可信的;` +
+    `「工具给的发布日期」为空时你没有抓取工具,只能从 URL 路径里的日期推断,` +
+    `推不出就 in_window=false 且 date_basis='无法确认'(不要猜)。\n` +
     `**补录例外**:出窗但属于重大变动(关键人员离职/加入、产品线关停、重大收购)且往期清单里没有 → is_backfill=true,keep 仍可为 true。\n\n` +
     `② **往期去重复审**(dup_of_prev):对照下面最近几期 feed 的标题清单。指向**同一事件/文章/播客**(标题不必一字不差)→ dup_of_prev=true → keep=false。\n` +
     `这一关是**复审**:URL 相同的、标题高度近似的已由代码剔除,高置信度的同事件重复已由一轮预筛剔除。` +
@@ -436,7 +460,9 @@ const toCrawl = kept.slice(0, CRAWL_MAX)
 log(`按 priority 取前 ${toCrawl.length} 条抓正文(其余 ${Math.max(0, kept.length - toCrawl.length)} 条只用搜索摘要)`)
 const enriched = await parallel(toCrawl.map((c) => () =>
   agent(
-    `用 \`mcp__exa__crawling_exa\` 抓取这个 URL 的正文,然后写一段中文摘要。\n\n` +
+    `抓取这个 URL 的正文,然后写一段中文摘要。\n\n` +
+    `抓取方式:先 \`mcp__browser__navigate\` 打开 URL,再 \`mcp__browser__get_page_text\`` +
+    `(max_chars: 6000)取正文。首次 navigate 要等云端浏览器起会话(几秒),正常,不要重试。\n\n` +
     `标题:${c.title}\nURL:${c.url}\n归类:${c.section}\n\n` +
     `摘要要求(1-3 句):讲清楚这篇说了什么**非显而易见**的事。` +
     `**保留原文的具体量级** —— 数字、规模、时间跨度、可验证结果一个都不要丢,不要用泛化措辞替代具体事实。\n` +
@@ -444,8 +470,8 @@ const enriched = await parallel(toCrawl.map((c) => () =>
     `- section 是「内部实践」:若原文有效率/规模数据,填进 metrics。\n` +
     `- 上面给的标题若明显不是文章真实标题(如「1 Introduction」这类正文小节名、站名、导航文字),` +
     `从正文里取真实标题填 title_fix;标题正常就留空。\n` +
-    `抓取失败(404 / 付费墙 / 工具报错)时:crawl_ok=false,并**基于已有标题和摘要**写一句保守的 summary,不要编造正文内容。`,
-    { agent: 'exa-crawler', label: `crawl:${String(c.title).slice(0, 14)}`, schema: SUMMARY_SCHEMA },
+    `抓取失败(404 / 付费墙 / 反爬拦截 / 正文空 / 工具报错)时:crawl_ok=false,并**基于已有标题和摘要**写一句保守的 summary,不要编造正文内容。`,
+    { agent: 'tracker-crawler', label: `crawl:${String(c.title).slice(0, 14)}`, schema: SUMMARY_SCHEMA },
   ).then((s) => ({ ...c, ...(s || {}), crawl_ok: s ? s.crawl_ok : false })).catch(() => ({ ...c, crawl_ok: false })),
 ))
 const byUrl = new Map(enriched.map((x) => [normUrl(x.url), x]))

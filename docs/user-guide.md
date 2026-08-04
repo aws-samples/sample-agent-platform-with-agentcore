@@ -45,6 +45,13 @@ there too. In SSO mode it ends the session **at your IdP as well**, so the
 next sign-in really asks who you are; without that step the IdP would silently
 hand back the same identity.
 
+**Roles.** What you see depends on who you are. Members of the
+`platform-admin` group get the full management surface; everyone else gets
+the developer surface — Overview, Dev Workbench, Publish and Debug, scoped
+to resources they created. The sidebar badge (*Administrator* /
+*Developer*) tells you which one you got, and the split is enforced by the
+API (a hidden page is not a hidden capability).
+
 ## Five concepts in sixty seconds
 
 | Concept | What it is |
@@ -165,9 +172,11 @@ The shared tool catalog. Everything here can be attached to interactive
 sessions, Debug invokes, and published agents — by ID at call time, by name
 in manifests.
 
-- **MCP servers** — three kinds: `agentcore-runtime` (an AgentCore-hosted MCP
-  runtime ARN, reached with SigV4 via the platform's proxy), `url` (any plain
-  streamable-HTTP MCP endpoint), and `builtin` (the AgentCore **Code
+- **MCP servers** — four kinds: `agentcore-runtime` (an AgentCore-hosted MCP
+  runtime ARN, reached with SigV4 via the platform's proxy), `agentcore-gateway`
+  (an AgentCore Gateway MCP endpoint with IAM inbound auth, also SigV4 — this is
+  how the feed pipelines reach the managed **Web Search** connector), `url` (any
+  plain streamable-HTTP MCP endpoint), and `builtin` (the AgentCore **Code
   Interpreter** and **Browser**, pre-seeded).
 - **Skills** — SKILL.md packages stored on S3. Paste the markdown when
   creating one; kernels mount them into `.claude/skills/` before the agent
@@ -259,9 +268,51 @@ curl -s https://<portal>/api/v1/channels/<id>/webhook \
 
 - `conversation_id` is optional but powerful: the same value maps to the same
   warm runtime session, so a chat thread keeps its context across webhook
-  calls. Omit it for stateless one-shots.
+  calls (and its own memory line, when the target agent has memory). Omit it
+  for stateless one-shots.
 - Wrong or missing token → `401`. Disabled channel → `403`. Quota exceeded →
   `429`.
+
+### IAM channels — services on AWS
+
+For a caller that *is* an AWS workload (an EKS pod, a Lambda), a shared
+token is the wrong tool — pick **Caller authentication: AWS IAM** at
+creation instead. No token exists; callers sign requests with their own IAM
+role (SigV4) against the service-entry API Gateway. The division of labor:
+**IAM authenticates the workload once** (a single API-wide grant when it
+onboards), and **the channel's caller allowlist decides which channels that
+role may use** — required at creation, editable on the card (the pencil
+icon). Binding another workload, or revoking one, is an allowlist edit in
+the platform; nobody files an IAM change for it.
+
+The entry is a **private API**: it cannot be reached from the internet, only
+through an `execute-api` interface VPC endpoint in the calling workload's
+VPC (one per VPC, shared by all channels — the SOP's step 0 sets it up).
+Behind the API the traffic stays private too (VPC Link → internal load
+balancer), so no hop of a service call crosses the public network.
+
+The card's document icon opens the **SOP runbook** — the one-time
+onboarding: the API-wide policy JSON, the EKS Pod Identity steps and sample
+code — which you hand to the ops team that owns the workload's role. The
+platform never modifies IAM itself; that separation of duties is the point.
+A workload that has onboarded before needs nothing from ops ever again —
+just add its role to the new channel's allowlist.
+
+The contract is **submit / poll** (agent runs outlive HTTP timeouts):
+
+```text
+POST {ServiceEntryApiUrl}/service/v1/channels/<id>/invocations   (SigV4)
+  {"message": "...", "conversation_id": "order-1234"}
+  → 202 {"invocation_id": "...", "poll": "/service/v1/invocations/..."}
+GET  {ServiceEntryApiUrl}/service/v1/invocations/<invocation_id> (SigV4)
+  → {"status": "queued|running|succeeded|failed", "result": "...", ...}
+```
+
+Invocation records are private to the submitting role, and the ledger
+attributes every call to the caller's role ARN. If the target agent uses
+identity-forwarding tools, the workload can also send its IdP service
+account token as `x-robot-token` — see
+[enterprise-sso.md](enterprise-sso.md) for the robot identity pattern.
 
 ## Memory
 

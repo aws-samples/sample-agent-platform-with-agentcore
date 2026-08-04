@@ -41,9 +41,11 @@ function EntryCard({ e, onDelete }: { e: EcosystemEntry; onDelete: () => void })
         <p className="mt-2 truncate font-mono text-[11px] text-slate-400" title={e.target}>
           {e.kind === 'agentcore-runtime'
             ? 'AgentCore Runtime · '
-            : e.kind === 'builtin'
-              ? 'AgentCore Built-in · '
-              : 'HTTP · '}
+            : e.kind === 'agentcore-gateway'
+              ? 'AgentCore Gateway · '
+              : e.kind === 'builtin'
+                ? 'AgentCore Built-in · '
+                : 'HTTP · '}
           {e.target}
         </p>
       )}
@@ -196,14 +198,21 @@ export default function EcosystemPage() {
         <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Kind</label>
         <select className="input" value={mKind} onChange={(e) => setMKind(e.target.value)}>
           <option value="agentcore-runtime">AgentCore Runtime (ARN, SigV4 via kernel role)</option>
+          <option value="agentcore-gateway">AgentCore Gateway (MCP URL, SigV4 via kernel role)</option>
           <option value="url">HTTP URL (streamable-http, no auth)</option>
         </select>
         <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">
-          {mKind === 'agentcore-runtime' ? 'Runtime ARN' : 'URL'}
+          {mKind === 'agentcore-runtime' ? 'Runtime ARN' : mKind === 'agentcore-gateway' ? 'Gateway MCP URL' : 'URL'}
         </label>
         <input
           className="input font-mono text-xs"
-          placeholder={mKind === 'agentcore-runtime' ? 'arn:aws:bedrock-agentcore:…:runtime/…' : 'https://…/mcp'}
+          placeholder={
+            mKind === 'agentcore-runtime'
+              ? 'arn:aws:bedrock-agentcore:…:runtime/…'
+              : mKind === 'agentcore-gateway'
+                ? 'https://<id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp'
+                : 'https://…/mcp'
+          }
           value={mTarget}
           onChange={(e) => setMTarget(e.target.value)}
         />

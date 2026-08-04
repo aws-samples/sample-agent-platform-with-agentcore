@@ -8,11 +8,11 @@ invocations and updates progressively, so the portal can poll while it runs.
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.services.audit_service import audit_service
 from app.services.pipeline_service import pipeline_service
 
-router = APIRouter(prefix="/api/v1", tags=["pipelines"])
+router = APIRouter(prefix="/api/v1", tags=["pipelines"], dependencies=[Depends(require_admin)])
 
 
 class PipelineUpsert(BaseModel):

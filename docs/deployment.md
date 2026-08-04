@@ -234,6 +234,52 @@ Auth modes (backend resolves in this order):
    manual walkthroughs of each page, see the
    [user guide](user-guide.md).
 
+### Roles (RBAC)
+
+The portal splits into a developer surface (Overview, Dev Workbench,
+Publish, Debug — own resources only) and an admin surface (everything
+else). Admins are members of the **`platform-admin`** group:
+
+- **Cognito mode** — the PortalStack creates the group; add each admin:
+  `aws cognito-idp admin-add-user-to-group --user-pool-id <pool> \
+  --username <user> --group-name platform-admin`. The `admin` user works
+  without group membership (`PLATFORM_ADMIN_USERS` defaults to it) so the
+  E2E suite and the scheduler Lambda's delegation keep working.
+- **OIDC mode** — membership of the IdP's `platform-admin` group, carried in
+  the `groups` claim. The team-auth realm ships a dedicated **`admin`** user
+  as the demo administrator; alice, bob and carol land on the developer
+  surface (passwords for all four are seeded into the
+  `agent-platform/team-demo-users` secret by `scripts/seed_team_idp.py`).
+
+## 6b. IAM service entry (server-to-server callers)
+
+The PortalStack also deploys the **service-entry API Gateway**
+(`ServiceEntryApiUrl` output): SigV4-authenticated submit/poll access to
+`iam` channels for workloads on AWS — no channel token exists. The API is
+**private** (unreachable from the internet; callers need an `execute-api`
+interface VPC endpoint in their VPC, and the API reaches the backend over a
+VPC Link + internal NLB). Optionally pin the allowed endpoints with
+`-c service_api_allowed_vpces=vpce-…`. The flow to onboard a workload (an
+EKS pod, say):
+
+1. Channels page → New channel → *Caller authentication: AWS IAM* →
+   allowlist the caller's role ARN (required — the allowlist is the
+   channel-level authorization and stays editable on the card).
+2. First time this workload calls the platform: download the **SOP
+   runbook** (the card's document icon) — a one-time, API-wide IAM grant,
+   EKS Pod Identity association steps and SigV4 sample code. Hand it to the
+   workload's ops team — the platform holds no IAM write permission by
+   design. Already-onboarded workloads skip this entirely; binding them to
+   more channels is an allowlist edit.
+3. Acceptance: `python3 scripts/e2e_service_entry.py` (OIDC mode; ~12
+   checks: allowlist enforcement, authorizer, forged-header rejection,
+   submit/poll, ledger attribution, warm-session continuity, robot
+   identity).
+
+`demo/eks-pod-identity/` contains a complete demo workload plus
+`deploy.sh`, which executes the SOP against a real cluster and starts a pod
+that checks in through the channel on a loop.
+
 ## 7. (Optional) Content pipelines — Phase 5
 
 The workflow engine and the sample content pipelines (daily-topic, plus the
@@ -243,18 +289,37 @@ orchestration. daily-topic is the single entry point — the feed pipelines are
 invoked from it via nested `workflow()` calls and are not scheduled on their
 own.
 
-1. **Store the Exa (or other remote-MCP) key** — the feed layer resolves a
-   `{{secret:agent-platform/exa-api-key}}` placeholder at session start; the key
-   is never stored in the registry:
+1. **Deploy the Web Search gateway** — the feed pipelines search through the
+   AgentCore-managed Web Search connector, fronted by a gateway of your own.
+   There is no API key to store: the gateway authenticates callers with SigV4
+   (the kernel's execution role), and queries never leave AWS.
 
    ```bash
-   aws secretsmanager put-secret-value \
-     --secret-id agent-platform/exa-api-key \
-     --secret-string '{"api_key":"exa-your-key"}'
+   python3 scripts/deploy_websearch_gateway.py
    ```
 
-   The SDK kernel role's `McpSecrets` statement is scoped to
-   `agent-platform/exa-api-key*` only — see [permissions.md §2](permissions.md#2-runtime-execution-roles).
+   The script creates the gateway and its service role, pins the connector to
+   version `1.2.0` (the version with request-level domain and published-date
+   filters, which the pipelines depend on), and records the endpoint in SSM at
+   `/agent-platform/websearch-gateway` for the seeder to read.
+
+   It needs a boto3/botocore new enough to model `connector.source.version` —
+   the field shipped alongside connector 1.2.0, so botocore 1.43.48 is too old.
+   The script checks first and refuses to deploy an unpinned target (which would
+   land on 1.1.0 and leave the pipelines' filters quietly non-functional); run
+   `pip install -U boto3 botocore` if it stops you.
+
+   Two constraints worth knowing before you run it: the connector is offered
+   **only in us-east-1**, so the gateway is created there regardless of where
+   the rest of the platform lives (the kernels sign for the region in the
+   endpoint hostname, so a platform in another region still reaches it); and
+   the kernel roles need `bedrock-agentcore:InvokeGateway`, which `RuntimeStack`
+   grants via its `InvokeGateways` statement — redeploy that stack if you are
+   upgrading an existing deployment.
+
+   Page bodies are read with the AgentCore Browser built-in rather than a
+   crawling API, since Web Search returns snippets only. No extra setup: the
+   `BuiltinTools` grant already covers browser sessions.
 
 2. **Register the sample pipelines** (writes pipeline definitions to DynamoDB
    and the MCP/skill registry — no new infra):
@@ -306,7 +371,9 @@ headers.
 | Built-in tool call fails with AccessDenied | Runtime execution role missing `StartCodeInterpreterSession` / `StartBrowserSession` (+ connect/invoke actions) on the account's `code-interpreter/*` / `browser/*` resources — see `RuntimeStack` `BuiltinTools` policy |
 | Schedules never fire (hosted) | Check the schedule-runner Lambda's logs (`/aws/lambda/agent-platform-schedule-runner`) and the `agent-platform-schedule-dlq` queue; a `RuntimeError: code not deployed` means `scripts/deploy-schedule-lambda.sh` hasn't been run. Verify the mirror exists: `aws scheduler get-schedule --group-name agent-platform --name sched-<id>` |
 | Schedules never fire (local dev) | The fallback tick loop runs inside the backend process — `uvicorn` must be running; check `enabled` and `next_run_at` on the Scheduler page |
-| Pipeline feed agent fails on the Exa MCP | `agent-platform/exa-api-key` secret not set, or the SDK kernel role lacks `secretsmanager:GetSecretValue` on it (`McpSecrets` statement in `RuntimeStack`) |
+| Feed pipeline search stage returns nothing / AccessDenied | The Web Search gateway is missing or unreachable: run `scripts/deploy_websearch_gateway.py`, confirm `/agent-platform/websearch-gateway` exists in SSM (us-east-1), and check the kernel role has `bedrock-agentcore:InvokeGateway` (`InvokeGateways` statement in `RuntimeStack`) |
+| Search stage fails with `ValidationException` on `filters` | The connector target is pinned to `1.1.0`, which has no request-level filters — re-run `scripts/deploy_websearch_gateway.py` (it re-pins to `1.2.0`; an omitted version is sticky on update) |
+| Crawl stage reports `crawl_ok: false` for most items | Expected for paywalled or bot-blocked pages — the summary falls back to the search snippet. If it is *every* item, check the `BuiltinTools` grant covers `StartBrowserSession` on `browser/*` |
 | `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the `agent-platform/portal-admin` secret exists and the Lambda role's `PortalAdminSecret` grant, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB) |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |

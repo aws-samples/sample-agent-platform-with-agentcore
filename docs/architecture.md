@@ -155,7 +155,8 @@ exposes three mock "internal tools" (`lookup_employee`, `search_knowledge_base`,
 ### Ecosystem: MCP servers + skills (Phase 2)
 
 - **Registry** — DynamoDB (`PK=ECOSYSTEM`) holds MCP server entries
-  (`agentcore-runtime` ARN or plain `url`) and skill entries (SKILL.md stored
+  (`agentcore-runtime` ARN, `agentcore-gateway` MCP URL, plain `url`, or
+  `builtin`) and skill entries (SKILL.md stored
   under `s3://{workspace bucket}/skills/{id}/`). The backend seeds the
   platform-hosted MCP runtime and two sample skills on first use. The seed
   *content* (sample skills, enabled built-in tools) lives in
@@ -294,18 +295,55 @@ free.
   — translated to EventBridge's 6-field dialect at mirror time. Local
   development (no EventBridge wiring) falls back to an in-process 30 s tick
   loop with conditional-update claiming.
-- **Channels** (`channel_service.py`) — webhook endpoints authenticated by a
-  server-generated token (shown once, constant-time compare) instead of
-  Cognito, so external systems need no AWS credentials. A caller-supplied
-  `conversation_id` hashes into a stable runtime session ID → consecutive
-  calls hit the same warm microVM and keep context.
+- **Channels** (`channel_service.py`) — two caller-authentication kinds:
+  - `token` — webhook endpoints authenticated by a server-generated token
+    (shown once, constant-time compare), for external systems that cannot
+    hold AWS credentials.
+  - `iam` — the **service entry** for workloads on AWS (EKS Pod Identity
+    pods, Lambdas…): no token exists at all. Callers sign with SigV4 against
+    a dedicated **private API Gateway** (`AWS_IAM` authorization, PRIVATE
+    endpoint type). The IAM grant is deliberately **API-wide and one-time
+    per workload**; which channels a role may call is the channel's
+    **caller allowlist** (required, deny-by-default, edited in the platform)
+    — so day-2 binding and revocation never involve an IAM change. The network path never touches the internet: the
+    caller's VPC reaches the API through an `execute-api` interface VPC
+    endpoint, and the API reaches the backend through a **VPC Link → internal
+    NLB** (CloudFront plays no part; the backend's `/service/v1` routes are
+    unreachable from the internet). The gateway relays the verified caller
+    ARN plus a Secrets Manager shared secret to the backend
+    (`service_entry.py`) — with private networking the secret's job is to
+    stop *VPC-internal* neighbors (the runtime containers above all) from
+    hitting the internal NLB with a forged identity. The contract is
+    **submit/poll** (202 + invocation record in DynamoDB,
+    `service_invocation_service.py`) because agent runs outlive front-door
+    timeouts; the run itself executes in a backend worker through the same
+    governed pipeline, with the caller's **role ARN** as the quota/ledger
+    identity. Creating an iam channel produces a downloadable **SOP
+    runbook** (`sop_service.py`): the exact policy JSON, the EKS Pod
+    Identity association steps and sample SigV4 code — the platform
+    deliberately holds no IAM write permission; the workload's ops team
+    applies the grant. An optional **robot identity** rides the
+    `x-robot-token` header (see [enterprise-sso.md](enterprise-sso.md)).
+
+  Either kind: a caller-supplied `conversation_id` hashes into a stable
+  runtime session ID → consecutive calls hit the same warm microVM and keep
+  context, and the memory actor is conversation-scoped
+  (`chn-{channel}-{conversation}`), one memory line per conversation.
 - **Memory** (`memory_service.py` + kernel support) — AgentCore Memory
   stores created from the portal with two built-in long-term strategies
   (semantic facts + user preferences) extracting into `/users/{actorId}`.
-  A `memory: {memory_id, actor_id}` binding on the invoke payload makes the
-  headless kernel retrieve relevant records into the system prompt before the
-  run and `CreateEvent` the exchange after it — recall works **across**
-  runtime sessions. Extraction is asynchronous on AgentCore's side.
+  A `memory: {memory_id, actor_id, last_k_turns}` binding on the invoke
+  payload makes the headless kernel do two retrievals before the run and
+  `CreateEvent` the exchange after it:
+  - **semantic records** (long-term, cross-session) relevant to the prompt;
+  - **recent-turns replay** (short-term, same conversation): the last K
+    exchanges of *this* session (default 10, `last_k_turns: 0` disables),
+    fetched with `ListEvents` — which returns newest-first, so one page of
+    size K is exactly the latest K — and injected oldest-first under a
+    character budget. This is what makes a conversation survive microVM
+    recycling: a cold-started container greets you mid-dialogue instead of
+    amnesiac. Extraction of long-term records stays asynchronous on
+    AgentCore's side.
 - **Observability** (`observability_service.py`) — an invocation ledger in
   DynamoDB (source, target, latency, turns, cost, error) with aggregate
   stats. This is the platform-side view; span-level traces still flow to
@@ -335,12 +373,16 @@ the Claude Code Workflow tool) and registered as a named platform *pipeline*.
   `s3read/s3write/s3list` are confined to the workspace bucket by the backend.
   This keeps a workflow's trust model equivalent to a CI pipeline definition:
   it is code, but its only I/O is the metered bridge.
-- **Feed layer** — remote MCP targets (e.g. Exa) carry a `{{secret:...}}`
-  placeholder that the **SDK kernel** resolves from Secrets Manager at session
-  start, so the API key is never stored in the registry in plaintext. Feed
-  agents that exceed the 15-minute synchronous invoke ceiling run as
-  **AgentCore async tasks** (up to the 8-hour async ceiling), writing their
-  answer + a status sidecar to dated S3 artifacts.
+- **Feed layer** — retrieval is the AgentCore-managed **Web Search** connector
+  behind a gateway of the platform's own (registry kind `agentcore-gateway`,
+  SigV4 with the kernel's role), and page bodies are read with the **Browser**
+  built-in. No third-party search API key exists to leak, and search queries
+  stay inside AWS. A registered remote MCP server that *does* need a key can
+  carry a `{{secret:...}}` placeholder in its target, which the **SDK kernel**
+  resolves from Secrets Manager at session start rather than storing in the
+  registry. Feed agents that exceed the 15-minute synchronous invoke ceiling
+  run as **AgentCore async tasks** (up to the 8-hour async ceiling), writing
+  their answer + a status sidecar to dated S3 artifacts.
 - **Scheduling** — a schedule whose target is `pipeline:{name}` is fired by the
   EventBridge Scheduler Lambda. Because workflow scripts need Node (only the
   backend container has it), the Lambda **delegates** pipeline runs to the
@@ -399,8 +441,9 @@ a new runtime version automatically).
   one session's code cannot read another session's files even with the
   container's own credentials. The headless kernel has skills read + async
   artifact prefixes; the MCP kernel has no S3 at all. Secrets are limited to
-  two specifically-named entries (LLM gateway key; `agent-platform/exa-api-key`
-  for `{{secret:…}}` placeholders, SDK kernel only).
+  two specifically-named entries (LLM gateway key; `agent-platform/remote-mcp-key`
+  for `{{secret:…}}` placeholders, SDK kernel only — nothing the platform ships
+  needs it, since search authenticates with the kernel's own role).
 - No secrets are baked into images; keys are read from Secrets Manager at
   container/Lambda start.
 - The browser and end users hold **no AWS credentials** — all AWS access is
@@ -415,6 +458,17 @@ a new runtime version automatically).
   runtimes and gateways. That option, and the two places authorization can be
   enforced behind a gateway, are covered in
   [enterprise-sso.md](enterprise-sso.md#where-authorization-happens).
+
+- **RBAC** splits the portal into a developer surface and a management
+  surface. Membership of the `platform-admin` group (Cognito user-pool group
+  or the OIDC `groups` claim; `PLATFORM_ADMIN_USERS` is the escape hatch for
+  group-less principals) unlocks Channels, Scheduler, Governance, Memory
+  administration, registry writes, Gateway, Observability, Evaluation and
+  Workflow. Everyone else gets Overview, Dev Workbench, Publish and Debug,
+  scoped to their own resources (sessions are user-partitioned by design;
+  published agents are listed/deletable by their publisher). Enforcement
+  lives in the API layer (`require_admin` in `dependencies.py`); the nav
+  filter and route guards in the frontend are UX, not the boundary.
 
 For the full, code-verified account of every IAM principal — exact actions,
 resource scopes, conditions, the handful of wildcard-resource statements

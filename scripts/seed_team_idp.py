@@ -44,10 +44,24 @@ import boto3
 REALM = "agent-platform"
 CLIENT_ID = "portal-web"
 DELEGATE_CLIENT = "gateway-delegate"
-USERS = ["alice", "bob", "carol"]
+ROBOT_CLIENT = "robot-order-service"
+ROBOT_TEAM_GROUP = "team-a"
+USERS = ["alice", "bob", "carol", "admin"]
+ADMIN_USER = "admin"
+ADMIN_GROUP = "platform-admin"
+# desired group membership per user — enforced on every run so a Keycloak
+# instance booted from an older realm image converges to the current model
+# (admin is the only administrator; alice/bob/carol are regular developers)
+USER_GROUPS = {
+    "alice": ["team-a"],
+    "bob": ["team-b"],
+    "carol": ["team-c"],
+    "admin": [ADMIN_GROUP],
+}
 ADMIN_SECRET = "agent-platform/keycloak-admin"  # nosec B105 - secret names
 USERS_SECRET = "agent-platform/team-demo-users"  # nosec B105
 DELEGATE_SECRET = "agent-platform/gateway-delegate"  # nosec B105
+ROBOT_SECRET = "agent-platform/robot-order-service"  # nosec B105
 
 
 def _post_form(url: str, data: dict, headers: dict | None = None) -> dict:
@@ -144,12 +158,45 @@ def main() -> int:
         except Exception:  # noqa: BLE001 - first run, or a different IdP URL
             stored_creds = {}
 
+    realm_groups = _api(f"{base_url}/admin/realms/{REALM}/groups", admin_token)
+    group_ids = {g["name"]: g["id"] for g in realm_groups}
+    if ADMIN_GROUP not in group_ids:
+        _api(
+            f"{base_url}/admin/realms/{REALM}/groups",
+            admin_token,
+            method="POST",
+            payload={"name": ADMIN_GROUP},
+        )
+        realm_groups = _api(f"{base_url}/admin/realms/{REALM}/groups", admin_token)
+        group_ids = {g["name"]: g["id"] for g in realm_groups}
+        print(f"group created: /{ADMIN_GROUP}")
+
     creds = {}
     for username in USERS:
         found = _api(
             f"{base_url}/admin/realms/{REALM}/users?username={username}&exact=true",
             admin_token,
         )
+        if not found and username == ADMIN_USER:
+            # instances booted from an older realm image predate this user
+            _api(
+                f"{base_url}/admin/realms/{REALM}/users",
+                admin_token,
+                method="POST",
+                payload={
+                    "username": ADMIN_USER,
+                    "enabled": True,
+                    "emailVerified": True,
+                    "firstName": "Platform",
+                    "lastName": "Admin",
+                    "email": "admin@example.com",
+                },
+            )
+            found = _api(
+                f"{base_url}/admin/realms/{REALM}/users?username={username}&exact=true",
+                admin_token,
+            )
+            print(f"user created: {username}")
         if not found:
             print(f"user {username} not found in realm {REALM}", file=sys.stderr)
             return 1
@@ -165,6 +212,31 @@ def main() -> int:
         creds[username] = password
         print(f"password set: {username}" + ("  (reused stored value)" if reused else "  (new)"))
 
+        # converge group membership to USER_GROUPS (an older realm import may
+        # e.g. still have alice in /platform-admin)
+        wanted = set(USER_GROUPS.get(username, []))
+        current = {
+            g["name"]: g["id"]
+            for g in _api(
+                f"{base_url}/admin/realms/{REALM}/users/{user_id}/groups", admin_token
+            )
+        }
+        for name in wanted - set(current):
+            _api(
+                f"{base_url}/admin/realms/{REALM}/users/{user_id}/groups/{group_ids[name]}",
+                admin_token,
+                method="PUT",
+                payload={},
+            )
+            print(f"  joined /{name}")
+        for name in set(current) - wanted:
+            _api(
+                f"{base_url}/admin/realms/{REALM}/users/{user_id}/groups/{current[name]}",
+                admin_token,
+                method="DELETE",
+            )
+            print(f"  left /{name}")
+
     # ------------------------- store in Secrets ------------------------
     def upsert_secret(name: str, value: str, description: str):
         try:
@@ -175,7 +247,7 @@ def main() -> int:
     upsert_secret(
         USERS_SECRET,
         json.dumps({"issuer": issuer, "client_id": CLIENT_ID, "users": creds}),
-        "Team-auth demo user credentials (alice/bob/carol)",
+        "Team-auth demo user credentials (alice/bob/carol + platform admin)",
     )
     print(f"credentials stored in Secrets Manager: {USERS_SECRET}")
 
@@ -250,6 +322,58 @@ def main() -> int:
     )
     print(f"delegate client secret pinned: {DELEGATE_CLIENT} -> {DELEGATE_SECRET}")
 
+    # ------------------------ robot service account ---------------------
+    # The robot identity for server-side workloads (path A: the POD holds
+    # the credentials itself). Same pin-from-Secrets-Manager dance as the
+    # delegate client, plus one thing a realm import cannot express: the
+    # auto-created service-account user's group membership, which is what
+    # makes the robot's `team` claim real instead of hardcoded.
+    try:
+        stored = json.loads(sm.get_secret_value(SecretId=ROBOT_SECRET)["SecretString"])
+        robot_secret = stored["client_secret"]
+    except Exception:  # noqa: BLE001 - first run
+        robot_secret = secrets.token_urlsafe(24)
+    robots = _api(
+        f"{base_url}/admin/realms/{REALM}/clients?clientId={ROBOT_CLIENT}", admin_token
+    )
+    if not robots:
+        print(f"client {ROBOT_CLIENT} not found in realm {REALM}", file=sys.stderr)
+        return 1
+    robot_rep = robots[0]
+    robot_rep["secret"] = robot_secret
+    _api(
+        f"{base_url}/admin/realms/{REALM}/clients/{robot_rep['id']}",
+        admin_token,
+        method="PUT",
+        payload=robot_rep,
+    )
+    upsert_secret(
+        ROBOT_SECRET,
+        json.dumps(
+            {"client_id": ROBOT_CLIENT, "client_secret": robot_secret, "issuer": issuer}
+        ),
+        "Robot service-account credentials for server-side workloads (EKS demo POD)",
+    )
+    sa_user = _api(
+        f"{base_url}/admin/realms/{REALM}/clients/{robot_rep['id']}/service-account-user",
+        admin_token,
+    )
+    groups = _api(f"{base_url}/admin/realms/{REALM}/groups", admin_token)
+    team_group = next((g for g in groups if g["name"] == ROBOT_TEAM_GROUP), None)
+    if not team_group:
+        print(f"group {ROBOT_TEAM_GROUP} not found", file=sys.stderr)
+        return 1
+    _api(
+        f"{base_url}/admin/realms/{REALM}/users/{sa_user['id']}/groups/{team_group['id']}",
+        admin_token,
+        method="PUT",
+        payload={},
+    )
+    print(
+        f"robot client pinned: {ROBOT_CLIENT} -> {ROBOT_SECRET} "
+        f"(service account in /{ROBOT_TEAM_GROUP})"
+    )
+
     # ----------------------------- verify ------------------------------
     for username, password in creds.items():
         token = _post_form(
@@ -264,8 +388,24 @@ def main() -> int:
         )["access_token"]
         claims = _claims(token)
         print(
-            f"login OK: {username}  team={claims.get('team')}  aud={claims.get('aud')}"
+            f"login OK: {username}  team={claims.get('team')}  "
+            f"groups={claims.get('groups')}  aud={claims.get('aud')}"
         )
+
+    # robot: client-credentials grant, exactly what the EKS POD will do
+    robot_token = _post_form(
+        f"{issuer}/protocol/openid-connect/token",
+        {
+            "grant_type": "client_credentials",
+            "client_id": ROBOT_CLIENT,
+            "client_secret": robot_secret,
+        },
+    )["access_token"]
+    robot_claims = _claims(robot_token)
+    print(
+        f"robot login OK: {ROBOT_CLIENT}  team={robot_claims.get('team')}  "
+        f"aud={robot_claims.get('aud')}"
+    )
 
     print("\nIdP seeded. Next: cdk deploy AgentPlatformTeamDemo && "
           "python3 scripts/deploy_team_gateway.py")

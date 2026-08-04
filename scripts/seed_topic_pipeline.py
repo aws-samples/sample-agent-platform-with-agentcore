@@ -6,7 +6,7 @@ judgment steps as platform-native published agents. This script registers them
 so the pipeline can target them by name.
 
 Idempotent: agent_service.publish() re-publishes by name (version bump), and the
-Exa MCP / skill seeds guard on existing names, so re-running is safe.
+MCP / skill seeds guard on existing names, so re-running is safe.
 
 Run against the deployed platform with its env + AWS creds:
 
@@ -16,11 +16,17 @@ Run against the deployed platform with its env + AWS creds:
     python scripts/seed_topic_pipeline.py [--with-feeds]
 
 Phase 1 (default) seeds the three selection agents (collector / deduper /
-scorer). --with-feeds also seeds the Exa MCP server, the two feed skills, and
-the two feed agents (Phase 2).
+scorer). --with-feeds also registers the Web Search gateway as an MCP server,
+plus the two feed skills and the feed / thin agents (Phase 2).
+
+--with-feeds requires scripts/deploy_websearch_gateway.py to have run first:
+it reads that gateway's URL out of SSM. Retrieval is the managed AgentCore
+Web Search connector and page fetching is the AgentCore Browser built-in, so
+no third-party search API key is involved anywhere in the feed layer.
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -140,11 +146,24 @@ def seed_pipelines() -> None:
 
 
 # --------------------------------------------------------------------------
-# Feed layer (Phase 2) — Exa MCP + two feed skills + two feed agents.
-# Seeded only with --with-feeds (needs the Exa key secret + async kernel).
+# Feed layer (Phase 2) — Web Search gateway MCP + two feed skills + agents.
+# Seeded only with --with-feeds (needs the gateway deployed + async kernel).
+#
+# Two tools carry the whole feed layer, both AgentCore-managed:
+#   websearch — the managed Web Search connector behind our own gateway,
+#               mounted SigV4 (kind "agentcore-gateway"). No API key, and no
+#               query leaves AWS.
+#   browser   — the AgentCore Browser built-in, for reading article bodies.
+#               Web Search returns snippets only; the summaries in both feeds
+#               are required to keep the source's concrete numbers, which a
+#               snippet routinely drops.
 # --------------------------------------------------------------------------
 
-EXA_MCP_NAME = "exa"
+WEBSEARCH_MCP_NAME = "websearch"
+# Registered by the backend from seed_data.BUILTIN_TOOLS on first registry
+# read, so it is already present by the time this script runs.
+BROWSER_MCP_NAME = "browser"
+WEBSEARCH_SSM_PARAM = "/agent-platform/websearch-gateway"
 
 
 def _mcp_exists(name: str) -> bool:
@@ -155,29 +174,52 @@ def _skill_exists(name: str) -> bool:
     return any(s["name"] == name for s in ecosystem_service.list_skills())
 
 
-EXA_SECRET_NAME = "agent-platform/exa-api-key"
+def _websearch_gateway() -> dict:
+    """Read the gateway wiring written by deploy_websearch_gateway.py.
 
-# Registered with a {{secret:…}} placeholder — the sdk kernel resolves it from
-# Secrets Manager at session start (resolve_secret_placeholders), so the API
-# key never lands in the registry or in any invoke payload.
-EXA_MCP_TARGET = (
-    "https://mcp.exa.ai/mcp"
-    f"?exaApiKey={{{{secret:{EXA_SECRET_NAME}}}}}"
-    "&tools=web_search_exa,web_search_advanced_exa,crawling_exa,linkedin_search_exa"
-)
+    The connector is us-east-1 only, so the parameter lives there regardless
+    of where the platform itself is deployed.
+    """
+    import boto3
+
+    ssm = boto3.client("ssm", region_name="us-east-1")
+    try:
+        raw = ssm.get_parameter(Name=WEBSEARCH_SSM_PARAM)["Parameter"]["Value"]
+    except ssm.exceptions.ParameterNotFound:
+        raise SystemExit(
+            f"SSM parameter {WEBSEARCH_SSM_PARAM} not found — run\n"
+            "  python3 scripts/deploy_websearch_gateway.py\n"
+            "before seeding the feed layer."
+        ) from None
+    return json.loads(raw)
 
 
 def seed_feed_layer() -> None:
-    if not _mcp_exists(EXA_MCP_NAME):
+    gw = _websearch_gateway()
+    # A gateway namespaces its tools as ${target}___${tool}, and the kernel
+    # then prefixes mcp__${server}__ — so the name the agents must call is
+    # assembled from the deployed target name rather than hardcoded.
+    WEBSEARCH_TOOL = f"mcp__{WEBSEARCH_MCP_NAME}__{gw['tool_name']}"  # noqa: N806
+    if not _mcp_exists(WEBSEARCH_MCP_NAME):
         m = ecosystem_service.create_mcp_server(
-            name=EXA_MCP_NAME,
-            description="Exa web search / crawling(远程 MCP;key 由 kernel 从 Secrets Manager 注入)",
-            kind="url",
-            target=EXA_MCP_TARGET,
+            name=WEBSEARCH_MCP_NAME,
+            description=(
+                "AgentCore 托管 Web Search connector"
+                f"(gateway {gw['gateway_id']} · connector v{gw['connector_version']}"
+                " · SigV4,无 API key)"
+            ),
+            kind="agentcore-gateway",
+            target=gw["mcp_url"],
         )
         print(f"  registered MCP   {m['name']}  id={m['id']}")
     else:
-        print(f"  MCP {EXA_MCP_NAME} already registered, skip")
+        print(f"  MCP {WEBSEARCH_MCP_NAME} already registered, skip")
+    if not _mcp_exists(BROWSER_MCP_NAME):
+        raise SystemExit(
+            f"MCP {BROWSER_MCP_NAME} (AgentCore Browser built-in) is not in the "
+            "registry — the backend seeds it from seed_data.BUILTIN_TOOLS on "
+            "first registry read; start the backend once, then re-run."
+        )
 
     for name, path in [
         ("anthropic-tracker", os.path.expanduser("~/.claude/skills/anthropic-tracker/SKILL.md")),
@@ -198,32 +240,39 @@ def seed_feed_layer() -> None:
             "name": "feed-anthropic-tracker",
             "description": "feed 层 · 追踪 Anthropic 官方 + 员工公开内容,写 dated feed",
             "system_prompt": (
-                "你按挂载的 anthropic-tracker skill 执行:用 Exa MCP 搜索、抓取、去重、"
-                "整理成 dated markdown feed。严格遵循 skill 里的搜索清单与判断标准(只用 "
-                "mcp__exa__ 工具)。云上适配:skill 里的本地路径 / Bash 日期命令 / 写文件步骤"
+                "你按挂载的 anthropic-tracker skill 执行:搜索、抓取、去重、"
+                "整理成 dated markdown feed。严格遵循 skill 里的搜索清单与判断标准。"
+                f"检索只用 `{WEBSEARCH_TOOL}`(query 一律写英文,200 字符以内的自然语言,"
+                "不要 boolean OR、不要 site: 语法);要看正文时用 "
+                "`mcp__browser__navigate` 打开 URL 再 `mcp__browser__get_page_text` 取正文。"
+                "云上适配:skill 里的本地路径 / Bash 日期命令 / 写文件步骤"
                 "不适用——追踪天数、今天日期、上一份 feed 全文(去重基线)都由用户消息直接给出,"
                 "你把完整的 feed markdown 作为最终答复输出即可,不要尝试写文件或运行脚本。"
                 "最终答复会被原样存档为 feed 文件:必须从 feed 的第一行 markdown(# 标题或引言块)"
                 "直接开始,不要任何过渡语、说明或前言。"
             ),
             "max_turns": 40,
-            "mcp_server_names": [EXA_MCP_NAME],
+            "mcp_server_names": [WEBSEARCH_MCP_NAME, BROWSER_MCP_NAME],
             "skill_names": ["anthropic-tracker"],
         },
         {
             "name": "feed-ai-pulse",
             "description": "feed 层 · 深度 AI 洞察追踪(14 天窗),写 dated feed",
             "system_prompt": (
-                "你按挂载的 ai-pulse skill 执行:用 Exa MCP 搜索、抓取、去重、insight-filter "
+                "你按挂载的 ai-pulse skill 执行:搜索、抓取、去重、insight-filter "
                 "Gate1 深度过滤,整理成 dated markdown feed。严格遵循 skill 里的搜索清单、"
-                "排除规则与过滤标准(只用 mcp__exa__ 工具)。云上适配:skill 里的本地路径 / "
+                "排除规则与过滤标准。"
+                f"检索只用 `{WEBSEARCH_TOOL}`(query 一律写英文,200 字符以内的自然语言,"
+                "不要 boolean OR、不要 site: 语法);要看正文时用 "
+                "`mcp__browser__navigate` 打开 URL 再 `mcp__browser__get_page_text` 取正文。"
+                "云上适配:skill 里的本地路径 / "
                 "Bash 日期命令 / 写文件步骤不适用——追踪天数、今天日期、上一份 feed 全文"
                 "(去重基线)都由用户消息直接给出,你把完整的 feed markdown 作为最终答复输出即可,"
                 "不要尝试写文件或运行脚本。最终答复会被原样存档为 feed 文件:必须从 feed 的第一行 "
                 "markdown(# 标题或引言块)直接开始,不要任何过渡语、说明或前言。"
             ),
             "max_turns": 60,
-            "mcp_server_names": [EXA_MCP_NAME],
+            "mcp_server_names": [WEBSEARCH_MCP_NAME, BROWSER_MCP_NAME],
             "skill_names": ["ai-pulse"],
         },
     ]
@@ -232,33 +281,45 @@ def seed_feed_layer() -> None:
         print(f"  published agent  {r['name']:<22} v{r['version']}  id={r['id']}")
 
     # feed pipeline 的 thin agents:平台的裸 agent-sdk kernel 不挂 MCP,
-    # 需要 Exa 工具的阶段(检索/判定/抓取)走这些 published agents。
+    # 需要工具的阶段(检索/判定/抓取)走这些 published agents。
     # 平台只给裸 kernel 自动内联 schema,所以输出契约写死在 system prompt 里。
-    # exa-searcher 是通用检索执行器,tracker 和 ai-pulse 两条流水线共用;
+    # web-searcher 是通用检索执行器,tracker 和 ai-pulse 两条流水线共用;
     # judge / crawler 因输出契约不同各配一个。
+    #
+    # 判定阶段不挂任何抓取工具:Web Search 的 publishedDateFilter 已经在服务端把
+    # 时间窗口卡住,留给 judge 的只剩「工具没给日期」这一种情况;为此给 20 多个
+    # judge 批次各起一个 browser session 不值,改成从 URL 路径推断、推不出就标记
+    # 无法确认(比抓一次拿到准确日期略保守,会多漏收几条无日期的候选)。
     pipeline_thin_agents = [
         {
-            "name": "exa-searcher",
-            "description": "tracker 流水线 · 检索执行器:发一次 Exa 搜索原样搬回(HITS_SCHEMA)",
+            "name": "web-searcher",
+            "description": "feed 流水线 · 检索执行器:发一次 Web Search 原样搬回(HITS_SCHEMA)",
             "system_prompt": (
-                "你是一个检索执行器:按用户消息给定的 query 和参数发一次 Exa 搜索,"
-                "把结果原样搬回,不做任何判断、筛选,也不改写 query。只用 mcp__exa__ 工具。"
+                "你是一个检索执行器:按用户消息给定的 query 和参数发一次网页搜索,"
+                "把结果原样搬回,不做任何判断、筛选,也不改写 query。"
+                f"只用 `{WEBSEARCH_TOOL}`(AgentCore 托管 Web Search),"
+                "参数:query(原样照抄,英文,200 字符以内)、maxResults(1-25)、"
+                "filters(可选,含 domainFilter.include / publishedDateFilter.from)。"
+                "这个工具只接受自然语言 query:不要写 boolean OR、引号短语、site: 前缀,"
+                "域名限定一律走 filters.domainFilter.include 参数。"
                 "最终答复只返回一个 JSON 对象(不要解释、不要 markdown 围栏):"
                 '{"query_sent":"实际发出的 query 原文","tool_used":"实际调用的工具名",'
                 '"results":[{"title":"","url":"","published_date":"YYYY-MM-DD,工具没给就留空、不要猜","snippet":"200 字内"}]}。'
-                "搜不到结果 results 给空数组,不要换 query 再试。"
+                "工具返回的 text 字段就是 snippet(已按 query 语义抽取),截到 200 字内照搬,"
+                "不要改写成自己的话。搜不到结果 results 给空数组,不要换 query 再试。"
             ),
             # 一次 MCP 工具往返吃 2-3 个 turn:4 会大面积撞上限(kernel 500),8 才稳
             "max_turns": 8,
-            "mcp_server_names": [EXA_MCP_NAME],
+            "mcp_server_names": [WEBSEARCH_MCP_NAME],
         },
         {
             "name": "tracker-judge",
             "description": "tracker 流水线 · 判定评审:一手性/归类/窗口/去重复审(JUDGE_SCHEMA)",
             "system_prompt": (
                 "你是 anthropic-tracker feed 的判定评审:按用户消息给定的判据,对一批候选"
-                "逐条判断是否入选。必要时可用 mcp__exa__crawling_exa 打开候选 URL 核对发布"
-                "日期,除此之外不要抓取。最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
+                "逐条判断是否入选。你没有抓取工具:「工具给的发布日期」为空时只能从 URL "
+                "路径里的日期推断,推不出就 in_window=false、date_basis 写「无法确认」,"
+                "不要猜。最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
                 '{"results":[{"num":候选编号,"in_window":bool,"date_basis":"判断依据",'
                 '"is_backfill":bool,"dup_of_prev":bool,'
                 '"section":"官方动态|研究论文|内部实践|播客访谈|人员观点",'
@@ -267,23 +328,28 @@ def seed_feed_layer() -> None:
                 "每条候选一个对象,num 用输入编号指认,不要复述标题。"
             ),
             "max_turns": 12,
-            "mcp_server_names": [EXA_MCP_NAME],
+            # 判定不挂工具:纯文本判据,输入里已带 title/url/日期/snippet
+            "mcp_server_names": [],
         },
         {
-            "name": "exa-crawler",
+            "name": "tracker-crawler",
             "description": "tracker 流水线 · 正文抓取 + 中文摘要(SUMMARY_SCHEMA)",
             "system_prompt": (
-                "你抓取给定 URL 的正文并写中文摘要:用 mcp__exa__crawling_exa 抓取,"
-                "按用户消息的要求提取。最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
+                "你抓取给定 URL 的正文并写中文摘要:先 `mcp__browser__navigate` 打开 URL,"
+                "再 `mcp__browser__get_page_text`(max_chars: 6000)取正文,"
+                "按用户消息的要求提取。首次 navigate 会启动云端浏览器会话,要等几秒,"
+                "这是正常的,不要因此重试。最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
                 '{"summary":"1-3 句中文摘要,保留原文具体数字/规模/时间跨度",'
                 '"title_fix":"给定标题明显不是文章真实标题时从正文取真实标题,否则留空",'
                 '"speaker":"人员观点/播客类填 姓名(职位),其余留空",'
                 '"platform":"播客/访谈平台名,其余留空",'
                 '"metrics":"内部实践类效率数据,无则留空","crawl_ok":bool}。'
-                "抓取失败时 crawl_ok=false 并基于已有标题摘要写一句保守 summary,不要编造正文。"
+                "抓取失败(超时 / 付费墙 / 反爬拦截 / 正文空)时 crawl_ok=false,"
+                "并基于已有标题摘要写一句保守 summary,不要编造正文。"
             ),
-            "max_turns": 8,
-            "mcp_server_names": [EXA_MCP_NAME],
+            # navigate + get_page_text 两次往返,加上冷启动的等待,比搜索宽一点
+            "max_turns": 10,
+            "mcp_server_names": [BROWSER_MCP_NAME],
         },
         {
             "name": "pulse-judge",
@@ -291,7 +357,8 @@ def seed_feed_layer() -> None:
             "system_prompt": (
                 "你是 ai-pulse 深度洞察 feed 的判定评审:按用户消息给定的判据(Gate-1 还原、"
                 "三大类归类、硬性排除规则、窗口与去重复审),对一批候选逐条判断是否入选。"
-                "必要时可用 mcp__exa__crawling_exa 打开候选 URL 核对发布日期,除此之外不要抓取。"
+                "你没有抓取工具:「工具给的发布日期」为空时只能从 URL 路径里的日期推断,"
+                "推不出就 in_window=false、date_basis 写「无法确认」,不要猜。"
                 "最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
                 '{"results":[{"num":候选编号,"in_window":bool,"date_basis":"判断依据",'
                 '"is_backfill":bool,"dup_of_prev":bool,'
@@ -303,14 +370,17 @@ def seed_feed_layer() -> None:
                 "每条候选一个对象,num 用输入编号指认,不要复述标题。"
             ),
             "max_turns": 12,
-            "mcp_server_names": [EXA_MCP_NAME],
+            # 判定不挂工具:纯文本判据,输入里已带 title/url/日期/snippet
+            "mcp_server_names": [],
         },
         {
             "name": "pulse-crawler",
             "description": "ai-pulse 流水线 · 正文抓取 + 洞察/证据/So-What 提取(ENRICH_SCHEMA)",
             "system_prompt": (
-                "你抓取给定 URL 的正文并按 ai-pulse 口径提取深度洞察:用 mcp__exa__crawling_exa "
-                "抓取(maxCharacters: 5000),按用户消息的要求提取。"
+                "你抓取给定 URL 的正文并按 ai-pulse 口径提取深度洞察:先 "
+                "`mcp__browser__navigate` 打开 URL,再 `mcp__browser__get_page_text`"
+                "(max_chars: 6000)取正文,按用户消息的要求提取。首次 navigate 会启动"
+                "云端浏览器会话,要等几秒,这是正常的,不要因此重试。"
                 "最终答复只返回一个 JSON 对象(不要解释、不要围栏):"
                 '{"insight":"一句话核心洞察(非显而易见的事)",'
                 '"evidence":"关键证据,保留原文具体数字/规模/时间跨度",'
@@ -319,10 +389,12 @@ def seed_feed_layer() -> None:
                 '"ppt_star":1到3的整数,'
                 '"title_fix":"给定标题明显不是文章真实标题时从正文取真实标题,否则留空",'
                 '"crawl_ok":bool}。'
-                "抓取失败时 crawl_ok=false 并基于已有标题摘要保守填写,不要编造正文内容。"
+                "抓取失败(超时 / 付费墙 / 反爬拦截 / 正文空)时 crawl_ok=false,"
+                "并基于已有标题摘要保守填写,不要编造正文内容。"
             ),
-            "max_turns": 8,
-            "mcp_server_names": [EXA_MCP_NAME],
+            # navigate + get_page_text 两次往返,加上冷启动的等待,比搜索宽一点
+            "max_turns": 10,
+            "mcp_server_names": [BROWSER_MCP_NAME],
         },
     ]
     for a in pipeline_thin_agents:

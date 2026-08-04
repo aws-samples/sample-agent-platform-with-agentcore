@@ -113,6 +113,7 @@ def invoke(
     skill_ids: list[str] | None = None,
     memory_id: str = "",
     memory_actor_id: str = "",
+    memory_last_k_turns: int | None = None,
     ref: str = "",
     model_spec: dict | None = None,
 ) -> dict:
@@ -136,6 +137,9 @@ def invoke(
         if memory_id
         else None
     )
+    if memory and memory_last_k_turns is not None:
+        # cold-start replay depth; the kernel defaults to 10 when absent
+        memory["last_k_turns"] = memory_last_k_turns
 
     # -------- invoke + record --------
     started = time.monotonic()

@@ -2,10 +2,10 @@
 
 from fastapi import APIRouter, Depends
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.services.observability_service import observability_service
 
-router = APIRouter(prefix="/api/v1/observability", tags=["observability"])
+router = APIRouter(prefix="/api/v1/observability", tags=["observability"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/invocations")

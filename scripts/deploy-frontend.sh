@@ -18,6 +18,11 @@ cd "$ROOT/frontend"
 npm ci
 npm run build
 
-aws s3 sync dist/ "s3://${BUCKET}/" --delete
+# hashed assets are immutable → cache them hard; index.html must always be
+# revalidated or browsers keep loading a stale bundle after releases
+aws s3 sync dist/assets/ "s3://${BUCKET}/assets/" --delete \
+  --cache-control "public, max-age=31536000, immutable"
+aws s3 sync dist/ "s3://${BUCKET}/" --exclude "assets/*" --delete \
+  --cache-control "no-cache"
 aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" >/dev/null
 echo "Frontend deployed."

@@ -22,11 +22,11 @@ import boto3
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.config import settings
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/gateways", tags=["gateways"])
+router = APIRouter(prefix="/api/v1/gateways", tags=["gateways"], dependencies=[Depends(require_admin)])
 
 # Outbound credential type -> where authorization for that target is decided.
 # OAuth token exchange hands the backend a token carrying the end user's

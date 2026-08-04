@@ -62,14 +62,16 @@ code**.
 
 ### Add a tool or skill *instance* — data only
 
-Registering one more MCP server (an AgentCore Runtime ARN, a plain
-streamable-HTTP URL) or a skill is a registry write: portal UI, API call, or a
-new entry in `seed_data.py`. No mechanism changes, nothing to rebuild.
+Registering one more MCP server (an AgentCore Runtime ARN, an AgentCore Gateway
+MCP URL, a plain streamable-HTTP URL) or a skill is a registry write: portal UI,
+API call, or a new entry in `seed_data.py`. No mechanism changes, nothing to
+rebuild.
 
 ### Add an integration *kind* — a known multi-file change
 
-The registry classifies each MCP entry by `kind` (`agentcore-runtime` | `url` |
-`builtin`). Introducing a **new kind** (say, a different transport) is deliberate
+The registry classifies each MCP entry by `kind` (`agentcore-runtime` |
+`agentcore-gateway` | `url` | `builtin`). Introducing a **new kind** (say, a
+different transport) is deliberate
 shotgun surgery across the resolve → dispatch path, so it is worth listing the
 exact touch points:
 

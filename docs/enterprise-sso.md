@@ -187,9 +187,38 @@ the product knows about "teams":
 - The **sidebar** shows who you are signed in as and the group claims the
   backend verified, which is the variable that changes the answers above.
 
-Internal callers (scheduler, channels) have no end-user token, so attaching an
-identity-forwarding server there fails fast with a 400 explaining exactly
-that, instead of silently calling a backend with no identity.
+Internal callers (scheduler, token channels) have no end-user token, so
+attaching an identity-forwarding server there fails fast with a 400
+explaining exactly that, instead of silently calling a backend with no
+identity.
+
+## Robot identity for server-side workloads (path A)
+
+The one internal caller that *can* carry an identity is the IAM service
+entry: a workload (an EKS pod, say) holds **its own service account in the
+IdP** — the `robot-order-service` client here, a confidential
+client-credentials client whose service-account user is a member of
+`/team-a` — and sends the token it fetched as the `x-robot-token` header on
+service-entry calls (SigV4 owns `Authorization`, so the robot token rides
+its own header).
+
+The two credentials answer different questions and neither replaces the
+other: **SigV4 (EKS Pod Identity) authenticates the infrastructure** — is
+this pod's role allowed to reach this channel — while **the robot token
+authenticates the business identity** — which service is calling, and which
+teams' APIs it may reach. The backend verifies the token against the
+platform's OIDC issuer (fail fast on anything invalid), then makes it the
+caller token for the run, so `{{user_token}}` forwarding, the gateway's OBO
+exchange and the team APIs' own `team`-claim checks all treat the robot
+exactly like a signed-in user. The credentials stay with the workload (a
+K8s secret in the demo) — the platform never stores them; that is the
+deliberate choice of path A.
+
+Provisioning is part of `seed_team_idp.py`: it pins the robot client secret
+to Secrets Manager (`agent-platform/robot-order-service`) and applies the
+service-account user's group membership, which a Keycloak realm import
+cannot express. `demo/eks-pod-identity/` contains a complete workload that
+exercises the whole chain from a pod.
 
 ## E2E acceptance matrix
 

@@ -13,12 +13,16 @@ Payload contract::
         "max_turns": 10,
         "mcp_servers": [            // optional tools from the platform registry
             {"name": "platform-tools", "kind": "agentcore-runtime", "target": "arn:..."},
+            {"name": "websearch", "kind": "agentcore-gateway",  // IAM-auth gateway (SigV4)
+             "target": "https://<id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"},
             {"name": "ext", "kind": "url", "target": "https://...",
              "headers": {"Authorization": "Bearer ..."}},  // optional (e.g. user JWT for a gateway)
             {"name": "browser", "kind": "builtin", "target": "browser"}
         ],
         "memory": {                 // optional AgentCore Memory binding
-            "memory_id": "mem-...", "actor_id": "alice"
+            "memory_id": "mem-...", "actor_id": "alice",
+            "last_k_turns": 10      // replay the last K exchanges of this
+                                    // session on cold start (0 disables)
         },
         "async": {                  // optional: run as an AgentCore async task
             "bucket": "…", "key": "feeds/ai-pulse/2026-07-23.md"
@@ -48,6 +52,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -133,10 +138,12 @@ def resolve_secret_placeholders(target: str) -> str:
     """Replace ``{{secret:NAME}}`` tokens in a URL target with values from
     Secrets Manager (cached per process).
 
-    This keeps credentials for remote MCP servers (e.g. Exa's
-    ``?exaApiKey=…``) out of the platform registry: the registry stores the
-    placeholder, only this container — whose IAM role is granted the specific
-    secret — ever sees the plaintext.
+    This keeps credentials for third-party remote MCP servers (an
+    ``?apiKey=…`` in the target URL, say) out of the platform registry: the
+    registry stores the placeholder, only this container — whose IAM role is
+    granted the specific secret — ever sees the plaintext. Nothing the platform
+    ships needs it; AgentCore-hosted runtimes and gateways authenticate with
+    this container's role instead.
     """
     import re
 
@@ -202,10 +209,10 @@ def build_model_env(spec: dict) -> tuple[dict[str, str], str | None]:
 def build_mcp_config(servers: list[dict]) -> dict:
     """Translate registry entries into Claude Agent SDK MCP server configs.
 
-    AgentCore-hosted servers are reached through mcp-proxy-for-aws (stdio →
-    SigV4 streamable-HTTP) using this container's IAM role; plain URLs are
-    passed through as HTTP transports after ``{{secret:…}}`` placeholder
-    resolution (see resolve_secret_placeholders).
+    AgentCore-hosted servers (runtimes and gateways) are reached through
+    mcp-proxy-for-aws (stdio → SigV4 streamable-HTTP) using this container's
+    IAM role; plain URLs are passed through as HTTP transports after
+    ``{{secret:…}}`` placeholder resolution (see resolve_secret_placeholders).
     """
     region = os.environ.get("AWS_REGION", "us-east-1")
     cfg: dict = {}
@@ -224,6 +231,31 @@ def build_mcp_config(servers: list[dict]) -> dict:
                 "type": "stdio",
                 "command": "mcp-proxy-for-aws",
                 "args": [endpoint, "--service", "bedrock-agentcore", "--region", region],
+            }
+        elif kind == "agentcore-gateway":
+            # An AgentCore Gateway MCP endpoint with IAM inbound auth: same
+            # SigV4 proxy as a runtime, but the target is the gateway URL
+            # itself. Used for machine-to-machine callers (pipeline agents),
+            # where there is no end-user token to forward — a gateway with a
+            # JWT authorizer is a `url` entry with an Authorization header
+            # instead.
+            #
+            # The gateway need not live in this container's region: managed
+            # connector targets are region-limited (Web Search is us-east-1
+            # only), so sign for the region in the endpoint hostname
+            # (…gateway.bedrock-agentcore.<region>.amazonaws.com) and fall
+            # back to the container's region if it does not parse.
+            m = re.search(r"\.bedrock-agentcore\.([a-z0-9-]+)\.amazonaws\.com", target)
+            cfg[name] = {
+                "type": "stdio",
+                "command": "mcp-proxy-for-aws",
+                "args": [
+                    target,
+                    "--service",
+                    "bedrock-agentcore",
+                    "--region",
+                    m.group(1) if m else region,
+                ],
             }
         elif kind == "url":
             try:
@@ -288,6 +320,69 @@ def retrieve_memory_context(memory: dict, prompt: str) -> str:
         return "\n".join(f"- {r[:400]}" for r in records)
     except Exception:
         logger.exception("memory retrieval failed (continuing without context)")
+        return ""
+
+
+DEFAULT_LAST_K_TURNS = 10
+# Budget caps: a long conversation must not crowd the actual prompt out of
+# the context window.
+RECENT_TURN_MSG_CHARS = 1200
+RECENT_TURNS_TOTAL_CHARS = 16000
+
+
+def retrieve_recent_turns(memory: dict, session_id: str) -> str:
+    """Replay the latest exchanges of *this* conversation (short-term memory).
+
+    A cold-started container has no process state, but every exchange was
+    stored as one conversational event keyed by (actor, session) — and the
+    session ID is stable for channel conversations (derived from
+    conversation_id), so the raw turns survive microVM recycling. ListEvents
+    returns events newest-first (undocumented but load-bearing: one page of
+    size K is exactly the last K exchanges). Long-term semantic retrieval
+    (retrieve_memory_context) covers cross-session recall; this covers
+    "what did we just say".
+    """
+    memory_id, actor_id = memory.get("memory_id"), memory.get("actor_id")
+    try:
+        k = int(memory.get("last_k_turns", DEFAULT_LAST_K_TURNS))
+    except (TypeError, ValueError):
+        k = DEFAULT_LAST_K_TURNS
+    if not memory_id or not actor_id or not session_id or k <= 0:
+        return ""
+    try:
+        client = boto3.client(
+            "bedrock-agentcore", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        )
+        resp = client.list_events(
+            memoryId=memory_id,
+            actorId=actor_id,
+            sessionId=session_id[:100],
+            maxResults=min(k, 100),
+            includePayloads=True,
+        )
+        events = [e for e in resp.get("events", []) if e.get("eventTimestamp")]
+        # newest first, so the char budget preferentially keeps recent turns
+        events.sort(key=lambda e: e["eventTimestamp"], reverse=True)
+        picked: list[str] = []
+        budget = RECENT_TURNS_TOTAL_CHARS
+        for ev in events:
+            lines = []
+            for p in ev.get("payload", []) or []:
+                conv = p.get("conversational") or {}
+                text = (conv.get("content") or {}).get("text", "")
+                if text:
+                    lines.append(f"{conv.get('role', '?')}: {text[:RECENT_TURN_MSG_CHARS]}")
+            block = "\n".join(lines)
+            if not block:
+                continue
+            if budget < len(block) and picked:
+                break
+            budget -= len(block)
+            picked.append(block)
+        picked.reverse()  # oldest first — natural reading order for the model
+        return "\n\n".join(picked)
+    except Exception:
+        logger.exception("recent-turns retrieval failed (continuing without replay)")
         return ""
 
 
@@ -438,14 +533,25 @@ async def invoke(payload: dict, context) -> dict:
         # makes it pick up {cwd}/.claude/skills.
         extra = {"cwd": WORK_DIR, "setting_sources": ["project"]}
 
+    # NB: don't shadow the AgentCore ``context`` argument — session identity
+    # (and therefore memory event keying + replay) depends on it.
+    session_id = str(getattr(context, "session_id", "") or "")
+
     memory = (payload or {}).get("memory") or {}
     system_prompt = (payload or {}).get("system") or DEFAULT_SYSTEM_PROMPT
     if memory:
-        context = retrieve_memory_context(memory, prompt)
-        if context:
+        memory_context = retrieve_memory_context(memory, prompt)
+        if memory_context:
             system_prompt += (
                 "\n\nRelevant long-term memory about this user (from earlier "
-                "conversations — use it when helpful):\n" + context
+                "conversations — use it when helpful):\n" + memory_context
+            )
+        recent = retrieve_recent_turns(memory, session_id)
+        if recent:
+            system_prompt += (
+                "\n\nRecent conversation in this session (replayed after a "
+                "restart — treat it as the dialogue so far and stay consistent "
+                "with it):\n" + recent
             )
 
     model_spec = (payload or {}).get("model") or {}
@@ -473,7 +579,7 @@ async def invoke(payload: dict, context) -> dict:
         **extra,
     )
 
-    logger.info("invoke session=%s prompt=%.80r", getattr(context, "session_id", "?"), prompt)
+    logger.info("invoke session=%s prompt=%.80r", session_id or "?", prompt)
 
     # ---- async mode: register an AgentCore task and return immediately ----
     async_spec = (payload or {}).get("async") or {}
@@ -490,9 +596,7 @@ async def invoke(payload: dict, context) -> dict:
 
     answer, usage, is_error = await run_agent(prompt, options)
     if memory and not is_error:
-        store_memory_event(
-            memory, str(getattr(context, "session_id", "") or ""), prompt, answer
-        )
+        store_memory_event(memory, session_id, prompt, answer)
 
     return {
         "ok": not is_error,

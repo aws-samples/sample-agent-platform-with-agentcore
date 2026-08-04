@@ -53,12 +53,14 @@ class InvokeRequest(BaseModel):
     skill_ids: list[str] = Field(default_factory=list, max_length=10)
     memory_id: str = ""
     memory_actor_id: str = Field(default="", max_length=80)
+    # replay the last K exchanges of this session on cold start (0 disables)
+    memory_last_k_turns: int = Field(default=10, ge=0, le=50)
 
 
 class McpServerCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=400)
-    kind: str = Field(pattern="^(agentcore-runtime|url)$")
+    kind: str = Field(pattern="^(agentcore-runtime|agentcore-gateway|url)$")
     target: str = Field(min_length=1, max_length=500)  # runtime ARN or URL
     # Optional request headers for ``url`` servers. Values may reference
     # {{secret:<name>}} (resolved inside the kernel) or {{user_token}} (the
@@ -125,6 +127,8 @@ class AgentInvokeRequest(BaseModel):
     prompt: str = Field(min_length=1)
     session_id: str | None = None
     memory_actor_id: str = Field(default="", max_length=80)
+    # replay the last K exchanges of this session on cold start (0 disables)
+    memory_last_k_turns: int = Field(default=10, ge=0, le=50)
 
 
 class ScheduleCreateRequest(BaseModel):
@@ -139,6 +143,19 @@ class ChannelCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=400)
     target: str = Field(default="agent-sdk", max_length=100)
+    # "token": webhook + one-time secret (external SaaS that can't hold AWS
+    # credentials). "iam": SigV4 service entry via the API Gateway front door
+    # — no token exists; callers are IAM principals (EKS Pod Identity etc.).
+    kind: str = Field(default="token", pattern="^(token|iam)$")
+    # iam channels: REQUIRED allowlist of caller role ARNs
+    # (arn:aws:iam::<acct>:role/<name>). This is the channel-level
+    # authorization — the workload's IAM grant is API-wide and applied once,
+    # so which channels a role may use is decided here, by the platform.
+    allowed_caller_arns: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ChannelCallersUpdateRequest(BaseModel):
+    allowed_caller_arns: list[str] = Field(min_length=1, max_length=20)
 
 
 class ChannelWebhookRequest(BaseModel):

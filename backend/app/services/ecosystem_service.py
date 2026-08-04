@@ -87,8 +87,8 @@ class EcosystemService:
             "SK": f"MCP#{uuid.uuid4().hex[:12]}",
             "name": name,
             "description": description,
-            "kind": kind,  # agentcore-runtime | url | builtin
-            "target": target,  # runtime ARN | http(s) URL
+            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | builtin
+            "target": target,  # runtime ARN | gateway MCP URL | http(s) URL
             # optional request headers for ``url`` servers. Values may contain
             # {{secret:name}} (resolved in the kernel) or {{user_token}}
             # (resolved per invocation from the caller's own token) — no

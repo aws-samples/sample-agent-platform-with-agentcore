@@ -375,9 +375,15 @@ AgentCore 调用）访问，每个请求用容器角色做 SigV4 签名。运行
 `InvokeAgentRuntime` 权限**仅**授予这一个 MCP runtime 资源，agent 无法
 借这条通道调用其他 runtime。
 
-**外部 URL 型 MCP server**（如 Exa）：API key 不落注册表：注册表里存的是
-`{{secret:agent-platform/exa-api-key}}` 占位符，内核在 session 启动时才从
-Secrets Manager 解析，且运行时角色的密钥读取权限精确到这一个密钥名。
+**AgentCore Gateway**（如 feed 流水线用的托管 Web Search connector）：同样走
+`mcp-proxy-for-aws` 做 SigV4，鉴权用容器角色，没有需要保管的 API key。检索
+query 由 AWS 内部的索引服务处理，不出 AWS、不经第三方搜索 API —— 对"用户提问会
+流到哪里"这类审查，这条通道本身就没有出网面。
+
+**外部 URL 型 MCP server**（接第三方服务时）：API key 不落注册表：注册表里存的
+是 `{{secret:agent-platform/remote-mcp-key}}` 占位符，内核在 session 启动时才从
+Secrets Manager 解析，且运行时角色的密钥读取权限精确到这一个密钥名。平台自带的
+能力都不走这条路，它是留给适配自有第三方服务的。
 
 **内置工具（Code Interpreter / Browser）**：代码执行和浏览器自动化分别跑在
 AWS 托管的独立沙箱里（不在 agent 的 microVM 内），以容器角色鉴权，权限精确到
@@ -421,7 +427,7 @@ AWS 托管的独立沙箱里（不在 agent 的 microVM 内），以容器角色
 |---|---|---|
 | Session 文件、对话历史 | Workspace S3 桶 | 公共访问全阻断、强制 SSL、静态加密、仅两个角色可访问 |
 | 平台记录（session/agent/schedule/台账/审计） | DynamoDB | 静态加密（默认 AWS 拥有密钥，可换 CMK） |
-| LLM 网关 key、Exa key、管理员口令 | Secrets Manager | 加密存储；按密钥名精确授权；容器/Lambda 启动时读取，从不写入镜像 |
+| LLM 网关 key、可选的第三方 MCP key、管理员口令 | Secrets Manager | 加密存储；按密钥名精确授权；容器/Lambda 启动时读取，从不写入镜像 |
 | 内核与平台日志 | CloudWatch Logs | 前缀级授权；平台自有日志组 7 天保留 |
 
 AgentCore 服务侧的数据（session 元数据、Memory 记录等）默认用 AWS KMS 加密静态

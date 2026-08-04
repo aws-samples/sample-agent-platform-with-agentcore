@@ -5,7 +5,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.models.schemas import ModelConfigUpdate, ModelTestRequest
 from app.services import invocation_service
 from app.services.audit_service import audit_service
@@ -23,7 +23,7 @@ def get_config(user: str = Depends(get_current_user)):
 
 
 @router.put("")
-def update_config(req: ModelConfigUpdate, user: str = Depends(get_current_user)):
+def update_config(req: ModelConfigUpdate, user: str = Depends(require_admin)):
     try:
         cfg = model_config_service.update_config(req.model_dump(exclude_none=True))
     except ValueError as e:
@@ -36,7 +36,7 @@ def update_config(req: ModelConfigUpdate, user: str = Depends(get_current_user))
 
 
 @router.post("/test")
-def test_backend(req: ModelTestRequest, user: str = Depends(get_current_user)):
+def test_backend(req: ModelTestRequest, user: str = Depends(require_admin)):
     """Connectivity check: one minimal governed invocation routed through the
     chosen backend. The reply proves the whole chain (backend config → kernel
     env → model) round-trips; the run also lands in the invocation ledger."""

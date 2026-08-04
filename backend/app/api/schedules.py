@@ -2,12 +2,12 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.models.schemas import ScheduleCreateRequest
 from app.services.audit_service import audit_service
 from app.services.schedule_service import schedule_service
 
-router = APIRouter(prefix="/api/v1/schedules", tags=["schedules"])
+router = APIRouter(prefix="/api/v1/schedules", tags=["schedules"], dependencies=[Depends(require_admin)])
 
 
 @router.get("")

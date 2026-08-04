@@ -7,6 +7,14 @@
 # Runtime env (set by TeamAuthStack): KC_BOOTSTRAP_ADMIN_USERNAME,
 # KC_BOOTSTRAP_ADMIN_PASSWORD, KC_HOSTNAME (https CloudFront URL),
 # KC_HTTP_ENABLED, KC_PROXY_HEADERS, KC_HEALTH_ENABLED.
+# Realm-file caveats (Keycloak 26.3.x imports are STRICT — any unknown JSON
+# field aborts the boot, so keep commentary here, not in the realm file):
+# - portal-web redirectUris ship as localhost only; Keycloak matches
+#   wildcards at the END of a URI (https://*.cloudfront.net/* does NOT
+#   work), so scripts/seed_team_idp.py registers the deployed portal's real
+#   origin after deploy.
+# - the robot-order-service service-account user's group membership is also
+#   applied by the seed script — a realm import cannot express it.
 # nosemgrep: dockerfile-source-not-pinned
 FROM quay.io/keycloak/keycloak:26.3
 # checkov:skip=CKV_DOCKER_2: health is the ALB target-group check on /realms/master.

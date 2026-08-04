@@ -264,6 +264,18 @@ function applySessionConfig(config) {
           command: "mcp-proxy-for-aws",
           args: [endpoint, "--service", "bedrock-agentcore", "--region", region],
         };
+      } else if (s.kind === "agentcore-gateway") {
+        // AgentCore Gateway MCP endpoint with IAM inbound auth — same SigV4
+        // proxy as a runtime, but the target is the gateway URL itself. The
+        // gateway need not be in this container's region (managed connector
+        // targets are region-limited, e.g. Web Search is us-east-1 only), so
+        // sign for the region named in the endpoint hostname.
+        const m = s.target.match(/\.bedrock-agentcore\.([a-z0-9-]+)\.amazonaws\.com/);
+        servers[s.name] = {
+          type: "stdio",
+          command: "mcp-proxy-for-aws",
+          args: [s.target, "--service", "bedrock-agentcore", "--region", m ? m[1] : region],
+        };
       } else if (s.kind === "url") {
         servers[s.name] = { type: "http", url: s.target };
       } else if (s.kind === "builtin") {

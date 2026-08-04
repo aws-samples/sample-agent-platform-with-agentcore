@@ -46,6 +46,8 @@ export interface Kernel {
 
 export interface Identity {
   user: string
+  is_admin: boolean
+  groups: string[]
   teams: string[]
   issuer: string
   audience: string | string[]
@@ -144,6 +146,8 @@ export interface Channel {
   name: string
   description: string
   target: string
+  kind: 'token' | 'iam'
+  allowed_caller_arns: string[]
   enabled: boolean
   created_by: string
   created_at: string
@@ -333,6 +337,11 @@ import { clearLocalSession, getToken } from './auth'
 
 const BASE = ''
 
+// /me cache, keyed to the bearer token so signing out/in (which swaps the
+// token without a page reload) never serves another user's identity.
+let meCache: Promise<Identity> | null = null
+let meCacheToken: string | null = null
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = getToken()
@@ -347,10 +356,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error('401 Unauthorized')
   }
   if (!resp.ok) {
-    const detail = await resp.text().catch(() => '')
+    const raw = await resp.text().catch(() => '')
+    let detail = raw
+    try {
+      detail = JSON.parse(raw).detail ?? raw
+    } catch {
+      /* plain-text error body */
+    }
     throw new Error(`${resp.status} ${resp.statusText}: ${detail}`)
   }
-  return resp.json() as Promise<T>
+  const body = await resp.text()
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    // an intermediary (proxy/CDN fallback) replaced the API response
+    throw new Error(`${path} returned a non-JSON response (${resp.status})`)
+  }
 }
 
 export const api = {
@@ -429,7 +450,13 @@ export const api = {
 
   // Channels
   listChannels: () => request<Channel[]>('/api/v1/channels'),
-  createChannel: (body: { name: string; description?: string; target: string }) =>
+  createChannel: (body: {
+    name: string
+    description?: string
+    target: string
+    kind?: 'token' | 'iam'
+    allowed_caller_arns?: string[]
+  }) =>
     request<Channel>('/api/v1/channels', { method: 'POST', body: JSON.stringify(body) }),
   toggleChannel: (id: string, enabled: boolean) =>
     request<Channel>(`/api/v1/channels/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }),
@@ -439,6 +466,13 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
   deleteChannel: (id: string) => request<{ ok: boolean }>(`/api/v1/channels/${id}`, { method: 'DELETE' }),
+  updateChannelCallers: (id: string, allowed_caller_arns: string[]) =>
+    request<Channel>(`/api/v1/channels/${id}/callers`, {
+      method: 'PUT',
+      body: JSON.stringify({ allowed_caller_arns }),
+    }),
+  getChannelSop: (id: string) =>
+    request<{ channel_id: string; markdown: string }>(`/api/v1/channels/${id}/sop`),
 
   // Evaluation
   listEvalDatasets: () => request<EvalDataset[]>('/api/v1/evals/datasets'),
@@ -503,6 +537,19 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/ecosystem/mcp-servers/${id}`, { method: 'DELETE' }),
   // Identity + gateways
   getMe: () => request<Identity>('/api/v1/me'),
+  // One /me fetch per page load: the nav filter and every RequireAdmin route
+  // guard share the same promise.
+  getMeCached: (): Promise<Identity> => {
+    const token = getToken()
+    if (!meCache || meCacheToken !== token) {
+      meCacheToken = token
+      meCache = request<Identity>('/api/v1/me').catch((e) => {
+        meCache = null
+        throw e
+      })
+    }
+    return meCache
+  },
   listGateways: () => request<Gateway[]>('/api/v1/gateways'),
   listGatewayTools: (id: string) =>
     request<{ gateway_id: string; mcp_url: string; tools: GatewayTool[] }>(

@@ -200,6 +200,9 @@ export default function PublishPage() {
                 <div>
                   <p className="text-sm font-semibold text-slate-900">
                     {a.name} <span className="ml-1 badge bg-brand-50 text-brand-700">v{a.version}</span>
+                    <span className="ml-2 font-mono text-[10px] font-normal text-slate-400" title="Agent ID — what channels/schedules reference as agent:<id>">
+                      {a.id}
+                    </span>
                   </p>
                   <p className="text-xs text-slate-400">{a.description || 'no description'}</p>
                 </div>

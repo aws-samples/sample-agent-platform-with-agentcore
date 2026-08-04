@@ -2,12 +2,12 @@
 
 from fastapi import APIRouter, Depends
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.models.schemas import GovernancePolicyUpdate
 from app.services.audit_service import audit_service
 from app.services.governance_service import governance_service
 
-router = APIRouter(prefix="/api/v1/governance", tags=["governance"])
+router = APIRouter(prefix="/api/v1/governance", tags=["governance"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/policy")

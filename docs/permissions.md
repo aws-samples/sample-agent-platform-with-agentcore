@@ -76,6 +76,7 @@ tools role (#3) carries **only** the first three rows:
 | `Skills` / `SkillsList` | `s3:GetObject`; `s3:ListBucket` conditioned on `s3:prefix` | `skills/*` in the workspace bucket only | Mount skill packages before the agent starts. Read-only. |
 | *(LLM gateway secret, `grant_read`)* | `secretsmanager:GetSecretValue`, `DescribeSecret` | `agent-platform/llm-gateway-key-*` only | Read the gateway API key at container start (never baked into the image). |
 | `InvokeMcpRuntimes` | `bedrock-agentcore:InvokeAgentRuntime` | `runtime/mcp_tools_kernel-*` and its `runtime-endpoint/*` only | Kernels reach the AgentCore-hosted MCP server through `mcp-proxy-for-aws`, which SigV4-signs with this role. Scoped to the MCP runtime name — **not** all runtimes. |
+| `InvokeGateways` | `bedrock-agentcore:InvokeGateway` | `gateway/*` in this account, in both the platform's region and `us-east-1` | Kernels reach registry entries of kind `agentcore-gateway` (SigV4 through `mcp-proxy-for-aws`) — the feed pipelines' managed Web Search connector is one. Gateway IDs are generated at deploy time, so this is scoped by account+region rather than to a single gateway; `us-east-1` is listed explicitly because the Web Search connector is offered only there. |
 | `BuiltinTools` | `bedrock-agentcore:StartCodeInterpreterSession`, `InvokeCodeInterpreter`, `StopCodeInterpreterSession`, `GetCodeInterpreterSession`, `StartBrowserSession`, `StopBrowserSession`, `GetBrowserSession`, `UpdateBrowserStream`, `ConnectBrowserAutomationStream`, `ConnectBrowserLiveViewStream` | `code-interpreter/aws.codeinterpreter.v1`, `browser/aws.browser.v1` (AWS-managed), plus `{account}:code-interpreter/*` and `{account}:browser/*` (custom variants) | Code Interpreter and Browser built-in tools run in AWS-managed sandboxes under this role — no separate tool runtime to deploy. |
 | `BedrockInvoke` | `bedrock:InvokeModel`, `InvokeModelWithResponseStream` | `*` | The model control plane (Governance → Model backends) can route any agent to Bedrock per invocation. Cross-region inference profiles span regions, so this cannot be region-pinned. See [§4](#4-wildcard-resource-statements). |
 
@@ -84,7 +85,7 @@ Role-specific statements:
 | Role | Sid | Actions | Resource scope | Why |
 |---|---|---|---|---|
 | **sdk** only | `AsyncArtifacts` / `AsyncArtifactsList` | `s3:GetObject`, `PutObject`, `AbortMultipartUpload`; `ListBucket` prefix-conditioned | `feeds/*`, `topic-selection/*` in the workspace bucket | Async task outputs + pipeline feed artifacts. The headless kernel has **no other S3 write path** and no `workspaces/*` access at all. |
-| **sdk** only | `McpSecrets` | `secretsmanager:GetSecretValue` | `agent-platform/exa-api-key-*` only | **(Phase 5)** Resolve `{{secret:...}}` placeholders in remote-MCP registry targets at session start (only the SDK kernel implements the placeholder). |
+| **sdk** only | `McpSecrets` | `secretsmanager:GetSecretValue` | `agent-platform/remote-mcp-key*` only | **(Phase 5)** Resolve `{{secret:...}}` placeholders in remote-MCP registry targets at session start (only the SDK kernel implements the placeholder). Nothing shipped uses it — search runs on the managed Web Search connector, which needs no key — but registering a key-bearing third-party MCP server works without an IAM change. |
 | **sdk** only | `MemoryData` | `bedrock-agentcore:CreateEvent`, `GetEvent`, `ListEvents`, `ListActors`, `ListSessions`, `GetMemoryRecord`, `ListMemoryRecords`, `RetrieveMemoryRecords` | `memory/*` in this account/region | **Data plane only.** Memory-bound invocations run on the headless kernel: it retrieves long-term records before a run and appends the exchange after. It **cannot** create, update, or delete memory stores — that is the backend's job (control plane). |
 
 ### The workspace-access role (per-session S3 credentials)
@@ -219,7 +220,7 @@ Negative space matters as much as the grants. None of the platform roles can:
   the task role is scoped to a single role ARN and conditioned to EventBridge
   Scheduler only.
 - **Read secrets outside the three named `agent-platform/*` secrets**
-  (`llm-gateway-key`, `exa-api-key`, `portal-admin`). No `secretsmanager:*`
+  (`llm-gateway-key`, `remote-mcp-key`, `portal-admin`). No `secretsmanager:*`
   wildcard exists anywhere.
 - **Touch other accounts.** Every resource ARN is `{account}`-scoped; there is
   no cross-account trust and no `sts:AssumeRole` into other accounts.
@@ -251,14 +252,58 @@ Two separate concerns, easy to conflate in a review:
   an operator creates users with `admin-create-user`.
 - **What the backend may do in AWS** (authorization) is the task role in
   [§3](#3-backend-ecs-task-role).
-- **Channels** are the one path that bypasses Cognito by design: a webhook is
-  authenticated by a server-generated bearer token (shown once, constant-time
-  compared), so external systems need no AWS credentials and no pool user. The
-  token grants only the ability to invoke that one channel's bound agent
-  through the governed pipeline.
+- **Roles.** The verified token's group claims (`cognito:groups` / OIDC
+  `groups`) decide the caller's surface: `platform-admin` members get the
+  management APIs (channels, scheduler, governance, registry writes, memory
+  browsing, gateway inventory, evaluation, workflow — guarded by
+  `require_admin`); everyone else gets the developer APIs scoped to their
+  own resources. `PLATFORM_ADMIN_USERS` (default `admin`) is the escape
+  hatch for principals that cannot carry groups.
+- **Token channels** are the one path that bypasses Cognito by design: a
+  webhook is authenticated by a server-generated bearer token (shown once,
+  constant-time compared), so external systems need no AWS credentials and no
+  pool user. The token grants only the ability to invoke that one channel's
+  bound agent through the governed pipeline.
+- **IAM channels (the service entry)** replace the token with SigV4 for
+  callers that are AWS workloads. The chain, and where each check happens:
+  1. **Network**: the API is a **PRIVATE API Gateway** — reachable only
+     through `execute-api` interface VPC endpoints, and its resource policy
+     admits only this account's principals (optionally pinned to specific
+     endpoint IDs via `-c service_api_allowed_vpces`). Downstream it
+     reaches the backend through a **VPC Link → internal NLB**; no hop
+     crosses the internet, and the backend's `/service/v1` routes are not
+     routed by CloudFront at all.
+  2. **API Gateway (`AWS_IAM` authorizer)** authenticates the caller's
+     SigV4 signature. Resource-level `execute-api:Invoke` ARNs scope a
+     caller to **one channel's** submit path (the SOP the platform renders
+     contains exactly that policy). The platform itself holds **no IAM
+     write permission** — the workload's ops team applies the grant.
+  3. The gateway integration injects two headers: the verified
+     `$context.identity.userArn` and a **shared entry secret** (Secrets
+     Manager `agent-platform/service-entry`, resolved into the integration
+     at deploy time via a CloudFormation dynamic reference — never in the
+     template). With private networking the secret defends against
+     **VPC-internal** forgery: anything inside the platform VPC (the
+     AgentCore runtime containers above all) can reach the internal NLB,
+     and without the secret such a neighbor could invent a caller ARN. The
+     backend admits `/service/v1` requests only with the correct secret
+     (constant-time compared). Anyone who can read the deployed API Gateway
+     integration configuration can read the secret — that is an account
+     operator, who could bypass the front door anyway.
+  4. The backend re-checks the channel (kind, enabled) and enforces the
+     **caller-ARN allowlist** — required and deny-by-default, because it is
+     the channel-level authorization (the IAM grant only admits a workload
+     to the API as a whole, once). The call then executes through the
+     governed pipeline with the caller's **role ARN** as the quota/ledger
+     identity; invocation records are readable only by the submitting role.
+  5. An optional `x-robot-token` (the workload's own IdP service-account
+     token) is verified against the platform's OIDC issuer **before** any
+     use, then forwarded only to identity-aware attachments — same rules as
+     a signed-in user's token, never persisted.
 
-Fallback auth modes (backend resolves in order): Cognito → static bearer token
-(`PLATFORM_API_TOKEN`, for CI) → open (local dev only). For a controlled test
+Fallback auth modes (backend resolves in order): OIDC → Cognito → static
+bearer token (`PLATFORM_API_TOKEN`, for CI) → open (local dev only; the
+development modes treat the caller as admin). For a controlled test
 environment, keep Cognito on; never ship the open mode.
 
 ---
@@ -320,7 +365,7 @@ review:
 |---|---|---|
 | Workspace S3 bucket | Session files, Claude Code conversation history, skill packages, pipeline feed artifacts | `BLOCK_ALL` public access, S3-managed encryption, `enforce_ssl=True`, `RETAIN` on stack delete (so session data is not lost accidentally). Access only via the two roles above. |
 | DynamoDB `agent-platform` | Session/agent/schedule/channel/eval/ledger/policy/audit records | Encrypted at rest (AWS-owned key by default; switch to a CMK if required). PAY_PER_REQUEST. |
-| Secrets Manager (`agent-platform/*`) | LLM gateway key, Exa API key, portal-admin password | Encrypted; read only by the specifically-scoped roles. Never baked into images — read at container/Lambda start. |
+| Secrets Manager (`agent-platform/*`) | LLM gateway key, optional remote-MCP key, portal-admin password | Encrypted; read only by the specifically-scoped roles. Never baked into images — read at container/Lambda start. |
 | CloudWatch Logs | Kernel, backend, and Lambda logs | Prefix-scoped grants; one-week retention on the platform's own groups. |
 
 Network boundary:

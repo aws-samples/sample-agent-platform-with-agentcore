@@ -31,6 +31,7 @@ def invoke_sdk_kernel(req: InvokeRequest, user: str = Depends(get_current_user))
             skill_ids=req.skill_ids,
             memory_id=req.memory_id,
             memory_actor_id=req.memory_actor_id,
+            memory_last_k_turns=req.memory_last_k_turns,
         )
     except (QuotaExceeded, SourceDisabled) as e:
         raise HTTPException(status_code=429, detail=str(e))

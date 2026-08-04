@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_current_user
+from app.dependencies import Principal, get_current_user
 from app.models.schemas import (
     AgentInvokeRequest,
     AgentPublishFromSessionRequest,
@@ -19,8 +19,14 @@ router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 
 @router.get("")
-def list_agents(user: str = Depends(get_current_user)):
-    return agent_service.list_agents()
+def list_agents(user: Principal = Depends(get_current_user)):
+    """Admins see the whole catalog; users see the agents they published.
+    (Invocation by ID stays open to any authenticated user — agents are
+    published to be used, and the governed pipeline meters every call.)"""
+    agents = agent_service.list_agents()
+    if getattr(user, "is_admin", False):
+        return agents
+    return [a for a in agents if a.get("created_by") == str(user)]
 
 
 @router.post("")
@@ -69,9 +75,13 @@ def publish_from_session(
 
 
 @router.delete("/{agent_id}")
-def delete_agent(agent_id: str, user: str = Depends(get_current_user)):
+def delete_agent(agent_id: str, user: Principal = Depends(get_current_user)):
     agent = agent_service.get_agent(agent_id)
-    if not agent or not agent_service.delete_agent(agent_id):
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not getattr(user, "is_admin", False) and agent.get("created_by") != str(user):
+        raise HTTPException(status_code=403, detail="Only the publisher or an administrator can delete this agent")
+    if not agent_service.delete_agent(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     audit_service.record(user, "agent.delete", f"agent:{agent['name']}")
     return {"ok": True}
@@ -87,6 +97,7 @@ def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: str = Depends(get
             prompt=req.prompt,
             runtime_session_id=req.session_id,
             memory_actor_id=req.memory_actor_id,
+            memory_last_k_turns=req.memory_last_k_turns,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Agent not found")

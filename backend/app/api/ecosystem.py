@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.models.schemas import (
     EcosystemEntry,
     McpServerCreateRequest,
@@ -19,14 +19,14 @@ def list_mcp_servers(user: str = Depends(get_current_user)):
 
 
 @router.post("/mcp-servers", response_model=EcosystemEntry)
-def create_mcp_server(req: McpServerCreateRequest, user: str = Depends(get_current_user)):
+def create_mcp_server(req: McpServerCreateRequest, user: str = Depends(require_admin)):
     return ecosystem_service.create_mcp_server(
         req.name, req.description, req.kind, req.target, headers=req.headers
     )
 
 
 @router.delete("/mcp-servers/{server_id}")
-def delete_mcp_server(server_id: str, user: str = Depends(get_current_user)):
+def delete_mcp_server(server_id: str, user: str = Depends(require_admin)):
     try:
         if not ecosystem_service.delete("MCP", server_id):
             raise HTTPException(status_code=404, detail="Not found")
@@ -41,12 +41,12 @@ def list_skills(user: str = Depends(get_current_user)):
 
 
 @router.post("/skills", response_model=EcosystemEntry)
-def create_skill(req: SkillCreateRequest, user: str = Depends(get_current_user)):
+def create_skill(req: SkillCreateRequest, user: str = Depends(require_admin)):
     return ecosystem_service.create_skill(req.name, req.description, req.skill_md)
 
 
 @router.delete("/skills/{skill_id}")
-def delete_skill(skill_id: str, user: str = Depends(get_current_user)):
+def delete_skill(skill_id: str, user: str = Depends(require_admin)):
     try:
         if not ecosystem_service.delete("SKILL", skill_id):
             raise HTTPException(status_code=404, detail="Not found")

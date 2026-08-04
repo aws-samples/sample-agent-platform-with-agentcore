@@ -7,14 +7,21 @@
 // 调用),不做独立调度。
 //
 // 与 skill 版的平台适配差异:
-// - skill 里 15-17 的 `site:A OR site:B` 链拆成单站单发 —— skill 自己在
-//   盯人清单一节写明「Exa 对 OR 链式站点过滤基本失效」,流水线化后扇出
-//   不要钱,没有理由再省这几条 query。拆完 29 条变 33 条。
+// - skill 里 15-17 的 `site:A OR site:B` 链拆成单站单发 —— skill 自己在盯人
+//   清单一节就写明 OR 链式站点过滤基本失效,而 Web Search 更是只认自然语言
+//   query(site: / OR / 引号短语一概当普通关键词),域名限定一律走
+//   filters.domainFilter.include 硬参数。流水线化后扇出不要钱,没有理由再省
+//   这几条 query。拆完 29 条变 33 条。
+// - 检索用 AgentCore 托管的 Web Search connector(经我们自己的 gateway,
+//   SigV4),抓正文用 AgentCore Browser 内置工具:没有第三方搜索 API key,
+//   query 也不出 AWS。需要工具的阶段走 published thin agents(web-searcher /
+//   pulse-judge / pulse-crawler)。
 // - 会议演讲「两跳挖法」显式化:泛搜大会只能捞到综述稿,先用一次裸 agent
 //   从综述里抽「讲者 + 演讲标题」清单,再逐个扇出第二跳检索。skill 里这是
 //   写给大 agent 的操作提示,大 agent 想省 turn 就跳过 —— 流水线里是必经段。
-// - TechCrunch / The Verge / 36kr 三个硬排除媒体域名由代码直接过滤(skill
-//   的排除规则第 3 条),其余媒体转述留给判定阶段语义甄别。
+// - TechCrunch / The Verge / 36kr 三个硬排除媒体域名双保险:gateway 的
+//   web-search target 上配了同一份 domainFilter.exclude(服务端过滤,压根不
+//   回来),代码这层的 MEDIA_EXCLUDE 保留兜底。其余媒体转述留给判定阶段甄别。
 // - 报告只展开抓过正文的 top N(与 skill 一致),但增加「入围未展开」一节:
 //   判定 keep 而没排进抓取名额的条目列标题 + 链接 —— 不列的话它们进不了
 //   去重基线,下一期会原样复活再判一遍。
@@ -27,11 +34,11 @@ export const meta = {
   description: 'ai-pulse feed 流水线:33 条检索 fan-out + 会议二跳 → 代码归并 → 预筛 → Gate-1 判定 → 抓取 → 精选洞察 → 渲染落盘 feeds/',
   phases: [
     { title: '准备', detail: '纯代码:算 14 天窗口 + 读最近几期 feed 提 URL/标题当去重基线' },
-    { title: '检索', detail: 'fan-out:33 条 query 各一次独立 Exa 调用 + 会议综述二跳挖单场演讲' },
+    { title: '检索', detail: 'fan-out:33 条 query 各一次独立 Web Search 调用 + 会议综述二跳挖单场演讲' },
     { title: '归并', detail: '纯代码:回显校验 + 媒体域名排除 + URL 归一化去重 + 窗口分桶' },
     { title: '预筛', detail: 'fan-out:对基线做事件级去重(recall 导向,拿不准放过)' },
     { title: '判定', detail: 'fan-out:每批候选一次 Gate-1「说白了」还原 + 三大类归类 + 排除规则' },
-    { title: '抓取', detail: '代码按优先级取 top N,每条一次正文抓取 + 洞察/证据/so-what 提取' },
+    { title: '抓取', detail: '代码按优先级取 top N,每条一次 Browser 正文抓取 + 洞察/证据/so-what 提取' },
     { title: '渲染', detail: '精选洞察合成 + 纯代码拼 feed markdown,s3write 落盘' },
   ],
 }
@@ -59,15 +66,19 @@ const TODAY = (args && args.today) || new Date(Date.now() + 8 * 3600 * 1000).toI
 const START = new Date(new Date(`${TODAY}T00:00:00Z`).getTime() - DAYS * 86400000).toISOString().slice(0, 10)
 
 // ---- 检索清单 ----
-// 原样搬自 ~/.claude/skills/ai-pulse/SKILL.md 第二步(1-14、18-24 原文;
-// 15-17 的 site: OR 链拆成单站;25-29 盯人清单以人名为语义 query + 域名硬参)。
+// 搬自 ~/.claude/skills/ai-pulse/SKILL.md 第二步(1-14、18-24;15-17 的 site:
+// OR 链拆成单站;25-29 盯人清单以人名为语义 query + 域名硬参)。
+//
+// query 一律是英文自然语言,skill 原文里带检索语法的几条已经改写:Web Search
+// 只认自然语言 query(200 字符以内),boolean OR / 引号短语 / site: 它不解析,
+// 当普通关键词处理反而拉低召回。域名限定走 filters.domainFilter.include。
 const QUERIES = [
   // 架构决策类
   { g: '架构决策', q: 'AI system architecture decision engineering blog' },
   { g: '架构决策', q: 'LLM infrastructure design tradeoff production' },
   { g: '架构决策', q: 'AI agent architecture lessons learned' },
-  { g: '架构决策', q: 'migrated from OR replaced OR switched to AI ML infrastructure' },
-  { g: '架构决策', q: '"design doc" OR "architecture decision record" AI LLM' },
+  { g: '架构决策', q: 'why we migrated our AI ML infrastructure and what we replaced' },
+  { g: '架构决策', q: 'architecture decision record or design doc for an LLM system' },
   // 趋势拐点类
   { g: '趋势拐点', q: 'AI trend shift evidence data 2025 2026' },
   { g: '趋势拐点', q: 'LLM fine-tuning vs RAG vs prompting production results' },
@@ -91,11 +102,11 @@ const QUERIES = [
   { g: '论文开源', q: 'AI open source project design philosophy document' },
   { g: '论文开源', q: 'arXiv practical LLM deployment scaling lessons' },
   // 头部会议演讲 & 一线实践者工作流(不要求生产数字,要求可复现做法)
-  { g: '会议演讲', q: "AI Engineer World's Fair OR AIE 2026 talk agent coding workflow", hop: true },
+  { g: '会议演讲', q: "AI Engineer World's Fair 2026 talks on agents and coding workflow", hop: true },
   { g: '会议演讲', q: 'conference talk transcript coding agents developer practice technique', hop: true },
   { g: '实践者', q: 'how I work with coding agents my daily workflow practitioner' },
-  { g: '实践者', q: 'reviewing OR understanding AI generated code developer technique' },
-  { g: '实践者', q: 'Claude Code skill OR slash command OR CLAUDE.md workflow shared engineer' },
+  { g: '实践者', q: 'how developers review and understand AI generated code' },
+  { g: '实践者', q: 'Claude Code skills slash commands and CLAUDE.md workflow shared by engineers' },
   // 实践者博客盯人清单(逐站单发;发现某人反复产出可复现做法就加,连续空手就删)
   { g: '盯人', q: 'Geoffrey Litt', domain: 'geoffreylitt.com' },
   { g: '盯人', q: 'Simon Willison', domain: 'simonwillison.net' },
@@ -147,26 +158,32 @@ log(`窗口 ${START} → ${TODAY}(${DAYS} 天)· 去重基线 ${prevFile || '(�
 
 // ===== Phase 2 · 检索(fan-out + 会议二跳)=====
 phase('检索')
+// 这一段的提示语刻意用英文写:它是整条流水线里唯一直接对搜索引擎说话的地方,
+// Web Search 目前对英文 query 的召回明显好于中文,提示语连同 query 一起用英文
+// 可以彻底断掉「模型顺手把 query 翻译一下」的可能。下游判定/摘要/渲染仍是中文
+// —— feed 本身是中文产物。
+//
+// 窗口和域名都走 filters 硬参数(connector 1.2.0 起支持),服务端过滤:出窗和
+// 站外的结果根本不会回到 context 里。也不需要「限制每条结果正文长度」这类护栏
+// —— Web Search 只回按 query 语义抽好的 snippet,不回整页正文。
+const SEARCH_TOOL = 'mcp__websearch__web-search___WebSearch'
 const searchOnce = (q, opts) => agentJson(
-  `发一次网页搜索,把结果原样搬回来。\n\n` +
-  `query(原样使用,一个字都不要改):${q}\n` +
-  `numResults:${opts.n || 10}\n` +
-  (opts.domain ? `限定域名:${opts.domain}\n` : '') +
-  `时间窗口起点:${START}\n\n` +
-  `工具选择:优先 \`mcp__exa__web_search_advanced_exa\`,并把窗口和域名作为**参数**传:\n` +
-  `- startPublishedDate: "${START}"\n` +
-  (opts.domain ? `- includeDomains: ["${opts.domain}"]\n` : '') +
-  `- numResults: ${opts.n || 10}\n` +
-  // textMaxCharacters 必须传:advanced 工具默认带每条结果的全文,一次搜索
-  // 回几十到几百 KB,kernel 里 CLI 消化大 tool result 会烧掉成倍的 turn,
-  // 超预算直接 500。本阶段只要 title/url/日期/snippet,400 字足够。
-  `- textMaxCharacters: 400\n` +
-  `该工具不可用时才退回 \`mcp__exa__web_search_exa\`,此时把窗口写成 query 尾巴的 \`after:${START}\`` +
-  (opts.domain ? `、域名写成 \`site:${opts.domain}\`` : '') + `。\n\n` +
-  `每条结果给 title / url / published_date(工具给了就填 YYYY-MM-DD,**没给就留空,绝对不要猜**)/ snippet。\n` +
-  `query_sent 填你实际发出的 query 文本,tool_used 填实际用的工具名。\n` +
-  `搜不到结果就返回空数组,这是正常结果,不要换个 query 再试。`,
-  { agent: 'exa-searcher', label: opts.label, schema: HITS_SCHEMA },
+  `Run exactly one web search and bring the results back verbatim.\n\n` +
+  `query (send exactly as given — do not reword, translate or add operators):\n${q}\n\n` +
+  `Call \`${SEARCH_TOOL}\` (the tool whose name ends in \`___WebSearch\`) with:\n` +
+  `- query: the string above, unchanged\n` +
+  `- maxResults: ${opts.n || 10}\n` +
+  `- filters.publishedDateFilter.from: "${START}"\n` +
+  (opts.domain ? `- filters.domainFilter.include: ["${opts.domain}"]\n` : '') +
+  `\nThis tool accepts natural-language queries only. Never add boolean OR, quoted phrases ` +
+  `or a \`site:\` prefix, and never write the date window into the query text — domain and ` +
+  `date scoping belong in \`filters\`.\n\n` +
+  `Report every result as title / url / published_date (fill YYYY-MM-DD when the tool returns ` +
+  `publishedDate; **leave it empty when it does not — never guess**) / snippet (the tool's ` +
+  `\`text\` field trimmed to 200 chars, not your own paraphrase).\n` +
+  `Set query_sent to the query text you actually sent, and tool_used to the tool you actually called.\n` +
+  `An empty result array is a valid outcome — do not retry with a different query.`,
+  { agent: 'web-searcher', label: opts.label, schema: HITS_SCHEMA },
 )
 
 const raw = await parallel(QUERIES.map((item, i) => () =>
@@ -186,7 +203,7 @@ if (hopSeeds.length) {
   const hopPlan = await agentJson(
     `下面是几条大会综述 / schedule / field guide 类的搜索结果。从标题和摘要里抽出被**点名的单场演讲**` +
     `(具体讲者 + 演讲标题),挑主题对得上「AI 架构决策 / 趋势拐点 / agent·coding 落地实践」的,` +
-    `生成第二跳检索 query(讲者名 + 标题关键词,英文)。\n\n` +
+    `生成第二跳检索 query(讲者名 + 标题关键词,**英文自然语言**,不要引号短语 / OR / site: 这类检索语法)。\n\n` +
     hopSeeds.slice(0, 20).map((h, i) => `${i + 1}. ${h.title}\n   ${(h.snippet || '').slice(0, 200)}`).join('\n') + '\n\n' +
     `最多 ${HOP_MAX} 条;综述里没点名任何具体演讲就返回空数组,不要编造讲者。\n` +
     `只返回一个 JSON 对象:{"hops":[{"speaker":"","talk":"","query":"讲者名 标题关键词"}]}`,
@@ -420,8 +437,9 @@ const judgedBatches = await parallel(judgeBatches.map((batch, bi) => () =>
     `① **窗口判断**(in_window + date_basis):一律以**内容首次公开/可访问的时间**为准,不以事件发生时间为准。` +
     `旧实践的新复盘/新公开算窗口内新内容。演讲类注意:文字版/长帖常在会后一两天就出,录像晚一到三周,` +
     `同一场演讲按**首次公开时间**判。\n` +
-    `「工具给的发布日期」为空时,可以用 \`mcp__exa__crawling_exa\` 打开 URL 找发布日期,或从 URL 路径推断;` +
-    `确实找不到就 in_window=false 且 date_basis='无法确认'。\n` +
+    `搜索已经按 ${START} 起的窗口在服务端过滤过,所以绝大多数候选的日期是可信的;` +
+    `「工具给的发布日期」为空时你没有抓取工具,只能从 URL 路径里的日期推断,` +
+    `推不出就 in_window=false 且 date_basis='无法确认'(不要猜)。\n` +
     `**补录例外**:出窗但属于重大信号(头部团队架构方向反转、某类方案集体失败的实锤)且往期清单没有 → ` +
     `is_backfill=true,keep 仍可为 true。补录仅限重大信号,普通内容出窗即丢。\n\n` +
     `② **往期去重复审**(dup_of_prev):对照下面最近几期 feed 的标题清单,指向同一事件/文章/演讲 → dup_of_prev=true → keep=false。\n` +
@@ -477,7 +495,9 @@ const toCrawl = kept.slice(0, CRAWL_MAX)
 log(`按 priority 取前 ${toCrawl.length} 条抓正文展开(其余 ${Math.max(0, kept.length - toCrawl.length)} 条列入围未展开)`)
 const enriched = await parallel(toCrawl.map((c) => () =>
   agent(
-    `用 \`mcp__exa__crawling_exa\` 抓取这个 URL 的正文(maxCharacters: 5000),然后按 ai-pulse 的口径提取洞察。\n\n` +
+    `抓取这个 URL 的正文,然后按 ai-pulse 的口径提取洞察。\n\n` +
+    `抓取方式:先 \`mcp__browser__navigate\` 打开 URL,再 \`mcp__browser__get_page_text\`` +
+    `(max_chars: 6000)取正文。首次 navigate 要等云端浏览器起会话(几秒),正常,不要重试。\n\n` +
     `标题:${c.title}\nURL:${c.url}\n归类:${c.category}\n` +
     `判定阶段的还原句(参考):${c.reduces_to || '(无)'}\n\n` +
     `提取要求(全部中文):\n` +
@@ -490,7 +510,7 @@ const enriched = await parallel(toCrawl.map((c) => () =>
     `- source(来源标注):[官方] 或 [第三方] + 作者/团队(如「[第三方] TinyFish 工程团队」)。\n` +
     `- ppt_star(1-3):做成客户 PPT 的潜力,3=值得单独做一个 deck。\n` +
     `- 上面给的标题若明显不是文章真实标题(正文小节名、站名、导航文字),从正文取真实标题填 title_fix;正常留空。\n` +
-    `抓取失败(404 / 付费墙 / 工具报错)时:crawl_ok=false,并**基于已有标题和摘要**保守地填 insight/evidence/sowhat,不要编造正文内容。`,
+    `抓取失败(404 / 付费墙 / 反爬拦截 / 正文空 / 工具报错)时:crawl_ok=false,并**基于已有标题和摘要**保守地填 insight/evidence/sowhat,不要编造正文内容。`,
     { agent: 'pulse-crawler', label: `crawl:${String(c.title).slice(0, 14)}`, schema: ENRICH_SCHEMA },
   ).then((s) => ({ ...c, ...(s || {}), crawl_ok: s ? s.crawl_ok : false })).catch(() => ({ ...c, crawl_ok: false })),
 ))

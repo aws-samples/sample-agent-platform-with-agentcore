@@ -6,6 +6,7 @@ Optional — for local development you can skip this stack and run
 """
 
 from aws_cdk import CfnOutput, Duration, Stack
+from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
@@ -17,6 +18,7 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_scheduler as scheduler
+from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sqs as sqs
 from aws_cdk import RemovalPolicy
 from constructs import Construct
@@ -74,6 +76,18 @@ class PortalStack(Stack):
             auth_flows=cognito.AuthFlow(user_password=True),
             id_token_validity=Duration.hours(12),
             access_token_validity=Duration.hours(12),
+        )
+
+        # RBAC: members of this group get the platform's management surface
+        # (channels, scheduler, governance, registry writes, …); everyone
+        # else gets the developer surface scoped to their own resources.
+        # Membership: aws cognito-idp admin-add-user-to-group.
+        cognito.CfnUserPoolGroup(
+            self,
+            "AdminGroup",
+            user_pool_id=user_pool.user_pool_id,
+            group_name="platform-admin",
+            description="Agent Platform administrators",
         )
 
         # ----------------------------- frontend ---------------------------
@@ -434,6 +448,28 @@ class PortalStack(Stack):
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         )
 
+        # SPA routing must stay scoped to the frontend behavior. Distribution
+        # -wide 403/404→index.html error responses also rewrite API error
+        # bodies into HTML (clients then fail parsing "<!doctype ..." as
+        # JSON), so route SPA paths with a viewer-request function on the S3
+        # behavior instead — /api/* behaviors match first and never see it.
+        spa_rewrite = cloudfront.Function(
+            self,
+            "SpaRewrite",
+            runtime=cloudfront.FunctionRuntime.JS_2_0,
+            code=cloudfront.FunctionCode.from_inline(
+                "function handler(event) {\n"
+                "  var request = event.request;\n"
+                "  // real files all carry an extension; everything else is a\n"
+                "  // client-side route\n"
+                "  if (!request.uri.includes('.')) {\n"
+                "    request.uri = '/index.html';\n"
+                "  }\n"
+                "  return request;\n"
+                "}\n"
+            ),
+        )
+
         distribution = cloudfront.Distribution(
             self,
             "Distribution",
@@ -441,20 +477,22 @@ class PortalStack(Stack):
             default_behavior=cloudfront.BehaviorOptions(
                 origin=origins.S3BucketOrigin.with_origin_access_control(frontend_bucket),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                function_associations=[
+                    cloudfront.FunctionAssociation(
+                        function=spa_rewrite,
+                        event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                    )
+                ],
             ),
             additional_behaviors={
                 "/api/*": api_behavior,
                 "/health": api_behavior,
+                # NB: /service/* is deliberately NOT routed here. The IAM
+                # service entry reaches the backend privately (API Gateway →
+                # VPC Link → internal NLB), so from the internet the path
+                # falls through to the SPA default behavior and the backend
+                # routes are simply unreachable.
             },
-            error_responses=[
-                # SPA routing: unknown paths fall back to index.html
-                cloudfront.ErrorResponse(
-                    http_status=403, response_http_status=200, response_page_path="/index.html"
-                ),
-                cloudfront.ErrorResponse(
-                    http_status=404, response_http_status=200, response_page_path="/index.html"
-                ),
-            ],
         )
 
         # Pipeline schedules: workflow scripts need Node (backend container
@@ -473,6 +511,184 @@ class PortalStack(Stack):
             )
         )
 
+        # ---------------------- IAM service entry (API GW) ----------------
+        # Server-to-server callers (EKS Pod Identity workloads above all)
+        # authenticate with SigV4 instead of a channel token, and the whole
+        # path is private: a **PRIVATE** REST API (reachable only through
+        # execute-api interface VPC endpoints) → VPC Link → an internal NLB →
+        # the backend service. No hop touches the public internet and
+        # CloudFront plays no part. The REST API's resource paths make
+        # least-privilege trivial: one channel = one execute-api resource ARN
+        # (see sop_service.py, which renders the matching ops runbook).
+        #
+        # The Secrets Manager shared secret survives the move to private
+        # networking with a new job: anything inside the platform VPC (the
+        # AgentCore runtime containers above all) can reach the internal NLB,
+        # and without the secret such a neighbor could forge x-caller-arn.
+        entry_secret = secretsmanager.Secret(
+            self,
+            "ServiceEntrySecret",
+            secret_name="agent-platform/service-entry",
+            description="Shared header secret: service-entry API Gateway -> backend",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                exclude_punctuation=True, password_length=48
+            ),
+        )
+        entry_secret.grant_read(task_role)
+
+        # Internal NLB in front of the backend service — the VPC Link target.
+        # Client IP preservation is off so the target security-group check
+        # sees NLB-node sources; the service SG admits the VPC CIDR (private
+        # subnets only) on the container port.
+        service_nlb = elbv2.NetworkLoadBalancer(
+            self,
+            "ServiceEntryNlb",
+            vpc=vpc,
+            internet_facing=False,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
+        )
+        nlb_tg = elbv2.NetworkTargetGroup(
+            self,
+            "ServiceEntryNlbTg",
+            vpc=vpc,
+            port=8000,
+            protocol=elbv2.Protocol.TCP,
+            target_type=elbv2.TargetType.IP,
+            preserve_client_ip=False,
+            health_check=elbv2.HealthCheck(
+                path="/health",
+                protocol=elbv2.Protocol.HTTP,
+                interval=Duration.seconds(30),
+                healthy_threshold_count=2,
+                unhealthy_threshold_count=3,
+            ),
+            deregistration_delay=Duration.seconds(30),
+        )
+        service_nlb.add_listener("Http", port=80, default_target_groups=[nlb_tg])
+        service.attach_to_network_target_group(nlb_tg)
+        service_sg.add_ingress_rule(
+            ec2.Peer.ipv4(vpc.vpc_cidr_block),
+            ec2.Port.tcp(8000),
+            "from the service-entry NLB (VPC Link path)",
+        )
+
+        vpc_link = apigw.VpcLink(
+            self,
+            "ServiceEntryVpcLink",
+            targets=[service_nlb],
+            description="agent-platform service entry -> internal NLB",
+        )
+
+        # Caller VPC endpoints, via context:
+        #   -c service_api_allowed_vpces=vpce-aaa,vpce-bbb
+        # Each listed endpoint is (a) pinned in the resource policy and
+        # (b) ASSOCIATED with the API — the association is what makes API
+        # Gateway publish the Route 53 alias for the endpoint-specific URL
+        # https://{api-id}-{vpce-id}.execute-api.{region}.amazonaws.com,
+        # which callers in shared VPCs use instead of enabling private DNS
+        # (private DNS would hijack every execute-api hostname in their VPC).
+        vpce_ids = [
+            v.strip()
+            for v in (self.node.try_get_context("service_api_allowed_vpces") or "").split(",")
+            if v.strip()
+        ]
+        vpce_refs = [
+            ec2.InterfaceVpcEndpoint.from_interface_vpc_endpoint_attributes(
+                self, f"CallerVpce{i}", vpc_endpoint_id=v, port=443
+            )
+            for i, v in enumerate(vpce_ids)
+        ]
+        api_policy = iam.PolicyDocument(
+            statements=[
+                iam.PolicyStatement(
+                    effect=iam.Effect.ALLOW,
+                    principals=[iam.AccountPrincipal(self.account)],
+                    actions=["execute-api:Invoke"],
+                    resources=["execute-api:/*"],
+                    conditions=(
+                        {"StringEquals": {"aws:SourceVpce": vpce_ids}} if vpce_ids else None
+                    ),
+                )
+            ]
+        )
+
+        service_api = apigw.RestApi(
+            self,
+            "ServiceEntryApi",
+            rest_api_name="agent-platform-service-entry",
+            description="SigV4-authenticated server-to-server entry to agent channels (private)",
+            endpoint_configuration=apigw.EndpointConfiguration(
+                types=[apigw.EndpointType.PRIVATE],
+                vpc_endpoints=vpce_refs or None,
+            ),
+            policy=api_policy,
+            deploy_options=apigw.StageOptions(
+                stage_name="svc",
+                throttling_rate_limit=50,
+                throttling_burst_limit=100,
+            ),
+            default_method_options=apigw.MethodOptions(
+                authorization_type=apigw.AuthorizationType.IAM
+            ),
+        )
+
+        # CloudFormation resolves the dynamic reference at deploy time, so
+        # the secret value never appears in the synthesized template.
+        entry_secret_header = f"'{{{{resolve:secretsmanager:{entry_secret.secret_arn}}}}}'"
+
+        def _service_integration(method: str, path: str, path_params: list[str]) -> apigw.Integration:
+            return apigw.Integration(
+                type=apigw.IntegrationType.HTTP_PROXY,
+                integration_http_method=method,
+                uri=f"http://{service_nlb.load_balancer_dns_name}{path}",
+                options=apigw.IntegrationOptions(
+                    connection_type=apigw.ConnectionType.VPC_LINK,
+                    vpc_link=vpc_link,
+                    request_parameters={
+                        "integration.request.header.x-caller-arn": "context.identity.userArn",
+                        "integration.request.header.x-service-entry-secret": entry_secret_header,
+                        **{
+                            f"integration.request.path.{p}": f"method.request.path.{p}"
+                            for p in path_params
+                        },
+                    },
+                ),
+            )
+
+        svc_v1 = service_api.root.add_resource("service").add_resource("v1")
+        submit_res = (
+            svc_v1.add_resource("channels")
+            .add_resource("{channelId}")
+            .add_resource("invocations")
+        )
+        submit_res.add_method(
+            "POST",
+            _service_integration(
+                "POST", "/service/v1/channels/{channelId}/invocations", ["channelId"]
+            ),
+            request_parameters={"method.request.path.channelId": True},
+        )
+        poll_res = svc_v1.add_resource("invocations").add_resource("{invocationId}")
+        poll_res.add_method(
+            "GET",
+            _service_integration(
+                "GET", "/service/v1/invocations/{invocationId}", ["invocationId"]
+            ),
+            request_parameters={"method.request.path.invocationId": True},
+        )
+
+        container.add_environment(
+            "PLATFORM_SERVICE_ENTRY_SECRET_NAME", entry_secret.secret_name
+        )
+        container.add_environment("PLATFORM_SERVICE_API_URL", service_api.url)
+        container.add_environment(
+            "PLATFORM_SERVICE_API_ARN_BASE",
+            f"arn:aws:execute-api:{self.region}:{self.account}:"
+            f"{service_api.rest_api_id}/svc",
+        )
+
+        CfnOutput(self, "ServiceEntryApiUrl", value=service_api.url)
+        CfnOutput(self, "ServiceEntryApiId", value=service_api.rest_api_id)
         CfnOutput(self, "PortalUrl", value=f"https://{distribution.distribution_domain_name}")
         CfnOutput(self, "DistributionId", value=distribution.distribution_id)
         CfnOutput(self, "FrontendBucketName", value=frontend_bucket.bucket_name)

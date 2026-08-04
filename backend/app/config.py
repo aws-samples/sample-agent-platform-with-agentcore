@@ -52,6 +52,28 @@ class Settings(BaseSettings):
     # configured. Empty = open (local development only).
     api_token: str = ""
 
+    # RBAC: members of this IdP group (Cognito user-pool group / OIDC groups
+    # claim / Keycloak realm role) are platform administrators; everyone else
+    # gets the user surface (Workbench, Publish, Debug) scoped to their own
+    # resources. admin_users is a comma-separated username escape hatch for
+    # principals that can't carry groups (the portal-admin delegation user).
+    # "admin" is the Cognito user the deploy guide creates and the
+    # schedule-runner Lambda signs in as (agent-platform/portal-admin secret).
+    admin_group: str = "platform-admin"
+    admin_users: str = "admin"
+
+    # IAM service entry (needs the PortalStack's API Gateway front door):
+    # the gateway injects a shared secret header so the backend can tell
+    # gateway-relayed calls (which carry a verified caller ARN) from direct
+    # internet hits. Prod reads the named secret; the env override is for
+    # local development.
+    service_entry_secret_name: str = "agent-platform/service-entry"
+    service_entry_secret: str = ""
+    # SOP rendering: the API's invoke URL and its execute-api ARN base
+    # (arn:aws:execute-api:<region>:<acct>:<api-id>/<stage>).
+    service_api_url: str = ""
+    service_api_arn_base: str = ""
+
     # Pipeline delegation: the schedule-runner Lambda cannot execute workflow
     # scripts (no Node in its runtime), so when this is set (Lambda env) a
     # pipeline schedule is delegated to the backend API instead, authenticated
