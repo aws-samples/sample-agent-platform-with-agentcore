@@ -370,8 +370,8 @@ def main() -> int:
         payload={},
     )
     print(
-        f"robot client pinned: {ROBOT_CLIENT} -> {ROBOT_SECRET} "
-        f"(service account in /{ROBOT_TEAM_GROUP})"
+        f"robot client pinned: {ROBOT_CLIENT} (credentials in Secrets "
+        f"Manager, service account in /{ROBOT_TEAM_GROUP})"
     )
 
     # ----------------------------- verify ------------------------------

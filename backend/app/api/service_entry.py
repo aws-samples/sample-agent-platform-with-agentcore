@@ -58,10 +58,10 @@ def _entry_secret() -> str:
                 SecretId=settings.service_entry_secret_name
             )["SecretString"]
         except Exception:
-            logger.exception(
-                "could not read %s — service entry disabled",
-                settings.service_entry_secret_name,
-            )
+            # NB: don't interpolate the secret *name* here — CodeQL taints
+            # anything reachable from a "secret"-named symbol as sensitive.
+            logger.exception("could not read the service-entry shared secret "
+                             "— service entry disabled")
             return ""
     return _secret_cache
 

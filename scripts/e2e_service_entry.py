@@ -146,7 +146,7 @@ def main() -> int:
     status, sop = http("GET", f"{portal}/api/v1/channels/{channel_id}/sop", headers=admin)
     md = sop.get("markdown", "")
     check("SOP renders the one-time API-wide grant + Pod Identity steps",
-          status == 200 and "pods.eks.amazonaws.com" in md
+          status == 200 and "create-pod-identity-association" in md
           and "channels/*/invocations" in md and e2e_role in md, str(status))
 
     status, err = http("POST", f"{portal}/api/v1/channels", {
