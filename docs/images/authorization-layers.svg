@@ -7,7 +7,7 @@
 </defs>
 <rect width="1480" height="900" fill="#FBFCFE"/><rect width="1480" height="900" fill="url(#grid)"/>
 <text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">Where authorization happens · two enforcement models behind one AgentCore Gateway</text>
-<text x="40" y="68" font-size="12" fill="#5A6B7B">The IdP puts a `team` claim in the login token · the gateway authenticates every call, but only decides for the backend that cannot decide for itself</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">The IdP puts a `team` claim in the login token · the gateway authenticates every call, but only decides for the backend that cannot decide for itself · robots present their own client-credentials token — same claim, same enforcement</text>
 <rect x="200" y="110" width="1250" height="665" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
 <text x="218" y="130" font-size="11" font-weight="700" fill="#0B7E7F">AWS Cloud · one gateway, one inbound authorizer</text>
 <rect x="1120" y="155" width="320" height="285" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
@@ -16,6 +16,7 @@
 <text x="814" y="611" font-size="11" font-weight="700" fill="#B21667">MODEL B · gateway authorizes for the backend</text>
 <path class="flow" d="M 90.0 407.0 L 90.0 190.0 L 307.0 190.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 113.0 430.0 L 307.0 430.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 113.0 563.0 L 245.0 563.0 L 245.0 434.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 353.0 430.0 L 597.0 430.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 643.0 430.0 L 877.0 430.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path d="M 900.0 407.0 L 900.0 190.0 L 643.0 190.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
@@ -29,6 +30,8 @@
 <text x="186" y="178" text-anchor="middle" font-size="9.5" fill="#48586a">OIDC login (PKCE)</text>
 <rect x="150" y="407" width="120" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="210" y="417" text-anchor="middle" font-size="9.5" fill="#48586a">Bearer user token</text>
+<rect x="112" y="541" width="176" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="200" y="551" text-anchor="middle" font-size="9.5" fill="#48586a">SigV4 service entry · robot token</text>
 <rect x="375" y="407" width="199" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="475" y="417" text-anchor="middle" font-size="9.5" fill="#48586a">caller's own token, not SigV4</text>
 <rect x="703" y="407" width="114" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
@@ -46,6 +49,7 @@
 <rect x="977" y="638" width="127" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="1040" y="648" text-anchor="middle" font-size="9.5" fill="#48586a">X-Api-Key injected</text>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="0.00s" repeatCount="indefinite" path="M 113.0 430.0 L 307.0 430.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.8s" begin="0.40s" repeatCount="indefinite" path="M 113.0 563.0 L 245.0 563.0 L 245.0 434.0"/></circle>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="0.75s" repeatCount="indefinite" path="M 353.0 430.0 L 597.0 430.0"/></circle>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="1.50s" repeatCount="indefinite" path="M 643.0 430.0 L 877.0 430.0"/></circle>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="2.25s" repeatCount="indefinite" path="M 923.0 430.0 L 1080.0 430.0 L 1080.0 215.0 L 1207.0 215.0"/></circle>
@@ -53,6 +57,7 @@
 <circle r="4" fill="#7E22CE"><animateMotion dur="2.2s" begin="1.10s" repeatCount="indefinite" path="M 923.0 660.0 L 1157.0 660.0"/></circle>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="2.4s" begin="0.00s" repeatCount="indefinite" path="M 90.0 407.0 L 90.0 190.0 L 307.0 190.0"/></circle>
 <rect x="67.0" y="407.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="90" cy="430" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="90" cy="430" r="1.8" fill="#fff"/><text x="90" y="468" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Browser</text><text x="90" y="481" text-anchor="middle" font-size="9.5" fill="#5A6B7B">alice · bob · carol</text>
+<rect x="67.0" y="540.0" width="46" height="46" rx="8" fill="#64748B"/><rect x="79" y="556" width="22" height="16" rx="3" fill="none" stroke="#fff" stroke-width="2.2"/><circle cx="86" cy="564" r="1.7" fill="#fff"/><circle cx="94" cy="564" r="1.7" fill="#fff"/><path d="M90 556 v-4" stroke="#fff" stroke-width="2.2"/><circle cx="90" cy="549" r="1.9" fill="#fff"/><text x="90" y="601" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Robot Workload</text><text x="90" y="614" text-anchor="middle" font-size="9.5" fill="#5A6B7B">EC2 · EKS · client credentials</text>
 <g transform="translate(307.00,167.00) scale(0.5750)">
 
     
@@ -190,4 +195,5 @@
 <circle cx="475" cy="430" r="9" fill="#232F3E"/><text x="475" y="433" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">2</text>
 <circle cx="760" cy="430" r="9" fill="#232F3E"/><text x="760" y="433" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">3</text>
 <text x="40" y="832" font-size="10" fill="#5A6B7B">A · the gateway brokers identity (OBO token exchange) and team-a/b verify JWKS + `team` and answer 403 themselves. B · team-c cannot read tokens, so the REQUEST interceptor checks `team` and stops the call; outbound carries only a static API key.</text>
+<text x="40" y="850" font-size="10" fill="#5A6B7B">Robots: a workload entering through the private SigV4 service entry fetches its own client-credentials token from the same IdP — the `team` claim rides the same OBO exchange, so models A and B enforce identically for humans and machines.</text>
 </svg>

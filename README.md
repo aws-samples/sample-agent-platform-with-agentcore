@@ -64,11 +64,18 @@ architecture, all live:
 - **Scheduler** — cron / `rate(N minutes)` schedules against any kernel or
   published agent, fired by **EventBridge Scheduler → Lambda** (retries +
   DLQ), with an in-process tick loop as the local-development fallback.
-- **Channels** — token-authenticated webhook endpoints for external systems
-  (bots, CI, ops hooks); a `conversation_id` keeps a warm runtime session.
+- **Channels** — entry points for external systems. Simple token webhooks,
+  plus an **IAM service entry**: a *private* API Gateway (SigV4-authenticated,
+  reachable only through allow-listed VPC interface endpoints) with an async
+  submit/poll contract. IAM admits a workload to the entry once; each channel
+  then carries its own deny-by-default caller allowlist, edited in the portal
+  — day-2 bind/revoke never goes back through IAM. A `conversation_id` keeps
+  a warm runtime session and its own memory line.
 - **Memory** — AgentCore Memory stores managed from the portal; bind one to
   any headless invocation and the kernel retrieves relevant long-term records
-  before the run and appends the exchange after it (recall across sessions).
+  before the run, replays the **last 10 turns** of the same conversation
+  (so channel conversations survive microVM recycling), and appends the
+  exchange after it.
 - **Observability** — a platform invocation ledger (latency, turns, cost,
   source) over every governed call, complementing CloudWatch GenAI traces.
 - **Evaluation** — fixed task suites executed against any target and scored
@@ -174,8 +181,17 @@ That identity then flows through the *ordinary* platform: a gateway is
 registered as one MCP server whose header holds a `{{user_token}}`
 placeholder, so any agent it is attached to carries the caller's own identity
 — the same published agent returns different results per signed-in user, and
-the **Gateway** page shows, per target, where authorization is decided. Two
-E2E suites cover it (20 + 15 checks).
+the **Gateway** page shows, per target, where authorization is decided.
+
+Machine callers get the same treatment. A workload entering through the
+private service entry can present its **own IdP client-credentials token**
+(`x-robot-token`, fetched by the workload itself — the platform never holds
+robot credentials); the platform verifies it and forwards it as the caller
+identity, so the OBO exchange authorizes team-scoped backends for robots
+exactly as for humans. An agent whose tools require a verified identity
+fails closed when no token arrives. Portal APIs themselves are role-gated:
+platform admins see the whole catalog and the admin pages, developers see
+what they created. Three E2E suites cover it (20 + 15 + 12 checks).
 
 Deploying into a permission-controlled account? [**docs/permissions.md**](docs/permissions.md)
 is the code-verified IAM reference — every role's exact actions and resource

@@ -7,7 +7,7 @@
 </defs>
 <rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
 <text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">Agent Platform on Amazon Bedrock AgentCore</text>
-<text x="40" y="68" font-size="12" fill="#5A6B7B">Interactive cloud workspaces (Claude Code web terminal) + headless agent kernels behind one portal · schedules, channels, memory and evals through one governed pipeline · fixed-EIP egress to an IP-allow-listed LLM gateway · existing APIs via AgentCore Gateway</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">Interactive cloud workspaces (Claude Code web terminal) + headless kernels behind one portal · schedules, channels, memory, evals in one governed pipeline · machine callers via a private SigV4 entry · fixed-EIP egress to an allow-listed LLM gateway · existing APIs via AgentCore Gateway</text>
 <rect x="200" y="88" width="1265" height="652" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
 <text x="218" y="728" font-size="11" font-weight="700" fill="#0B7E7F">AWS Cloud</text>
 <rect x="740" y="122" width="565" height="386" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
@@ -17,7 +17,8 @@
 <path class="flow" d="M 593.0 408.0 L 807.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 853.0 408.0 L 1057.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 1103.0 408.0 L 1517.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
-<path class="flow" d="M 115.0 560.0 L 180.0 560.0 L 180.0 408.0 L 307.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 115.0 560.0 L 307.0 560.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 353.0 560.0 L 420.0 560.0 L 420.0 420.0 L 547.0 420.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 92.0 385.0 L 92.0 104.0 L 830.0 104.0 L 830.0 385.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 570.0 385.0 L 570.0 262.0 L 930.0 262.0 L 930.0 168.0 L 977.0 168.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 1023.0 168.0 L 1197.0 168.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
@@ -28,7 +29,7 @@
 <path class="flow" d="M 570.0 431.0 L 570.0 560.0 L 440.0 560.0 L 440.0 637.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 830.0 431.0 L 830.0 637.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 853.0 408.0 L 853.0 540.0 L 1060.0 540.0 L 1060.0 637.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
-<path d="M 807.0 408.0 L 807.0 520.0 L 300.0 520.0 L 300.0 637.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 807.0 408.0 L 807.0 510.0 L 240.0 510.0 L 240.0 660.0 L 277.0 660.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
 <path d="M 1080.0 431.0 L 1080.0 568.0 L 1220.0 568.0 L 1220.0 637.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
 <path d="M 330.0 191.0 L 330.0 385.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
 <path class="flow" d="M 1000.0 191.0 L 1000.0 300.0 L 1367.0 300.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
@@ -43,8 +44,10 @@
 <text x="955" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">LLM egress</text>
 <rect x="1150" y="385" width="173" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="1236" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">single EIP · allow-listed</text>
-<rect x="100" y="470" width="160" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
-<text x="180" y="480" text-anchor="middle" font-size="9.5" fill="#48586a">channel webhook · token</text>
+<rect x="131" y="537" width="150" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="206" y="547" text-anchor="middle" font-size="9.5" fill="#48586a">SigV4 · x-robot-token</text>
+<rect x="428" y="465" width="118" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="487" y="475" text-anchor="middle" font-size="9.5" fill="#48586a">async submit · poll</text>
 <rect x="281" y="87" width="279" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="420" y="97" text-anchor="middle" font-size="9.5" fill="#48586a">WSS /ws · SigV4 pre-signed · web terminal</text>
 <rect x="658" y="240" width="153" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
@@ -65,8 +68,8 @@
 <text x="742" y="590" text-anchor="middle" font-size="9.5" fill="#48586a">workspace sync 30 s</text>
 <rect x="912" y="518" width="100" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="962" y="528" text-anchor="middle" font-size="9.5" fill="#48586a">built-in tools</text>
-<rect x="379" y="498" width="147" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
-<text x="452" y="508" text-anchor="middle" font-size="9.5" fill="#48586a">reads LLM key at boot</text>
+<rect x="600" y="490" width="147" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="673" y="500" text-anchor="middle" font-size="9.5" fill="#48586a">reads LLM key at boot</text>
 <rect x="1101" y="575" width="133" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="1168" y="585" text-anchor="middle" font-size="9.5" fill="#48586a">alt: Bedrock direct</text>
 <rect x="270" y="290" width="120" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
@@ -86,6 +89,8 @@
 <circle r="3.4" fill="#0F766E"><animateMotion dur="3.2s" begin="1.92s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 353.0 408.0 L 547.0 408.0"/></circle>
 <circle r="3.4" fill="#0F766E"><animateMotion dur="3.2s" begin="2.56s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 115.0 408.0 L 307.0 408.0"/></circle>
 <circle r="4" fill="#0369A1"><animateMotion dur="2.4s" begin="0.00s" repeatCount="indefinite" path="M 92.0 385.0 L 92.0 104.0 L 830.0 104.0 L 830.0 385.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.4s" begin="0.00s" repeatCount="indefinite" path="M 115.0 560.0 L 307.0 560.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="0.80s" repeatCount="indefinite" path="M 353.0 560.0 L 420.0 560.0 L 420.0 420.0 L 547.0 420.0"/></circle>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="2.2s" begin="0.00s" repeatCount="indefinite" path="M 570.0 385.0 L 570.0 262.0 L 930.0 262.0 L 930.0 168.0 L 977.0 168.0"/></circle>
 <circle r="4" fill="#1D4ED8"><animateMotion dur="2.2s" begin="1.10s" repeatCount="indefinite" path="M 1023.0 168.0 L 1197.0 168.0"/></circle>
 <circle r="4" fill="#15803D"><animateMotion dur="2.6s" begin="0.00s" repeatCount="indefinite" path="M 513.0 168.0 L 657.0 168.0"/></circle>
@@ -93,7 +98,8 @@
 <circle r="4" fill="#0369A1"><animateMotion dur="2.2s" begin="0.00s" repeatCount="indefinite" path="M 1000.0 191.0 L 1000.0 300.0 L 1367.0 300.0"/></circle>
 <circle r="4" fill="#0369A1"><animateMotion dur="2.2s" begin="1.10s" repeatCount="indefinite" path="M 1413.0 300.0 L 1517.0 300.0"/></circle>
 <rect x="69.0" y="385.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="92" cy="408" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="92" cy="408" r="1.8" fill="#fff"/><text x="92" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Developer Browser</text><text x="92" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">portal · xterm.js</text>
-<rect x="69.0" y="537.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="92" cy="560" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="92" cy="560" r="1.8" fill="#fff"/><text x="92" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">External Systems</text><text x="92" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">bots · CI · ops hooks</text>
+<rect x="69.0" y="537.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="92" cy="560" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="92" cy="560" r="1.8" fill="#fff"/><text x="92" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">External Workloads</text><text x="92" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">EC2 · EKS · bots · CI</text>
+<rect x="307.0" y="537.0" width="46" height="46" rx="8" fill="#E7157B"/><path d="M317 572 v-13 a13 13 0 0 1 26 0 v13" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><path d="M330 572 v-9" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><text x="330" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">API Gateway (private)</text><text x="330" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">SigV4 · VPC endpoints only</text>
 <g transform="translate(307.00,385.00) scale(0.7188)">
 
     
@@ -253,7 +259,7 @@
 <rect width="64" height="64" fill="white"/>
 </clipPath>
 </defs>
-</g><text x="440" y="698" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">AgentCore Memory</text><text x="440" y="711" text-anchor="middle" font-size="9.5" fill="#5A6B7B">kernels retrieve · append</text>
+</g><text x="440" y="698" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">AgentCore Memory</text><text x="440" y="711" text-anchor="middle" font-size="9.5" fill="#5A6B7B">replay · retrieve · append</text>
 <g transform="translate(547.00,637.00) scale(0.7188)">
 
     
@@ -321,5 +327,6 @@
 <circle cx="185" cy="806" r="5" fill="#0F766E"/><text x="195" y="810" font-size="10.5" fill="#5A6B7B">reply ←</text>
 <circle cx="264" cy="806" r="5" fill="#0369A1"/><text x="274" y="810" font-size="10.5" fill="#5A6B7B">tools/memory</text>
 <circle cx="378" cy="806" r="5" fill="#15803D"/><text x="388" y="810" font-size="10.5" fill="#5A6B7B">scheduling</text>
-<text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ VPC egress → ⑤ LLM gateway · EventBridge Scheduler → Lambda fires schedules (retries + DLQ) · channel webhooks enter the same governed pipeline · AgentCore Memory = cross-session recall · workspace + conversation resume from S3</text>
+<text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ VPC egress → ⑤ LLM gateway · EventBridge Scheduler → Lambda fires schedules (retries + DLQ) · workspace + conversation resume from S3</text>
+<text x="40" y="850" font-size="10" fill="#5A6B7B">machine callers enter via a private SigV4 API Gateway (per-channel caller allowlist · optional robot SSO token) into the same governed pipeline · AgentCore Memory = last-10-turn replay + cross-session recall</text>
 </svg>
