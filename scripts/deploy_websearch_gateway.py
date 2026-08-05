@@ -25,9 +25,9 @@ does not cover connector targets yet, hence this script):
   platform still reaches it (see build_mcp_config, kind ``agentcore-gateway``).
 
 Target-level ``domainFilter.exclude`` is a server-side denylist hidden from
-the model: the agent never learns a domain was dropped. EXCLUDE_DOMAINS below
-mirrors the media domains ai-pulse already drops in code, so those results are
-never retrieved rather than fetched and discarded.
+the model: the agent never learns a domain was dropped. Put a domain in
+EXCLUDE_DOMAINS below and its results are never retrieved, rather than fetched
+and then discarded downstream.
 
 A gateway namespaces every tool as ``${target_name}___${tool_name}``, so the
 tool the agents actually call is ``web-search___WebSearch`` — and, once the
@@ -44,7 +44,7 @@ that would leave the pipelines' filters silently non-functional.
 
 Idempotent: re-running reuses the gateway/target by name and re-pins the
 connector version. The resulting wiring is stored in SSM parameter
-``/agent-platform/websearch-gateway`` for seed_topic_pipeline.py to read.
+``/agent-platform/websearch-gateway`` for a pipeline seeder to read.
 
 Usage:
     python3 scripts/deploy_websearch_gateway.py            # create/update
@@ -67,15 +67,14 @@ SSM_PARAM = "/agent-platform/websearch-gateway"
 CONNECTOR_ID = "web-search"
 CONNECTOR_VERSION = "1.2.0"
 
-# Server-side denylist, hidden from the model. Deliberately just the three
-# domains ai-pulse already drops in code (MEDIA_EXCLUDE, from the skill's
-# exclusion rule 3) — enforcing them here means those results are never
-# retrieved in the first place, instead of being fetched and then thrown away.
-# The code-side filter stays as defense in depth: it still applies if this
-# target is ever recreated without the list.
+# Server-side denylist, hidden from the model: enforcing a domain here means
+# its results are never retrieved in the first place, instead of being fetched
+# and then thrown away. Keep any equivalent filter in your pipeline code too,
+# as defense in depth — it still applies if this target is ever recreated
+# without the list.
 #
-# Keep this list to domains the pipelines already exclude. Adding more is an
-# editorial decision about the feed, not a deployment detail.
+# The three below are an example, not a recommendation. Which sources to drop
+# is an editorial decision about your own content, not a deployment detail.
 EXCLUDE_DOMAINS = [
     "techcrunch.com",
     "theverge.com",
@@ -329,8 +328,9 @@ def main() -> int:
     print(
         "\nNext: grant the kernel roles bedrock-agentcore:InvokeGateway on\n"
         f"  arn:aws:bedrock-agentcore:{REGION}:{account}:gateway/{gateway_id}\n"
-        "  (RuntimeStack does this — redeploy it), then run\n"
-        "  python3 scripts/seed_topic_pipeline.py --with-feeds"
+        "  (RuntimeStack does this — redeploy it), then register the endpoint\n"
+        "  above as an MCP server of kind 'agentcore-gateway' and attach it to\n"
+        "  the agents that should search."
     )
     return 0
 

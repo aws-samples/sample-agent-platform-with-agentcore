@@ -280,66 +280,80 @@ EKS pod, say):
 `deploy.sh`, which executes the SOP against a real cluster and starts a pod
 that checks in through the channel on a loop.
 
-## 7. (Optional) Content pipelines — Phase 5
+## 7. (Optional) Workflow engine — Phase 5
 
-The workflow engine and the sample content pipelines (daily-topic, plus the
-two nested feed pipelines it calls: anthropic-tracker and ai-pulse) are
-optional. Enable them only if you want scheduled, multi-step agent
-orchestration. daily-topic is the single entry point — the feed pipelines are
-invoked from it via nested `workflow()` calls and are not scheduled on their
-own.
+The workflow engine is optional. Enable it only if you want scheduled,
+multi-step agent orchestration: a pipeline is a JavaScript file stored on the
+platform, executed by the runner in `backend/app/workflow/runner.mjs`, and every
+`agent()` call in it resolves to a published agent by name. Deterministic work
+(dates, dedupe, filtering, rendering) stays in the script; only judgment goes to
+a model.
 
-1. **Deploy the Web Search gateway** — the feed pipelines search through the
-   AgentCore-managed Web Search connector, fronted by a gateway of your own.
-   There is no API key to store: the gateway authenticates callers with SigV4
-   (the kernel's execution role), and queries never leave AWS.
+`pipelines/example-digest.workflow.mjs` is a runnable skeleton of the common
+shape — fan out one invocation per input, then reduce the results into one
+artifact — with the dialect's full surface documented in its header comments.
+Copy it and replace the prompts; the pipelines that carry a real workload are
+not part of this sample.
 
-   ```bash
-   python3 scripts/deploy_websearch_gateway.py
-   ```
-
-   The script creates the gateway and its service role, pins the connector to
-   version `1.2.0` (the version with request-level domain and published-date
-   filters, which the pipelines depend on), and records the endpoint in SSM at
-   `/agent-platform/websearch-gateway` for the seeder to read.
-
-   It needs a boto3/botocore new enough to model `connector.source.version` —
-   the field shipped alongside connector 1.2.0, so botocore 1.43.48 is too old.
-   The script checks first and refuses to deploy an unpinned target (which would
-   land on 1.1.0 and leave the pipelines' filters quietly non-functional); run
-   `pip install -U boto3 botocore` if it stops you.
-
-   Two constraints worth knowing before you run it: the connector is offered
-   **only in us-east-1**, so the gateway is created there regardless of where
-   the rest of the platform lives (the kernels sign for the region in the
-   endpoint hostname, so a platform in another region still reaches it); and
-   the kernel roles need `bedrock-agentcore:InvokeGateway`, which `RuntimeStack`
-   grants via its `InvokeGateways` statement — redeploy that stack if you are
-   upgrading an existing deployment.
-
-   Page bodies are read with the AgentCore Browser built-in rather than a
-   crawling API, since Web Search returns snippets only. No extra setup: the
-   `BuiltinTools` grant already covers browser sessions.
-
-2. **Register the sample pipelines** (writes pipeline definitions to DynamoDB
-   and the MCP/skill registry — no new infra):
+1. **Register the example pipeline** (writes the agent and the pipeline
+   definition to DynamoDB — no new infra):
 
    ```bash
    PLATFORM_WORKSPACE_BUCKET=agent-platform-workspaces-<account>-<region> \
-     python3 scripts/seed_topic_pipeline.py
+     python3 scripts/seed_example_pipeline.py
    ```
 
-3. **Stage the pipeline inputs** into the workspace bucket:
+   That script is also the pattern for seeding your own: publish the agents a
+   pipeline targets, then register the script. Both are idempotent — re-running
+   bumps versions instead of duplicating.
 
-   ```bash
-   PLATFORM_WORKSPACE_BUCKET=agent-platform-workspaces-<account>-<region> \
-     ./scripts/stage_topic_inputs.sh
+2. **Run it** from the Workflow page (marked Experimental), which shows
+   registered pipelines and their phase→agent run tree, or through the API:
+
+   ```
+   POST /api/v1/pipelines/example-digest/runs   {"args": {}}
    ```
 
-These operator scripts run with **your CLI identity**, not a stack role —
-they need `s3:PutObject` on the workspace bucket and `dynamodb:PutItem` on the
-`agent-platform` table. The Workflow page (marked Experimental) then shows the
-registered pipelines and their phase→agent run tree.
+   With no arguments it reads `feeds/example/*.md` from the workspace bucket and
+   writes a digest under `feeds/example-digest/`. An empty input prefix is a
+   valid outcome: the run writes an artifact saying so rather than failing.
+
+**(Optional) Web Search gateway.** If your pipelines need web search, the
+platform can front the AgentCore-managed Web Search connector with a gateway of
+your own. There is no API key to store: the gateway authenticates callers with
+SigV4 (the kernel's execution role), and queries never leave AWS.
+
+```bash
+python3 scripts/deploy_websearch_gateway.py
+```
+
+The script creates the gateway and its service role, pins the connector to
+version `1.2.0` (the version with request-level domain and published-date
+filters), and records the endpoint in SSM at `/agent-platform/websearch-gateway`.
+Register that endpoint as an MCP server of kind `agentcore-gateway` to give an
+agent the tool.
+
+It needs a boto3/botocore new enough to model `connector.source.version` — the
+field shipped alongside connector 1.2.0, so botocore 1.43.48 is too old. The
+script checks first and refuses to deploy an unpinned target, which would land
+on 1.1.0 and leave request-level filters quietly non-functional; run
+`pip install -U boto3 botocore` if it stops you.
+
+Two constraints worth knowing before you run it: the connector is offered
+**only in us-east-1**, so the gateway is created there regardless of where the
+rest of the platform lives (the kernels sign for the region in the endpoint
+hostname, so a platform in another region still reaches it); and the kernel
+roles need `bedrock-agentcore:InvokeGateway`, which `RuntimeStack` grants via
+its `InvokeGateways` statement — redeploy that stack if you are upgrading an
+existing deployment.
+
+Web Search returns snippets only, so read page bodies with the AgentCore
+Browser built-in rather than a crawling API. No extra setup: the `BuiltinTools`
+grant already covers browser sessions.
+
+These operator scripts run with **your CLI identity**, not a stack role — they
+need `s3:PutObject` on the workspace bucket and `dynamodb:PutItem` on the
+`agent-platform` table.
 
 ## 8. (Optional) Enterprise SSO auth chain — team-auth demo
 

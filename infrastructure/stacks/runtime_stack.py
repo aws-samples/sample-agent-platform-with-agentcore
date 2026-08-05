@@ -65,8 +65,9 @@ class RuntimeStack(Stack):
         #     scoped to workspaces/{sessionId}/* (see WorkspaceAccessRole
         #     below), so code inside one session cannot read another
         #     session's prefix even with the container's own credentials.
-        #   - sdk (headless): skills/* read + the async-artifact prefixes
-        #     (feeds/*, topic-selection/*) — no workspace access at all.
+        #   - sdk (headless): skills/* read + the async-artifact prefix
+        #     (feeds/*) — no workspace access at all. Add your own pipelines'
+        #     output prefixes to the AsyncArtifacts grant below.
         #   - mcp-tools: no S3.
         bucket = platform.workspace_bucket
 
@@ -172,7 +173,7 @@ class RuntimeStack(Stack):
         # (Keys come from the platform's pipeline layer; see
         # invocation_service.invoke_async_and_wait and pipelines/*.mjs.)
         for r in (sdk_role, legacy_role):
-            grant_prefix(r, "AsyncArtifacts", ["feeds", "topic-selection"], write=True)
+            grant_prefix(r, "AsyncArtifacts", ["feeds"], write=True)
 
         # LLM gateway key — read at container start by both agent kernels.
         platform.llm_gateway_secret.grant_read(interactive_role)

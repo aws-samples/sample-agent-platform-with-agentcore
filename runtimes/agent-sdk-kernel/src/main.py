@@ -25,7 +25,7 @@ Payload contract::
                                     // session on cold start (0 disables)
         },
         "async": {                  // optional: run as an AgentCore async task
-            "bucket": "…", "key": "feeds/ai-pulse/2026-07-23.md"
+            "bucket": "…", "key": "feeds/example-digest/2026-07-23.md"
         },
         "model": {                  // optional: per-invocation model routing
             "backend": "bedrock" | "gateway",

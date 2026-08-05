@@ -84,7 +84,7 @@ Role-specific statements:
 
 | Role | Sid | Actions | Resource scope | Why |
 |---|---|---|---|---|
-| **sdk** only | `AsyncArtifacts` / `AsyncArtifactsList` | `s3:GetObject`, `PutObject`, `AbortMultipartUpload`; `ListBucket` prefix-conditioned | `feeds/*`, `topic-selection/*` in the workspace bucket | Async task outputs + pipeline feed artifacts. The headless kernel has **no other S3 write path** and no `workspaces/*` access at all. |
+| **sdk** only | `AsyncArtifacts` / `AsyncArtifactsList` | `s3:GetObject`, `PutObject`, `AbortMultipartUpload`; `ListBucket` prefix-conditioned | `feeds/*` in the workspace bucket (add your own pipelines' output prefixes) | Async task outputs + pipeline artifacts. The headless kernel has **no other S3 write path** and no `workspaces/*` access at all. |
 | **sdk** only | `McpSecrets` | `secretsmanager:GetSecretValue` | `agent-platform/remote-mcp-key*` only | **(Phase 5)** Resolve `{{secret:...}}` placeholders in remote-MCP registry targets at session start (only the SDK kernel implements the placeholder). Nothing shipped uses it — search runs on the managed Web Search connector, which needs no key — but registering a key-bearing third-party MCP server works without an IAM change. |
 | **sdk** only | `MemoryData` | `bedrock-agentcore:CreateEvent`, `GetEvent`, `ListEvents`, `ListActors`, `ListSessions`, `GetMemoryRecord`, `ListMemoryRecords`, `RetrieveMemoryRecords` | `memory/*` in this account/region | **Data plane only.** Memory-bound invocations run on the headless kernel: it retrieves long-term records before a run and appends the exchange after. It **cannot** create, update, or delete memory stores — that is the backend's job (control plane). |
 
@@ -340,8 +340,9 @@ Two hard requirements regardless of option:
   stack role.** `scripts/build-and-push.sh` needs `ecr:GetAuthorizationToken` +
   push actions on `agent-platform/*`; `scripts/deploy-schedule-lambda.sh` needs
   `lambda:UpdateFunctionCode` on the runner; the Phase 5
-  `scripts/seed_topic_pipeline.py` / `stage_topic_inputs.sh` need
-  `s3:PutObject` on the workspace bucket and `dynamodb:PutItem` on the table.
+  `scripts/seed_example_pipeline.py` needs `dynamodb:PutItem` on the table, and
+  a pipeline seeder that stages inputs also needs `s3:PutObject` on the
+  workspace bucket.
   These are operator actions, deliberately kept out of the stack roles.
 
 If the customer wants a single reviewable artifact, generate the synthesized
