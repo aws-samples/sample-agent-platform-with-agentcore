@@ -1,0 +1,7 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.json
+terraform.tfvars
+modules/portal/.schedule-runner-placeholder.zip

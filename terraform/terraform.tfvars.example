@@ -1,0 +1,53 @@
+# Mirrors the CDK context knobs in infrastructure/cdk.json.
+# Copy to terraform.tfvars (gitignored) and fill in your values.
+
+aws_region = "us-east-1"
+
+# --- network ----------------------------------------------------------------
+# Leave existing_vpc_id empty to create a fresh VPC (2 public + 2 private
+# subnets, 1 NAT + EIP). To reuse an existing VPC, set all four values —
+# Terraform cannot classify subnets by route table the way CDK's
+# Vpc.fromLookup does, so list the subnet IDs explicitly:
+#   aws ec2 describe-subnets --filters Name=vpc-id,Values=<vpc-id> \
+#     --query 'Subnets[].{id:SubnetId,cidr:CidrBlock}'
+existing_vpc_id             = ""
+existing_private_subnet_ids = [] # e.g. ["subnet-aaaa...", "subnet-bbbb..."]
+existing_public_subnet_ids  = [] # e.g. ["subnet-cccc...", "subnet-dddd..."]
+existing_nat_eip            = "" # informational, surfaced as an output
+
+# --- model backend ----------------------------------------------------------
+# Bedrock model IDs must be cross-region inference profiles (global. prefix).
+llm_gateway_url                = ""
+use_bedrock                    = "1"
+anthropic_model                = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+anthropic_small_fast_model     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+anthropic_default_opus_model   = "global.anthropic.claude-opus-5"
+anthropic_default_sonnet_model = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+anthropic_default_haiku_model  = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# --- image tags -------------------------------------------------------------
+# Pin per-kernel tags as they evolve independently; image_tag is the default.
+image_tag = "latest"
+# claude_code_image_tag = ""
+# sdk_image_tag         = ""
+# mcp_tools_image_tag   = ""
+# backend_image_tag     = ""
+# team_auth_image_tag   = ""
+# team_demo_image_tag   = ""
+
+# --- portal auth ------------------------------------------------------------
+# Enterprise-SSO mode: point at the TeamAuth Keycloak issuer, e.g.
+# "https://<cloudfront-domain>/realms/agent-platform". Empty = Cognito only.
+oidc_issuer = ""
+
+# Caller interface-VPC-endpoint IDs for the private service-entry API.
+service_api_allowed_vpces = [] # e.g. ["vpce-0123456789abcdef0"]
+
+# --- deploy staging ---------------------------------------------------------
+# Phase 1 (repos only):   enable_runtime = false, enable_portal = false
+# Phase 2: push images (scripts/build-and-push.sh)
+# Phase 3: flip both to true and apply again
+enable_runtime   = true
+enable_portal    = true
+enable_team_auth = false
+enable_team_demo = false
