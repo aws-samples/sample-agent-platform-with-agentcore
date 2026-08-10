@@ -183,7 +183,11 @@ resource "aws_api_gateway_deployment" "service_entry" {
       aws_api_gateway_method.poll.id,
       aws_api_gateway_integration.submit.uri,
       aws_api_gateway_integration.poll.uri,
-      aws_api_gateway_rest_api.service_entry.policy,
+      # the policy *input*, not rest_api.policy: API Gateway normalises the
+      # document it stores, so reading it back yields a different string during
+      # apply than at plan time and the provider rejects its own plan
+      # ("produced an invalid new value for .triggers").
+      data.aws_iam_policy_document.service_entry_api.json,
     ]))
   }
 
