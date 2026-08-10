@@ -15,6 +15,13 @@ Requires Terraform **>= 1.9** and AWS provider **>= 6.50**
 (`aws_bedrockagentcore_agent_runtime` itself only needs 6.17; 6.50 picks up
 the AgentCore gateway fixes for when `deploy_team_gateway.py` migrates here).
 
+An older CLI misreports this as a defect in the configuration rather than a
+version mismatch: 1.5.x fails `terraform validate` with two `Invalid reference
+in variable validation` errors against `modules/network/variables.tf`, because
+cross-variable references in `validation` blocks are a 1.9 feature. Check
+`terraform version` before chasing those. Note that Homebrew's core formula
+stops at 1.5.7 and is disabled, so `brew upgrade` will not move you past it.
+
 ## What deliberately stays on scripts
 
 * **`scripts/deploy_websearch_gateway.py`** — the Web Search
