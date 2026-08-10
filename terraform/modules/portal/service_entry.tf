@@ -30,6 +30,15 @@ resource "aws_api_gateway_vpc_link" "service_entry" {
 # Each listed caller VPC endpoint is (a) pinned in the resource policy and
 # (b) ASSOCIATED with the API — the association publishes the Route 53 alias
 # for the endpoint-specific URL callers in shared VPCs use.
+# The policy is attached AFTER creation via aws_api_gateway_rest_api_policy
+# rather than inline, and it names resources by the API's execution_arn rather
+# than the `execute-api:/*` shorthand. API Gateway normalises a stored policy
+# (minifies, sorts keys, and expands the shorthand into a full ARN embedding
+# the API id), so an inline policy can never match what is read back — the id
+# does not exist when the inline document is written — and the resource carries
+# a permanent plan diff. The post-attach form lets the document use the real
+# ARN, so the stored value round-trips byte-identical and the plan stays clean.
+# Cost: the policy lands moments after the API exists instead of atomically.
 data "aws_iam_policy_document" "service_entry_api" {
   statement {
     effect  = "Allow"
@@ -38,7 +47,7 @@ data "aws_iam_policy_document" "service_entry_api" {
       type        = "AWS"
       identifiers = ["arn:aws:iam::${local.account}:root"]
     }
-    resources = ["execute-api:/*"]
+    resources = ["${aws_api_gateway_rest_api.service_entry.execution_arn}/*"]
 
     dynamic "condition" {
       for_each = length(var.service_api_allowed_vpces) > 0 ? [1] : []
@@ -54,12 +63,19 @@ data "aws_iam_policy_document" "service_entry_api" {
 resource "aws_api_gateway_rest_api" "service_entry" {
   name        = "agent-platform-service-entry${var.name_suffix}"
   description = "SigV4-authenticated server-to-server entry to agent channels (private)"
-  policy      = data.aws_iam_policy_document.service_entry_api.json
 
   endpoint_configuration {
     types            = ["PRIVATE"]
     vpc_endpoint_ids = length(var.service_api_allowed_vpces) > 0 ? var.service_api_allowed_vpces : null
   }
+}
+
+resource "aws_api_gateway_rest_api_policy" "service_entry" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  # jsonencode(jsondecode(...)) re-emits the document minified with keys
+  # sorted — the exact shape API Gateway stores — so refresh reads back the
+  # same string. The data source's own output is indented.
+  policy = jsonencode(jsondecode(data.aws_iam_policy_document.service_entry_api.json))
 }
 
 # --------------------------- resources / methods ----------------------------
@@ -199,9 +215,13 @@ resource "aws_api_gateway_deployment" "service_entry" {
     create_before_destroy = true
   }
 
+  # The policy is in the list because a resource-policy change only takes
+  # effect on the next deployment — the trigger above forces that deployment,
+  # and this ordering makes sure the new policy is attached first.
   depends_on = [
     aws_api_gateway_integration.submit,
     aws_api_gateway_integration.poll,
+    aws_api_gateway_rest_api_policy.service_entry,
   ]
 }
 
