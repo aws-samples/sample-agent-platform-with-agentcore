@@ -417,8 +417,17 @@ resource "aws_ecs_service" "backend" {
   name            = "agent-platform-backend${var.name_suffix}"
   cluster         = aws_ecs_cluster.portal.id
   task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  # Two tasks across the two private subnets: the control plane is in the path
+  # of every portal call and every scheduled invocation, and a single task makes
+  # each deploy a brief outage. Raise with autoscaling if invoke volume grows.
+  desired_count = 2
+  launch_type   = "FARGATE"
+
+  # Roll back automatically instead of leaving the service wedged on a bad image.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   network_configuration {
     subnets          = var.private_subnet_ids
