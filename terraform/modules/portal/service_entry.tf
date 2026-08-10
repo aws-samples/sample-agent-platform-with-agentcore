@@ -175,6 +175,14 @@ resource "aws_api_gateway_integration" "poll" {
 resource "aws_api_gateway_deployment" "service_entry" {
   rest_api_id = aws_api_gateway_rest_api.service_entry.id
 
+  # Hash the policy INPUT, not aws_api_gateway_rest_api.service_entry.policy.
+  # That attribute is Optional+Computed, so it holds the document as API Gateway
+  # stores it after normalising what it was given, and the value read back during
+  # apply is not the string hashed at plan time. The trigger would then change
+  # mid-apply and the provider rejects its own plan ("produced inconsistent final
+  # plan"). A first apply survives it because the value is still unknown at plan
+  # time. The data source resolves before apply, so it is stable across the two,
+  # and it still changes whenever the policy does.
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.channel_invocations.id,
@@ -183,7 +191,7 @@ resource "aws_api_gateway_deployment" "service_entry" {
       aws_api_gateway_method.poll.id,
       aws_api_gateway_integration.submit.uri,
       aws_api_gateway_integration.poll.uri,
-      aws_api_gateway_rest_api.service_entry.policy,
+      data.aws_iam_policy_document.service_entry_api.json,
     ]))
   }
 
