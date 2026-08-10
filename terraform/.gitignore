@@ -5,3 +5,5 @@
 plan.json
 terraform.tfvars
 modules/portal/.schedule-runner-placeholder.zip
+imports_adoption.tf
+backend.tf

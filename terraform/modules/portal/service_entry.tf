@@ -9,6 +9,14 @@
 resource "random_password" "service_entry" {
   length  = 48
   special = false # CDK exclude_punctuation
+
+  # `terraform import` of a random_password records provider-default charset
+  # attributes, and every attribute here is ForceNew, so an adopted value
+  # would otherwise plan as a replace — i.e. a secret rotation. The charset
+  # only matters when generating; ignoring it never affects a fresh deploy.
+  lifecycle {
+    ignore_changes = [special, override_special]
+  }
 }
 
 resource "aws_secretsmanager_secret" "service_entry" {

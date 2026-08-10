@@ -22,12 +22,19 @@ resource "aws_cognito_user_pool" "portal" {
   # signInAliases {email, username}
   alias_attributes = ["email"]
 
+  # autoVerify {email} — the CDK stack sets this; omitting it here would turn
+  # email verification off on an adopted pool.
+  auto_verified_attributes = ["email"]
+
+  # Mirrors the deployed CDK policy (length 12, no character-class rules).
+  # The port originally required all four classes — a silent tightening that
+  # showed up as a perpetual diff against the live pool.
   password_policy {
     minimum_length    = 12
-    require_lowercase = true
-    require_numbers   = true
-    require_symbols   = true
-    require_uppercase = true
+    require_lowercase = false
+    require_numbers   = false
+    require_symbols   = false
+    require_uppercase = false
   }
 }
 
@@ -141,6 +148,7 @@ locals {
 resource "aws_cloudfront_distribution" "portal" {
   enabled             = true
   default_root_object = "index.html"
+  is_ipv6_enabled     = true # CDK default; the provider's default is false
 
   origin {
     origin_id                = local.s3_origin_id
@@ -169,6 +177,7 @@ resource "aws_cloudfront_distribution" "portal" {
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
+    compress               = true # CDK default; provider default is false
     cache_policy_id        = data.aws_cloudfront_cache_policy.caching_optimized.id
 
     function_association {
@@ -183,6 +192,7 @@ resource "aws_cloudfront_distribution" "portal" {
     viewer_protocol_policy   = "redirect-to-https"
     allowed_methods          = local.api_behavior.allowed_methods
     cached_methods           = local.api_behavior.cached_methods
+    compress                 = true # CDK default; provider default is false
     cache_policy_id          = local.api_behavior.cache_policy_id
     origin_request_policy_id = local.api_behavior.origin_request_policy_id
   }
@@ -196,6 +206,7 @@ resource "aws_cloudfront_distribution" "portal" {
     viewer_protocol_policy   = "redirect-to-https"
     allowed_methods          = local.api_behavior.allowed_methods
     cached_methods           = local.api_behavior.cached_methods
+    compress                 = true # CDK default; provider default is false
     cache_policy_id          = local.api_behavior.cache_policy_id
     origin_request_policy_id = local.api_behavior.origin_request_policy_id
   }

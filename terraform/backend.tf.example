@@ -1,0 +1,32 @@
+# Remote state backend — copy to backend.tf and fill in your bucket.
+#
+# The state for this stack contains generated secrets in plaintext (the
+# service-entry shared header, the Keycloak bootstrap admin password, the
+# team-c API key), so do not leave it in a local terraform.tfstate: put it
+# in an encrypted, versioned, private S3 bucket before the first apply.
+#
+# One-time bucket bootstrap:
+#
+#   B=<your-tfstate-bucket>
+#   aws s3api create-bucket --bucket "$B" --region <region> \
+#     --create-bucket-configuration LocationConstraint=<region>
+#   aws s3api put-bucket-versioning --bucket "$B" \
+#     --versioning-configuration Status=Enabled
+#   aws s3api put-public-access-block --bucket "$B" \
+#     --public-access-block-configuration \
+#     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+#   aws s3api put-bucket-encryption --bucket "$B" \
+#     --server-side-encryption-configuration \
+#     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"alias/aws/s3"},"BucketKeyEnabled":true}]}'
+#
+# use_lockfile needs Terraform >= 1.10 (S3-native locking, no DynamoDB table).
+
+terraform {
+  backend "s3" {
+    bucket       = "<your-tfstate-bucket>"
+    key          = "agent-platform/terraform.tfstate"
+    region       = "<region>"
+    encrypt      = true
+    use_lockfile = true
+  }
+}

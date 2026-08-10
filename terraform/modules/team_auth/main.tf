@@ -27,6 +27,13 @@ resource "random_password" "keycloak_admin" {
   special = true
   # CDK excluded "\"'\\/@{}$`" — allow the rest
   override_special = "!#%&()*+,-.:;<=>?[]^_|~"
+
+  # See random_password.service_entry in the portal module: adopted values
+  # import with provider-default charset attributes, and a charset diff here
+  # is a ForceNew — i.e. an unwanted secret rotation.
+  lifecycle {
+    ignore_changes = [special, override_special]
+  }
 }
 
 resource "aws_secretsmanager_secret" "keycloak_admin" {
@@ -48,6 +55,11 @@ resource "random_password" "team_c_key" {
   length           = 40
   special          = true
   override_special = "!#%&()*+,-.:;<=>?[]^_|~"
+
+  # Same adoption guard as random_password.keycloak_admin above.
+  lifecycle {
+    ignore_changes = [special, override_special]
+  }
 }
 
 resource "aws_secretsmanager_secret" "team_c_key" {
@@ -203,8 +215,9 @@ data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
 }
 
 resource "aws_cloudfront_distribution" "team_auth" {
-  enabled = true
-  comment = "agent-platform team-auth (Keycloak IdP + team APIs)"
+  enabled         = true
+  comment         = "agent-platform team-auth (Keycloak IdP + team APIs)"
+  is_ipv6_enabled = true # CDK default; the provider's default is false
 
   origin {
     origin_id   = "team-auth-alb"
@@ -230,6 +243,7 @@ resource "aws_cloudfront_distribution" "team_auth" {
     viewer_protocol_policy   = "redirect-to-https"
     allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
     cached_methods           = ["GET", "HEAD"]
+    compress                 = true # CDK default; provider default is false
     cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
   }

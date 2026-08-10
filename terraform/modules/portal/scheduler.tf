@@ -10,6 +10,9 @@ resource "aws_scheduler_schedule_group" "portal" {
 resource "aws_sqs_queue" "schedule_dlq" {
   name                      = "agent-platform-schedule-dlq${var.name_suffix}"
   message_retention_seconds = 1209600 # 14 days
+  # The live queue uses the raised SQS ceiling; the provider default is still
+  # 256 KiB and would silently shrink what a dead-lettered payload may carry.
+  max_message_size = 1048576
 }
 
 # enforce_ssl equivalent
