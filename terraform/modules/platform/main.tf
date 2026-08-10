@@ -20,6 +20,44 @@ resource "aws_s3_bucket" "workspace" {
   bucket = "agent-platform-workspaces-${local.account}-${local.region}${var.name_suffix}"
 }
 
+# Session workspaces and skill packages live here. Versioning turns a bad
+# sync (or a destructive agent) from data loss into a recoverable event.
+resource "aws_s3_bucket_versioning" "workspace" {
+  bucket = aws_s3_bucket.workspace.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# The kernels sync with multipart uploads; abandoned parts bill silently.
+resource "aws_s3_bucket_lifecycle_configuration" "workspace" {
+  bucket = aws_s3_bucket.workspace.id
+
+  rule {
+    id     = "abort-incomplete-multipart"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Keep recovery useful without unbounded growth.
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "workspace" {
   bucket = aws_s3_bucket.workspace.id
 
@@ -74,6 +112,17 @@ resource "aws_dynamodb_table" "platform" {
   hash_key     = "PK"
   range_key    = "SK"
 
+  # The table is the whole control plane: sessions, published agents, the
+  # registry, channels, schedules, the invocation ledger and the audit trail.
+  # Without PITR an accidental overwrite or a bad migration is unrecoverable.
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled = true # AWS-owned key; set kms_key_arn for a CMK
+  }
+
   attribute {
     name = "PK"
     type = "S"
@@ -93,6 +142,12 @@ resource "aws_ecr_repository" "kernel" {
 
   name         = "agent-platform${var.name_suffix}/${each.key}"
   force_delete = true
+
+  # Kernel images run agent code with an IAM role attached; a scan on push is
+  # the cheapest place to catch a vulnerable base layer.
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 resource "aws_ecr_repository" "team_auth" {
@@ -100,6 +155,10 @@ resource "aws_ecr_repository" "team_auth" {
 
   name         = "agent-platform${var.name_suffix}/${each.key}"
   force_delete = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 # ------------------------- LLM gateway secret ------------------------------

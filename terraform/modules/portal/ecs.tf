@@ -225,7 +225,11 @@ locals {
       PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
       PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
       PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
-      PLATFORM_CORS_ORIGINS              = "*"
+      # Scoped to the portal's own origin. A wildcard here is reflected back
+      # with Access-Control-Allow-Credentials, which would let any site read
+      # authenticated API responses the moment the portal moves its token
+      # out of localStorage into a cookie.
+      PLATFORM_CORS_ORIGINS              = "https://${aws_cloudfront_distribution.portal.domain_name}"
       PLATFORM_COGNITO_POOL_ID           = aws_cognito_user_pool.portal.id
       PLATFORM_COGNITO_CLIENT_ID         = aws_cognito_user_pool_client.portal.id
       PLATFORM_SCHEDULER_GROUP           = aws_scheduler_schedule_group.portal.name
@@ -343,6 +347,16 @@ resource "aws_lb" "portal" {
   internal           = false
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
+
+  drop_invalid_header_fields = true
+
+  access_logs {
+    bucket  = aws_s3_bucket.logs.id
+    prefix  = "alb"
+    enabled = true
+  }
+
+  depends_on = [aws_s3_bucket_policy.logs]
 }
 
 resource "aws_lb_target_group" "backend" {
@@ -361,14 +375,42 @@ resource "aws_lb_target_group" "backend" {
   }
 }
 
+# The security group admits the CloudFront origin-facing prefix list, which
+# covers EVERY CloudFront distribution — not just this one. So the listener
+# denies by default and forwards only requests carrying the secret header that
+# this distribution injects (see aws_cloudfront_distribution.portal). Without
+# it, anyone could point their own distribution at this ALB's DNS name and
+# reach the backend directly, bypassing the intended edge.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.portal.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Direct origin access is not allowed."
+      status_code  = "403"
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "from_cloudfront" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 100
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.backend.arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "x-origin-verify"
+      values           = [random_password.origin_verify.result]
+    }
   }
 }
 

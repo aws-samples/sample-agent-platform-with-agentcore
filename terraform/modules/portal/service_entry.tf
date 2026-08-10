@@ -233,10 +233,47 @@ resource "aws_api_gateway_deployment" "service_entry" {
   ]
 }
 
+# The service entry is the server-to-server front door: every call is an
+# external workload acting on a channel, so the access log is the only record
+# of who called before the request reaches the application ledger.
+#
+# PREREQUISITE (account-level, one-time, idempotent): API Gateway can only
+# write logs once the account has a CloudWatch role configured. Terraform
+# cannot set it per-stack, so if the stage fails to create with
+# "CloudWatch Logs role ARN must be set in account settings", run:
+#
+#   aws apigateway update-account --patch-operations \
+#     op=replace,path=/cloudwatchRoleArn,value=<role-arn>
+#
+# where the role trusts apigateway.amazonaws.com and carries
+# AmazonAPIGatewayPushToCloudWatchLogs.
+resource "aws_cloudwatch_log_group" "service_entry_access" {
+  name              = "/aws/apigateway/agent-platform-service-entry${var.name_suffix}"
+  retention_in_days = 30
+}
+
 resource "aws_api_gateway_stage" "svc" {
   rest_api_id   = aws_api_gateway_rest_api.service_entry.id
   deployment_id = aws_api_gateway_deployment.service_entry.id
   stage_name    = "svc"
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.service_entry_access.arn
+    # the caller identity SigV4 established, plus enough to correlate with the
+    # application ledger
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      callerArn      = "$context.identity.userArn"
+      vpce           = "$context.identity.vpceId"
+      httpMethod     = "$context.httpMethod"
+      resourcePath   = "$context.resourcePath"
+      status         = "$context.status"
+      responseLength = "$context.responseLength"
+      requestTime    = "$context.requestTime"
+      integrationErr = "$context.integration.error"
+    })
+  }
 }
 
 resource "aws_api_gateway_method_settings" "svc" {

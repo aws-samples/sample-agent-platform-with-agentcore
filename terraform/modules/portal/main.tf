@@ -8,6 +8,14 @@ locals {
   region  = data.aws_region.current.region
 }
 
+# Shared secret proving an ALB request arrived via this CloudFront
+# distribution. Lives in state like the service-entry secret — protect the
+# state file (see terraform/README.md).
+resource "random_password" "origin_verify" {
+  length  = 48
+  special = false
+}
+
 # ------------------------------- auth --------------------------------------
 # Cognito user pool guarding the portal. Self-signup is disabled — an
 # operator creates users (admin-create-user).
@@ -63,6 +71,112 @@ resource "aws_cognito_user_group" "admin" {
   name         = "platform-admin"
   user_pool_id = aws_cognito_user_pool.portal.id
   description  = "Agent Platform administrators"
+}
+
+# ------------------------------ access logs --------------------------------
+# The application ledger records intended platform calls; these record raw
+# HTTP, which is what an incident review needs (and what the security review
+# flagged as missing). ACLs are required by both CloudFront log delivery and
+# the ALB log-delivery principal, hence ObjectWriter ownership.
+
+resource "aws_s3_bucket" "logs" {
+  bucket        = "agent-platform-logs-${local.account}-${local.region}${var.name_suffix}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_public_access_block" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    id     = "expire"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 90
+    }
+  }
+}
+
+# Regional ALB log-delivery account (ELB writes with an account principal, not
+# a service principal, in every region that predates the service-principal
+# model).
+data "aws_elb_service_account" "current" {}
+
+data "aws_iam_policy_document" "logs_bucket" {
+  statement {
+    sid     = "AlbLogDelivery"
+    actions = ["s3:PutObject"]
+    principals {
+      type        = "AWS"
+      identifiers = [data.aws_elb_service_account.current.arn]
+    }
+    resources = ["${aws_s3_bucket.logs.arn}/alb/*"]
+  }
+
+  statement {
+    sid     = "AlbLogDeliveryAclCheck"
+    actions = ["s3:GetBucketAcl"]
+    principals {
+      type        = "Service"
+      identifiers = ["logdelivery.elasticloadbalancing.amazonaws.com"]
+    }
+    resources = [aws_s3_bucket.logs.arn]
+  }
+
+  statement {
+    sid     = "EnforceTLS"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    resources = [
+      aws_s3_bucket.logs.arn,
+      "${aws_s3_bucket.logs.arn}/*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "logs" {
+  bucket = aws_s3_bucket.logs.id
+  policy = data.aws_iam_policy_document.logs_bucket.json
+
+  depends_on = [aws_s3_bucket_public_access_block.logs]
 }
 
 # ------------------------------ frontend -----------------------------------
@@ -160,6 +274,13 @@ resource "aws_cloudfront_distribution" "portal" {
     origin_id   = local.api_origin_id
     domain_name = aws_lb.portal.dns_name
 
+    # Proves to the ALB that a request really came through this distribution;
+    # the ALB listener rejects anything without it (see ecs.tf).
+    custom_header {
+      name  = "x-origin-verify"
+      value = random_password.origin_verify.result
+    }
+
     custom_origin_config {
       origin_protocol_policy = "http-only"
       http_port              = 80
@@ -217,8 +338,17 @@ resource "aws_cloudfront_distribution" "portal" {
     }
   }
 
+  logging_config {
+    bucket          = aws_s3_bucket.logs.bucket_domain_name
+    prefix          = "cloudfront/"
+    include_cookies = false
+  }
+
   viewer_certificate {
     cloudfront_default_certificate = true
+    # NB: with the default CloudFront certificate AWS pins the viewer TLS
+    # policy and rejects minimum_protocol_version; set it alongside an ACM
+    # certificate when you attach a custom domain.
   }
 }
 
