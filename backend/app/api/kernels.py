@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import get_current_user
+from app.dependencies import Principal, get_current_user
 from app.models.schemas import InvokeRequest, InvokeResponse, KernelInfo
 from app.services import invocation_service
 from app.services.governance_service import QuotaExceeded, SourceDisabled
@@ -17,7 +17,7 @@ def list_kernels(user: str = Depends(get_current_user)):
 
 
 @router.post("/agent-sdk/invoke", response_model=InvokeResponse)
-def invoke_sdk_kernel(req: InvokeRequest, user: str = Depends(get_current_user)):
+def invoke_sdk_kernel(req: InvokeRequest, user: Principal = Depends(get_current_user)):
     try:
         return invocation_service.invoke(
             user=user,
@@ -30,7 +30,11 @@ def invoke_sdk_kernel(req: InvokeRequest, user: str = Depends(get_current_user))
             mcp_server_ids=req.mcp_server_ids,
             skill_ids=req.skill_ids,
             memory_id=req.memory_id,
-            memory_actor_id=req.memory_actor_id,
+            # the actor ID selects whose memory is retrieved — never take it
+            # from the request verbatim (see resolve_memory_actor)
+            memory_actor_id=invocation_service.resolve_memory_actor(
+                user, req.memory_actor_id
+            ),
             memory_last_k_turns=req.memory_last_k_turns,
         )
     except (QuotaExceeded, SourceDisabled) as e:

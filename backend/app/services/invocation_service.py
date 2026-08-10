@@ -32,6 +32,35 @@ class IdentityRequired(Exception):
     path has no end-user token (internal caller, or non-OIDC auth mode)."""
 
 
+def resolve_memory_actor(user, requested: str) -> str:
+    """Map a *request-supplied* memory actor onto one the caller may address.
+
+    AgentCore Memory keys long-term records by actor (``/users/{actorId}``),
+    so the actor ID is an authorization boundary, not a label: whoever picks
+    it decides whose memory the kernel retrieves and injects into the system
+    prompt. Callers must therefore never set it verbatim — an ordinary user
+    passing another user's ID would otherwise read that user's records, which
+    the admin-only memory browsing API exists to prevent.
+
+    A user still has a legitimate reason to want more than one memory line
+    (one per project, say), so a supplied value is *namespaced under the
+    caller* rather than rejected. Admins keep verbatim addressing, matching
+    the memory-browsing surface they already hold.
+
+    NB: applied at the API boundary, not inside :func:`invoke`. Internal
+    callers (channels, the service entry) derive their actor server-side from
+    data the caller cannot forge — ``chn-{channel_id}-{conversation_id}`` —
+    and must reach ``invoke`` unmodified to keep an existing conversation's
+    memory line stable.
+    """
+    caller = str(user)
+    if not requested or requested == caller:
+        return caller
+    if getattr(user, "is_admin", False):
+        return requested
+    return f"{caller}:{requested}"
+
+
 def forward_identity(mcp_servers: list[dict]) -> list[dict]:
     """Resolve ``{{user_token}}`` in attachment headers to the caller's token.
 
