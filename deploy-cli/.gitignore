@@ -1,0 +1,5 @@
+# Resource ids recorded by the deploy scripts. This is the closest thing this
+# path has to terraform state — and it contains the generated service-entry and
+# origin-verify secrets in plain text. Keep it out of version control; back it
+# up somewhere private instead (losing it orphans the stack).
+.state/
