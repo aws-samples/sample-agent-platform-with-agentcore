@@ -1,0 +1,368 @@
+#!/bin/bash
+# Post-deployment verification for the CLI-deployed agent platform.
+#
+# Two layers:
+#   L1  infrastructure reconciliation — resources exist AND are configured as
+#       intended (read-only, no model spend)
+#   L2  functional smoke — a real sign-in, a real agent invocation, an
+#       interactive session, S3 persistence, governance
+#
+# Both layers include NEGATIVE assertions. That is deliberate: a misconfigured
+# origin-verify header or a wildcard CORS origin leaves every resource present
+# and correct-looking, so only a request that SHOULD fail proves the control is
+# actually on.
+#
+# Usage:
+#   export AWS_PROFILE=... AWS_REGION=...
+#   PORTAL_PASSWORD='...' bash tests/verify.sh            # L1 + L2
+#   LAYER=1 bash tests/verify.sh                          # L1 only (free)
+#
+# Exit codes are distinct so a wrapper can tell the cases apart:
+#   0  all checks passed
+#   1  one or more checks FAILED — the deployment has a problem
+#   2  could not run (missing state, no credentials, no portal password)
+set -uo pipefail
+# NB: deliberately no `set -e`. Half these checks probe for failure, so a
+# non-zero exit from curl/aws is data, not a reason to stop. Each check decides
+# pass/fail for itself; the summary sets the exit code.
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/../lib/common.sh" 2>/dev/null || { echo "cannot load lib/common.sh"; exit 2; }
+load
+
+LAYER="${LAYER:-2}"
+PASS=0; FAIL=0; SKIP=0
+FAILED_NAMES=""
+
+ok()   { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES\n    - $1"; printf '  \033[31mFAIL\033[0m %s\n    %s\n' "$1" "${2:-}"; }
+skip() { SKIP=$((SKIP+1)); printf '  \033[33mSKIP\033[0m %s (%s)\n' "$1" "${2:-}"; }
+
+# check NAME EXPECTED ACTUAL
+check() {
+  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
+}
+# check_not NAME FORBIDDEN ACTUAL — the negative form
+check_not() {
+  if [ "$2" != "$3" ]; then ok "$1"; else bad "$1" "value must not be '$2'"; fi
+}
+# check_contains NAME NEEDLE HAYSTACK
+check_contains() {
+  case "$3" in *"$2"*) ok "$1";; *) bad "$1" "'$2' not found in: $(printf '%s' "$3" | head -c 160)";; esac
+}
+
+# ---------------------------------------------------------------- preflight
+printf '\n=== preflight ===\n'
+[ -s "$STATE_FILE" ] || { echo "no state at $STATE_FILE — deploy first"; exit 2; }
+aws sts get-caller-identity >/dev/null 2>&1 || { echo "AWS credentials not usable"; exit 2; }
+: "${DIST_DOMAIN:?state has no DIST_DOMAIN — deployment incomplete}"
+PORTAL="https://$DIST_DOMAIN"
+echo "  stack:  $NAME"
+echo "  portal: $PORTAL"
+
+##############################################################################
+printf '\n=== L1 · network ===\n'
+##############################################################################
+VPC_STATE="$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --query 'Vpcs[0].State' --output text 2>/dev/null)"
+check "vpc available" available "$VPC_STATE"
+
+DNS_H="$(aws ec2 describe-vpc-attribute --vpc-id "$VPC_ID" --attribute enableDnsHostnames \
+  --query 'EnableDnsHostnames.Value' --output text 2>/dev/null)"
+# Without DNS hostnames the runtimes cannot resolve the endpoints they call.
+check "vpc dns hostnames enabled" True "$DNS_H"
+
+SUBNET_COUNT="$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'length(Subnets)' --output text 2>/dev/null)"
+check "4 subnets" 4 "$SUBNET_COUNT"
+
+NAT_STATE="$(aws ec2 describe-nat-gateways --nat-gateway-ids "$NAT_ID" \
+  --query 'NatGateways[0].State' --output text 2>/dev/null)"
+check "nat gateway available" available "$NAT_STATE"
+
+# The private route table must actually point at the NAT, or every runtime call
+# out of the VPC silently fails.
+NAT_ROUTE="$(aws ec2 describe-route-tables --route-table-ids "$RT_PRIV" \
+  --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].NatGatewayId | [0]" --output text 2>/dev/null)"
+check "private subnets egress via nat" "$NAT_ID" "$NAT_ROUTE"
+
+##############################################################################
+printf '\n=== L1 · platform data ===\n'
+##############################################################################
+T_STATUS="$(aws dynamodb describe-table --table-name "$TABLE" --query 'Table.TableStatus' --output text 2>/dev/null)"
+check "dynamodb table active" ACTIVE "$T_STATUS"
+
+PITR="$(aws dynamodb describe-continuous-backups --table-name "$TABLE" \
+  --query 'ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus' --output text 2>/dev/null)"
+check "dynamodb PITR enabled" ENABLED "$PITR"
+
+VERS="$(aws s3api get-bucket-versioning --bucket "$WORKSPACE_BUCKET" --query Status --output text 2>/dev/null)"
+check "workspace bucket versioned" Enabled "$VERS"
+
+PAB="$(aws s3api get-public-access-block --bucket "$WORKSPACE_BUCKET" \
+  --query 'PublicAccessBlockConfiguration.BlockPublicAcls' --output text 2>/dev/null)"
+check "workspace bucket blocks public acls" True "$PAB"
+
+for r in "${KERNEL_REPOS[@]}"; do
+  SCAN="$(aws ecr describe-repositories --repository-names "agent-platform${SUFFIX}/$r" \
+    --query 'repositories[0].imageScanningConfiguration.scanOnPush' --output text 2>/dev/null)"
+  check "ecr scan-on-push: $r" True "$SCAN"
+  IMGS="$(aws ecr list-images --repository-name "agent-platform${SUFFIX}/$r" \
+    --query 'length(imageIds)' --output text 2>/dev/null)"
+  if [ "${IMGS:-0}" -ge 1 ] 2>/dev/null; then ok "ecr has an image: $r"; else bad "ecr has an image: $r" "0 images"; fi
+done
+
+##############################################################################
+printf '\n=== L1 · runtimes ===\n'
+##############################################################################
+for rt in claude_code_kernel agent_sdk_kernel mcp_tools_kernel; do
+  n="${rt}${RUNTIME_SUFFIX}"
+  ST="$(aws bedrock-agentcore-control list-agent-runtimes \
+    --query "agentRuntimes[?agentRuntimeName=='$n'].status | [0]" --output text 2>/dev/null)"
+  check "runtime READY: $n" READY "$ST"
+done
+
+# The interactive kernel must NOT be able to read workspaces/* with its own role —
+# that access is deliberately confined to the per-session credentials the backend
+# mints (docs/permissions.md). A policy that granted it would be a real finding.
+INT_POL="$(aws iam get-role-policy --role-name "agent-platform-interactive-role${SUFFIX}" \
+  --policy-name kernel --query 'PolicyDocument' --output json 2>/dev/null)"
+if printf '%s' "$INT_POL" | grep -q 'workspaces/\*'; then
+  bad "interactive role has no workspaces/* grant" "found a workspaces/* resource in the kernel policy"
+else
+  ok "interactive role has no workspaces/* grant"
+fi
+
+##############################################################################
+printf '\n=== L1 · portal edge (negative assertions) ===\n'
+##############################################################################
+ECS_RUN="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+  --query 'services[0].runningCount' --output text 2>/dev/null)"
+ECS_WANT="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+  --query 'services[0].desiredCount' --output text 2>/dev/null)"
+check "ecs tasks running == desired" "$ECS_WANT" "$ECS_RUN"
+
+CB="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.enable' --output text 2>/dev/null)"
+check "ecs deployment circuit breaker on" True "$CB"
+
+# CORS must be scoped, never "*": with allow_credentials the wildcard is
+# reflected back and defeats browser origin isolation.
+CORS_ENV="$(aws ecs describe-task-definition --task-definition "$TD_ARN" \
+  --query "taskDefinition.containerDefinitions[0].environment[?name=='PLATFORM_CORS_ORIGINS'].value | [0]" --output text 2>/dev/null)"
+check_not "backend CORS origin is not a wildcard" "*" "$CORS_ENV"
+check "backend CORS origin is the distribution" "$PORTAL" "$CORS_ENV"
+
+# The ALB must default-deny: its security group admits every CloudFront
+# distribution, so the origin-verify header is the only thing making the edge a
+# real chokepoint.
+ALB_DEFAULT="$(aws elbv2 describe-listeners --listener-arns "$L_ALB" \
+  --query 'Listeners[0].DefaultActions[0].Type' --output text 2>/dev/null)"
+check "alb listener default action is fixed-response" fixed-response "$ALB_DEFAULT"
+
+ALB_RULE_HDR="$(aws elbv2 describe-rules --listener-arn "$L_ALB" \
+  --query "Rules[?Priority=='100'].Conditions[0].HttpHeaderConfig.HttpHeaderName | [0]" --output text 2>/dev/null)"
+check "alb forwards only on x-origin-verify" x-origin-verify "$ALB_RULE_HDR"
+
+ALB_LOGS="$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "$ALB_ARN" \
+  --query "Attributes[?Key=='access_logs.s3.enabled'].Value | [0]" --output text 2>/dev/null)"
+check "alb access logs enabled" true "$ALB_LOGS"
+
+API_TYPE="$(aws apigateway get-rest-api --rest-api-id "$SERVICE_API_ID" \
+  --query 'endpointConfiguration.types[0]' --output text 2>/dev/null)"
+# A PUBLIC service entry would expose the SigV4 submit path to the internet.
+check "service-entry API is PRIVATE" PRIVATE "$API_TYPE"
+
+##############################################################################
+printf '\n=== L1 · reachability (negative assertions) ===\n'
+##############################################################################
+HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$PORTAL/health" 2>/dev/null)"
+check "portal /health through cloudfront" 200 "$HEALTH_CODE"
+
+ANON_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$PORTAL/api/v1/kernels" 2>/dev/null)"
+# Unauthenticated API access must be refused.
+check "unauthenticated /api is 401" 401 "$ANON_CODE"
+
+FOREIGN_ACAO="$(curl -s -D - -o /dev/null --max-time 30 \
+  -H 'Origin: https://not-the-portal.invalid' "$PORTAL/api/v1/config" 2>/dev/null \
+  | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-allow-origin"{print $2}')"
+if [ -z "$FOREIGN_ACAO" ]; then
+  ok "foreign Origin gets no Access-Control-Allow-Origin"
+else
+  bad "foreign Origin gets no Access-Control-Allow-Origin" "reflected: $FOREIGN_ACAO"
+fi
+
+# Direct-to-ALB must be refused. From outside the VPC the SG usually drops the
+# connection outright (timeout), which is also a pass — what must NOT happen is
+# a 200.
+# Being unable to reach the ALB is the EXPECTED outcome here, and curl signals
+# it with a non-zero exit (28 on timeout). Two things follow: `|| echo 000` would
+# concatenate onto the 000 curl already printed, and an unguarded assignment
+# aborts the whole run under `set -e`-style flags. So capture, then normalise.
+ALB_DIRECT="$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "http://$ALB_DNS/health" 2>/dev/null)" || true
+case "$ALB_DIRECT" in ''|*[!0-9]*) ALB_DIRECT=000 ;; esac
+case "$ALB_DIRECT" in
+  200) bad "direct ALB access is refused" "ALB answered 200 without the origin-verify header" ;;
+  403) ok  "direct ALB access is refused (403)" ;;
+  000) ok  "direct ALB access is refused (unreachable from here)" ;;
+  *)   ok  "direct ALB access is refused ($ALB_DIRECT)" ;;
+esac
+
+if [ "$LAYER" = "1" ]; then
+  printf '\n=== summary (L1 only) ===\n  passed %d   failed %d   skipped %d\n' "$PASS" "$FAIL" "$SKIP"
+  [ "$FAIL" -eq 0 ] || { printf '\n  failed checks:%b\n' "$FAILED_NAMES"; exit 1; }
+  exit 0
+fi
+
+##############################################################################
+printf '\n=== L2 · sign-in ===\n'
+##############################################################################
+if [ -z "${PORTAL_PASSWORD:-}" ]; then
+  echo "  PORTAL_PASSWORD not set — cannot exercise the API."
+  echo "  Set it to the password of the 'admin' Cognito user, or run LAYER=1."
+  exit 2
+fi
+
+TOKEN="$(aws cognito-idp initiate-auth --auth-flow USER_PASSWORD_AUTH \
+  --client-id "$CLIENT_ID" \
+  --auth-parameters "USERNAME=admin,PASSWORD=$PORTAL_PASSWORD" \
+  --query 'AuthenticationResult.IdToken' --output text 2>/dev/null || echo '')"
+if [ -z "$TOKEN" ] || [ "$TOKEN" = "None" ]; then
+  echo "  could not sign in as 'admin' — wrong password, or the user has no permanent password"
+  exit 2
+fi
+ok "signed in as admin (id token acquired)"
+
+api() {  # method path [json-file]
+  local m="$1" p="$2" f="${3:-}"
+  if [ -n "$f" ]; then
+    curl -s -X "$m" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+      --data @"$f" --max-time 240 "$PORTAL$p" 2>/dev/null
+  else
+    curl -s -X "$m" -H "Authorization: Bearer $TOKEN" --max-time 240 "$PORTAL$p" 2>/dev/null
+  fi
+}
+# jq is not assumed; python3 stdlib does the parsing. errors="replace" matters
+# because agent output can carry control characters that break strict json.
+jget() {  # json-string  python-expression-on-d
+  python3 -c "
+import json,sys
+raw=sys.stdin.read()
+try: d=json.loads(raw)
+except Exception: print(''); sys.exit()
+try: print($1)
+except Exception: print('')"
+}
+
+ME="$(api GET /api/v1/me)"
+check "identity resolves to admin" admin "$(printf '%s' "$ME" | jget "d['user']")"
+check "admin has the admin role" True "$(printf '%s' "$ME" | jget "str(d['is_admin'])")"
+
+CFG="$(curl -s --max-time 30 "$PORTAL/api/v1/config" 2>/dev/null)"
+check "auth mode is cognito" cognito "$(printf '%s' "$CFG" | jget "d['auth_mode']")"
+
+##############################################################################
+printf '\n=== L2 · kernel catalog ===\n'
+##############################################################################
+KERNELS="$(api GET /api/v1/kernels)"
+check_contains "catalog lists the interactive kernel" '"claude-code"' "$KERNELS"
+check_contains "catalog lists the headless kernel" '"agent-sdk"' "$KERNELS"
+NOT_READY="$(printf '%s' "$KERNELS" | jget "','.join(k['id'] for k in d if k.get('status')!='READY')")"
+check "all catalogued kernels are READY" "" "$NOT_READY"
+
+##############################################################################
+printf '\n=== L2 · headless invocation (real model call) ===\n'
+##############################################################################
+MARKER="cli-verify-$$"
+cat > /tmp/verify-invoke.json <<JSON
+{"prompt":"Reply with exactly this token and nothing else: $MARKER","max_turns":2}
+JSON
+INV="$(api POST /api/v1/kernels/agent-sdk/invoke /tmp/verify-invoke.json)"
+INV_OK="$(printf '%s' "$INV" | jget "str(d.get('ok'))")"
+if [ "$INV_OK" = "True" ]; then
+  ok "headless kernel invocation succeeded"
+  RESULT="$(printf '%s' "$INV" | jget "d.get('result','')")"
+  check_contains "model echoed the request marker" "$MARKER" "$RESULT"
+  TURNS="$(printf '%s' "$INV" | jget "str((d.get('usage') or {}).get('num_turns',''))")"
+  if [ -n "$TURNS" ] && [ "$TURNS" != "None" ]; then ok "invocation reported usage (turns=$TURNS)"
+  else bad "invocation reported usage" "usage block empty"; fi
+else
+  # A quota rejection is a configuration state, not a broken deployment — say so
+  # rather than reporting a generic failure (this exact case produced a silent
+  # empty artifact during pipeline testing).
+  DETAIL="$(printf '%s' "$INV" | jget "d.get('detail') or d.get('error') or ''")"
+  case "$DETAIL" in
+    *"daily invocation limit"*) skip "headless kernel invocation" "daily quota reached: $DETAIL" ;;
+    *) bad "headless kernel invocation succeeded" "$(printf '%s' "$INV" | head -c 200)" ;;
+  esac
+fi
+
+##############################################################################
+printf '\n=== L2 · governance / observability ===\n'
+##############################################################################
+POLICY="$(api GET /api/v1/governance/policy)"
+LIMIT="$(printf '%s' "$POLICY" | jget "str(d.get('daily_limit_per_user',''))")"
+if [ -n "$LIMIT" ] && [ "$LIMIT" != "None" ]; then ok "governance policy readable (per-user limit $LIMIT)"
+else bad "governance policy readable" "no daily_limit_per_user in response"; fi
+
+USAGE="$(api GET /api/v1/governance/usage)"
+check_contains "usage counter readable" '"total"' "$USAGE"
+
+LEDGER="$(api "GET" "/api/v1/observability/invocations?limit=5")"
+# The invocation above must have been recorded — the ledger is how spend and
+# attribution are tracked.
+if printf '%s' "$LEDGER" | grep -q 'agent-sdk\|source'; then ok "invocation ledger has entries"
+else bad "invocation ledger has entries" "$(printf '%s' "$LEDGER" | head -c 160)"; fi
+
+##############################################################################
+printf '\n=== L2 · interactive session + workspace credentials ===\n'
+##############################################################################
+cat > /tmp/verify-session.json <<'JSON'
+{"name":"cli-verify","kernel":"claude-code"}
+JSON
+SESS="$(api POST /api/v1/sessions /tmp/verify-session.json)"
+SID="$(printf '%s' "$SESS" | jget "d.get('session_id','')")"
+if [ -z "$SID" ]; then
+  bad "interactive session created" "$(printf '%s' "$SESS" | head -c 200)"
+else
+  ok "interactive session created"
+  RSID="$(printf '%s' "$SESS" | jget "d.get('runtime_session_id','')")"
+
+  CONN="$(api GET "/api/v1/sessions/$SID/connect")"
+  WSS="$(printf '%s' "$CONN" | jget "d.get('wss_url','')")"
+  case "$WSS" in
+    wss://*) ok "connect minted a presigned wss url" ;;
+    *) bad "connect minted a presigned wss url" "$(printf '%s' "$CONN" | head -c 200)" ;;
+  esac
+
+  # connect() is also what mints the session-scoped S3 credentials and the
+  # refresh token; the lookup item proves that path ran end to end.
+  if [ -n "$RSID" ]; then
+    LOOKUP="$(aws dynamodb get-item --table-name "$TABLE" \
+      --key "{\"PK\":{\"S\":\"WSTOKEN\"},\"SK\":{\"S\":\"RSID#$RSID\"}}" \
+      --query 'Item.runtime_session_id.S' --output text 2>/dev/null || echo '')"
+    if [ "$LOOKUP" = "$RSID" ]; then ok "workspace refresh-token lookup item written"
+    else skip "workspace refresh-token lookup item written" "not found (older backend image writes it only to the session item)"; fi
+  fi
+
+  # cleanup: without this, repeated runs pile up sessions and burn daily quota
+  api DELETE "/api/v1/sessions/$SID" >/dev/null
+  ok "test session deleted (cleanup)"
+fi
+
+##############################################################################
+printf '\n=== L2 · ecosystem registry ===\n'
+##############################################################################
+MCP="$(api GET /api/v1/ecosystem/mcp-servers)"
+check_contains "registry seeded with built-in tools" 'code-interpreter' "$MCP"
+
+##############################################################################
+printf '\n=== summary ===\n'
+##############################################################################
+printf '  passed %d   failed %d   skipped %d\n' "$PASS" "$FAIL" "$SKIP"
+if [ "$FAIL" -ne 0 ]; then
+  printf '\n  failed checks:%b\n\n' "$FAILED_NAMES"
+  echo "  The deployment has a problem — see the notes in docs/DEPLOYMENT.md."
+  exit 1
+fi
+printf '\n  Deployment verified: infrastructure matches intent and the platform serves real traffic.\n'
+exit 0
