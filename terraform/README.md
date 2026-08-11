@@ -22,6 +22,11 @@ cross-variable references in `validation` blocks are a 1.9 feature. Check
 `terraform version` before chasing those. Note that Homebrew's core formula
 stops at 1.5.7 and is disabled, so `brew upgrade` will not move you past it.
 
+The full resource-by-resource inventory (98 resources in the four default
+modules: purpose, key configuration, dependency order) is in
+[`docs/resource-inventory.md`](../docs/resource-inventory.md) — useful for
+scoping a deployment role's IAM or porting to an in-house IaC standard.
+
 ## What deliberately stays on scripts
 
 * **`scripts/deploy_websearch_gateway.py`** — the Web Search
