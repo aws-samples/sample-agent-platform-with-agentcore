@@ -17,6 +17,11 @@
 #   PORTAL_PASSWORD='...' bash tests/verify.sh            # L1 + L2
 #   LAYER=1 bash tests/verify.sh                          # L1 only (free)
 #
+#   # Against a TERRAFORM deployment (no .state file needed): point TF_DIR at
+#   # the terraform/ directory and ids resolve from `terraform output` plus
+#   # the platform's fixed naming convention.
+#   TF_DIR=../../terraform LAYER=1 bash tests/verify.sh
+#
 # Exit codes are distinct so a wrapper can tell the cases apart:
 #   0  all checks passed
 #   1  one or more checks FAILED — the deployment has a problem
@@ -28,7 +33,46 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/common.sh" 2>/dev/null || { echo "cannot load lib/common.sh"; exit 2; }
-load
+
+if [ -n "${TF_DIR:-}" ]; then
+  # ------------------------------------------------ terraform id source
+  # Resolve the same ids the CLI path records, from `terraform output` plus
+  # the platform's fixed naming convention (the suffix keeps both in step).
+  # This makes the suite the acceptance test for ANY deployment of the
+  # platform, not just one built by these scripts.
+  TFO="$(cd "$TF_DIR" && terraform output -json 2>/dev/null)" \
+    || { echo "terraform output failed in $TF_DIR"; exit 2; }
+  tfo() { printf '%s' "$TFO" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+v=d.get('$1',{}).get('value','')
+print(v if isinstance(v,str) else json.dumps(v))"; }
+
+  STATE_FILE=/dev/null          # skip the .state preflight
+  VPC_ID="$(tfo vpc_id)"
+  DIST_DOMAIN="$(tfo portal_url)"; DIST_DOMAIN="${DIST_DOMAIN#https://}"
+  TABLE="$(tfo table_name)"
+  WORKSPACE_BUCKET="$(tfo workspace_bucket_name)"
+  CLIENT_ID="$(tfo user_pool_client_id)"
+  SERVICE_API_ID="$(tfo service_entry_api_id)"
+  ALB_DNS="$(tfo alb_dns_name)"
+  # Fixed names (suffix-aware), then describe for the ARNs the checks need.
+  CLUSTER="agent-platform${SUFFIX}"
+  SERVICE="agent-platform-backend${SUFFIX}"
+  ALB_ARN="$(aws elbv2 describe-load-balancers --names "agent-platform-portal${SUFFIX}" \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)"
+  L_ALB="$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" \
+    --query 'Listeners[0].ListenerArn' --output text 2>/dev/null)"
+  TD_ARN="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+    --query 'services[0].taskDefinition' --output text 2>/dev/null)"
+  # Network ids aren't outputs in reuse-mode deployments; resolve from the VPC.
+  NAT_ID="$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
+    --query 'NatGateways[0].NatGatewayId' --output text 2>/dev/null)"
+  RT_PRIV="$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query "RouteTables[?Routes[?NatGatewayId=='$NAT_ID']].RouteTableId | [0]" --output text 2>/dev/null)"
+else
+  load
+fi
 
 LAYER="${LAYER:-2}"
 PASS=0; FAIL=0; SKIP=0
@@ -53,7 +97,7 @@ check_contains() {
 
 # ---------------------------------------------------------------- preflight
 printf '\n=== preflight ===\n'
-[ -s "$STATE_FILE" ] || { echo "no state at $STATE_FILE — deploy first"; exit 2; }
+[ -n "${TF_DIR:-}" ] || [ -s "$STATE_FILE" ] || { echo "no state at $STATE_FILE — deploy first (or set TF_DIR)"; exit 2; }
 aws sts get-caller-identity >/dev/null 2>&1 || { echo "AWS credentials not usable"; exit 2; }
 : "${DIST_DOMAIN:?state has no DIST_DOMAIN — deployment incomplete}"
 PORTAL="https://$DIST_DOMAIN"
@@ -71,9 +115,13 @@ DNS_H="$(aws ec2 describe-vpc-attribute --vpc-id "$VPC_ID" --attribute enableDns
 # Without DNS hostnames the runtimes cannot resolve the endpoints they call.
 check "vpc dns hostnames enabled" True "$DNS_H"
 
+# At least 4 — a fresh VPC has exactly the platform's 2 public + 2 private,
+# but a reuse-mode deployment (existing_vpc_id) shares the VPC with other
+# subnets, and extras are not a defect.
 SUBNET_COUNT="$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
   --query 'length(Subnets)' --output text 2>/dev/null)"
-check "4 subnets" 4 "$SUBNET_COUNT"
+if [ "${SUBNET_COUNT:-0}" -ge 4 ] 2>/dev/null; then ok "subnets present ($SUBNET_COUNT >= 4)"
+else bad "subnets present" "expected >= 4, got '$SUBNET_COUNT'"; fi
 
 NAT_STATE="$(aws ec2 describe-nat-gateways --nat-gateway-ids "$NAT_ID" \
   --query 'NatGateways[0].State' --output text 2>/dev/null)"
@@ -159,8 +207,11 @@ ALB_DEFAULT="$(aws elbv2 describe-listeners --listener-arns "$L_ALB" \
   --query 'Listeners[0].DefaultActions[0].Type' --output text 2>/dev/null)"
 check "alb listener default action is fixed-response" fixed-response "$ALB_DEFAULT"
 
+# Find the forward rule by its header CONDITION, not by priority — the CLI
+# path creates it at 100, the terraform deployment at 1; the number is an
+# implementation detail, the header condition is the control being asserted.
 ALB_RULE_HDR="$(aws elbv2 describe-rules --listener-arn "$L_ALB" \
-  --query "Rules[?Priority=='100'].Conditions[0].HttpHeaderConfig.HttpHeaderName | [0]" --output text 2>/dev/null)"
+  --query "Rules[?Actions[?Type=='forward']].Conditions[].HttpHeaderConfig.HttpHeaderName | [0]" --output text 2>/dev/null)"
 check "alb forwards only on x-origin-verify" x-origin-verify "$ALB_RULE_HDR"
 
 ALB_LOGS="$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "$ALB_ARN" \

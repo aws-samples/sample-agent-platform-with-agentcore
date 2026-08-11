@@ -9,8 +9,18 @@ The upstream sample ships CDK and Terraform. This runbook is for teams that
 cannot introduce either — a change-controlled account where every API call has to
 be auditable, an environment with no Terraform state backend, or a proof of
 concept that has to be readable end to end. It provisions the same four stacks
-(**network, platform, runtime, portal** — 98 resources) and reaches the same
-working portal.
+(**network, platform, runtime, portal** — 98 resources, tabulated with purpose
+and dependencies in [`resource-inventory.md`](resource-inventory.md)) and
+reaches the same working portal.
+
+**Scope: this is not the full possible footprint.** The optional
+`team_auth`/`team_demo` modules (enterprise-SSO demo, 43 more resources) and
+CloudFront standard logging v2 exist on the Terraform path and are deliberately
+not ported — details in [§6.6](#66-what-this-port-deliberately-leaves-out).
+The verification suite, on the other hand, is **not** CLI-only: pointed at the
+`terraform/` directory (`TF_DIR=... bash tests/verify.sh`) it runs the same 50
+checks against a Terraform deployment, including one adapted to an in-house
+standard.
 
 **Time:** ~35 minutes of wall clock for a cold deployment, most of it waiting on
 NAT, VPC Link and CloudFront.
@@ -298,6 +308,11 @@ LAYER=1 bash tests/verify.sh
 # L1 + L2 — adds a real sign-in, a real model call and an interactive session
 #            ~3 minutes, roughly $0.15 of model spend
 PORTAL_PASSWORD='ChangeMe-12+chars' bash tests/verify.sh
+
+# Against a TERRAFORM deployment (no .state file): ids resolve from
+# `terraform output` + the fixed naming convention. Same 50 checks — this is
+# the acceptance test for any deployment of the platform, however built.
+TF_DIR=../../terraform LAYER=1 bash tests/verify.sh
 ```
 
 **L1 — infrastructure reconciliation.** Confirms the 98 resources exist *and are

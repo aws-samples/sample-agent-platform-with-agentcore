@@ -60,7 +60,7 @@ ANTHROPIC_DEFAULT_OPUS_MODEL="${ANTHROPIC_DEFAULT_OPUS_MODEL:-global.anthropic.c
 # Where resource ids get recorded. This file is this port's substitute for
 # terraform state: without it a re-run cannot find what it already built, and
 # later phases have no way to reference earlier ones.
-STATE_DIR="${STATE_DIR:-$HOME/Desktop/code/agentcore-cli-deploy/.state}"
+STATE_DIR="${STATE_DIR:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.state"}"
 mkdir -p "$STATE_DIR"
 STATE_FILE="$STATE_DIR/${NAME}.env"
 touch "$STATE_FILE"
