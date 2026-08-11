@@ -88,7 +88,7 @@ def delete_agent(agent_id: str, user: Principal = Depends(get_current_user)):
 
 
 @router.post("/{agent_id}/invoke", response_model=InvokeResponse)
-def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: str = Depends(get_current_user)):
+def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: Principal = Depends(get_current_user)):
     try:
         return invocation_service.invoke(
             user=user,
@@ -96,7 +96,11 @@ def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: str = Depends(get
             target=f"agent:{agent_id}",
             prompt=req.prompt,
             runtime_session_id=req.session_id,
-            memory_actor_id=req.memory_actor_id,
+            # a published agent carries its own memory_id, so the actor ID is
+            # all that separates callers' memory lines (see resolve_memory_actor)
+            memory_actor_id=invocation_service.resolve_memory_actor(
+                user, req.memory_actor_id
+            ),
             memory_last_k_turns=req.memory_last_k_turns,
         )
     except KeyError:

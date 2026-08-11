@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 # Role chaining (task role → workspace-access role) caps sessions at 1h.
 CREDS_DURATION_S = 3600
 
+# Partition for the runtime_session_id → refresh-token lookup items.
+WS_TOKEN_PK = "WSTOKEN"
+
 
 def _session_policy(runtime_session_id: str) -> str:
     import json
@@ -101,14 +104,36 @@ class WorkspaceCredentialsService:
     # ------------------------------------------------ refresh-token flow
 
     def issue_refresh_token(self, user: str, session_id: str) -> str:
-        """Mint (or rotate) the per-session refresh token. Stored on the
-        session item; sent to the container only inside the warmup payload."""
+        """Mint (or rotate) the per-session refresh token.
+
+        Written twice: onto the session item (under the user's partition, as
+        before) and into a ``WSTOKEN`` lookup item keyed by the
+        ``runtime_session_id`` the container presents on refresh. The lookup
+        item is what lets :meth:`refresh` be a ``get_item`` instead of a
+        table scan — a filtered scan reads a single 1 MB page of *unfiltered*
+        data, and this table is shared (sessions, channels, ledger, audit),
+        so past 1 MB the matching session silently stops being found and
+        workspace sync dies after the first hour with no error anywhere.
+        """
         token = secrets.token_urlsafe(32)
-        self.table.update_item(
+        attrs = self.table.update_item(
             Key={"PK": f"USER#{user}", "SK": f"SESSION#{session_id}"},
             UpdateExpression="SET ws_refresh_token = :t",
             ExpressionAttributeValues={":t": token},
-        )
+            ReturnValues="ALL_NEW",
+        ).get("Attributes", {})
+        runtime_session_id = str(attrs.get("runtime_session_id", ""))
+        if runtime_session_id:
+            self.table.put_item(
+                Item={
+                    "PK": WS_TOKEN_PK,
+                    "SK": f"RSID#{runtime_session_id}",
+                    "ws_refresh_token": token,
+                    "runtime_session_id": runtime_session_id,
+                    "user": user,
+                    "session_id": session_id,
+                }
+            )
         return token
 
     def refresh(self, runtime_session_id: str, token: str) -> dict | None:
@@ -120,17 +145,50 @@ class WorkspaceCredentialsService:
         """
         if not runtime_session_id or not token:
             return None
-        resp = self.table.scan(
-            FilterExpression="runtime_session_id = :r",
-            ExpressionAttributeValues={":r": runtime_session_id},
-        )
-        items = resp.get("Items", [])
-        if len(items) != 1:
-            return None
-        expected = items[0].get("ws_refresh_token", "")
+        expected = self._lookup_token(runtime_session_id)
         if not expected or not hmac.compare_digest(expected, token):
             return None
         return self.mint(runtime_session_id)
+
+    def _lookup_token(self, runtime_session_id: str) -> str:
+        """The stored refresh token for a runtime session, or "".
+
+        Direct key read against the WSTOKEN partition. Sessions whose token
+        was issued before the lookup item existed fall back to a fully
+        paginated scan, so a workspace already in flight keeps refreshing
+        across the deploy of this change; the fallback goes cold once those
+        sessions' credentials expire (1 h) and connect() reissues.
+        """
+        item = self.table.get_item(
+            Key={"PK": WS_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}
+        ).get("Item")
+        if item:
+            return str(item.get("ws_refresh_token", ""))
+        return self._legacy_scan_token(runtime_session_id)
+
+    def _legacy_scan_token(self, runtime_session_id: str) -> str:
+        """Pre-migration fallback: walk every page. The original single-page
+        scan silently missed sessions once the table passed 1 MB, and treated
+        "several matches" like "none" — both still fail closed here."""
+        kwargs: dict = {
+            "FilterExpression": "runtime_session_id = :r",
+            "ExpressionAttributeValues": {":r": runtime_session_id},
+        }
+        found: list[dict] = []
+        while True:
+            resp = self.table.scan(**kwargs)
+            found.extend(i for i in resp.get("Items", []) if i.get("ws_refresh_token"))
+            if len(found) > 1:
+                logger.error(
+                    "ambiguous runtime_session_id %s — refusing to mint credentials",
+                    runtime_session_id,
+                )
+                return ""
+            start_key = resp.get("LastEvaluatedKey")
+            if not start_key:
+                break
+            kwargs["ExclusiveStartKey"] = start_key
+        return str(found[0].get("ws_refresh_token", "")) if len(found) == 1 else ""
 
 
 workspace_credentials_service = WorkspaceCredentialsService()

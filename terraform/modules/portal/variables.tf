@@ -50,6 +50,11 @@ variable "backend_image_tag" {
   type = string
 }
 
+variable "backend_desired_count" {
+  type    = number
+  default = 2
+}
+
 variable "interactive_runtime_arn" {
   type = string
 }
