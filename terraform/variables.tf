@@ -152,6 +152,17 @@ variable "service_api_allowed_vpces" {
 #   phase 2: push images (scripts/build-and-push.sh)
 #   phase 3: terraform apply
 
+variable "backend_desired_count" {
+  description = "Backend ECS task count. 2 (one per AZ) keeps the control plane serving through deployments and single-task failures; 1 halves the backend Fargate cost for evaluation setups that can tolerate a brief outage on every deploy."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.backend_desired_count >= 1
+    error_message = "backend_desired_count must be at least 1."
+  }
+}
+
 variable "enable_runtime" {
   description = "Create the AgentCore runtimes (requires kernel images pushed)."
   type        = bool

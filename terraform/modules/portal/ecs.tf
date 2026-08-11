@@ -461,8 +461,15 @@ resource "aws_ecs_service" "backend" {
   name            = "agent-platform-backend${var.name_suffix}"
   cluster         = aws_ecs_cluster.portal.id
   task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 1
+  desired_count   = var.backend_desired_count
   launch_type     = "FARGATE"
+
+  # A task that fails its health checks otherwise leaves ECS retrying the
+  # broken revision indefinitely — roll back to the last working one instead.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   network_configuration {
     subnets          = var.private_subnet_ids

@@ -81,6 +81,7 @@ module "portal" {
   log_bucket                = module.platform.log_bucket
   cf_log_destination_arn    = module.platform.cf_log_destination_arn
   backend_image_tag         = coalesce(var.backend_image_tag, var.image_tag)
+  backend_desired_count     = var.backend_desired_count
   interactive_runtime_arn   = module.runtime[0].interactive_runtime_arn
   sdk_runtime_arn           = module.runtime[0].sdk_runtime_arn
   mcp_tools_runtime_arn     = module.runtime[0].mcp_tools_runtime_arn
