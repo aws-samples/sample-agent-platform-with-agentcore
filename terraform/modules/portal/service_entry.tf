@@ -233,10 +233,37 @@ resource "aws_api_gateway_deployment" "service_entry" {
   ]
 }
 
+resource "aws_cloudwatch_log_group" "service_entry_access" {
+  name              = "/apigateway/agent-platform-service-entry-access${var.name_suffix}"
+  retention_in_days = 90
+}
+
 resource "aws_api_gateway_stage" "svc" {
   rest_api_id   = aws_api_gateway_rest_api.service_entry.id
   deployment_id = aws_api_gateway_deployment.service_entry.id
   stage_name    = "svc"
+
+  # Access logging (who called, from which VPCE, with what result) — distinct
+  # from execution logging, which stays off. Requires the ACCOUNT-level API
+  # Gateway CloudWatch role (aws apigateway update-account --patch-operations
+  # op=replace,path=/cloudwatchRoleArn,value=<role-arn>); Terraform cannot set
+  # that per-stack, and without it this stage fails to deploy with an opaque
+  # "CloudWatch Logs role ARN must be set in account settings" error.
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.service_entry_access.arn
+    format = jsonencode({
+      requestId    = "$context.requestId"
+      requestTime  = "$context.requestTime"
+      httpMethod   = "$context.httpMethod"
+      resourcePath = "$context.resourcePath"
+      status       = "$context.status"
+      sourceIp     = "$context.identity.sourceIp"
+      vpceId       = "$context.identity.vpceId"
+      callerArn    = "$context.identity.userArn"
+      responseMs   = "$context.responseLatency"
+      errorMessage = "$context.error.message"
+    })
+  }
 }
 
 resource "aws_api_gateway_method_settings" "svc" {

@@ -138,7 +138,8 @@ resource "aws_ecs_service" "keycloak" {
     container_port   = 8080
   }
 
-  depends_on = [aws_lb_listener.http]
+  # the Keycloak target group is attached to the LB via this rule now
+  depends_on = [aws_lb_listener_rule.keycloak]
 }
 
 # ------------------------------ team APIs ----------------------------------

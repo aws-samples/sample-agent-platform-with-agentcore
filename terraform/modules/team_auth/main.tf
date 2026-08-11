@@ -127,12 +127,26 @@ resource "aws_security_group" "service" {
   }
 }
 
+# Value for the x-origin-verify header — proves a request came through THIS
+# distribution, since the ALB security group admits every CloudFront
+# distribution's origin-facing ranges (see the listener below).
+resource "random_password" "origin_verify" {
+  length  = 48
+  special = false
+}
+
 resource "aws_lb" "team_auth" {
   name               = "agent-platform-team-auth${var.name_suffix}"
   load_balancer_type = "application"
   internal           = false
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
+
+  access_logs {
+    bucket  = var.log_bucket.name
+    prefix  = "team-auth-alb"
+    enabled = true
+  }
 }
 
 resource "aws_lb_target_group" "keycloak" {
@@ -153,13 +167,43 @@ resource "aws_lb_target_group" "keycloak" {
   }
 }
 
+# Default-deny; only requests carrying this deployment's x-origin-verify
+# header are forwarded (rule below for Keycloak, plus the header condition on
+# each team rule). See the portal module's listener for the full rationale.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.team_auth.arn
   port              = 80
   protocol          = "HTTP"
 
-  # Keycloak is the default action (/realms/*, /resources/*, /admin/*)
   default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Forbidden"
+      status_code  = "403"
+    }
+  }
+
+  # On the apply that introduces the header scheme, wait until CloudFront has
+  # propagated the custom_header before rejecting header-less requests.
+  depends_on = [aws_cloudfront_distribution.team_auth]
+}
+
+# Keycloak catches everything the team rules don't (/realms/*, /resources/*,
+# /admin/*) — the priority sits after the team rules so their paths win.
+resource "aws_lb_listener_rule" "keycloak" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 20
+
+  condition {
+    http_header {
+      http_header_name = "x-origin-verify"
+      values           = [random_password.origin_verify.result]
+    }
+  }
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.keycloak.arn
   }
@@ -195,10 +239,22 @@ resource "aws_lb_listener_rule" "team" {
     }
   }
 
+  # conditions AND together — path alone must not bypass the origin check
+  condition {
+    http_header {
+      http_header_name = "x-origin-verify"
+      values           = [random_password.origin_verify.result]
+    }
+  }
+
   action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.team[each.key].arn
   }
+
+  # same sequencing as the listener: don't require the header before
+  # CloudFront is sending it
+  depends_on = [aws_cloudfront_distribution.team_auth]
 }
 
 # ------------------------------ CloudFront ---------------------------------
@@ -236,6 +292,11 @@ resource "aws_cloudfront_distribution" "team_auth" {
       name  = "X-Forwarded-Proto"
       value = "https"
     }
+
+    custom_header {
+      name  = "x-origin-verify"
+      value = random_password.origin_verify.result
+    }
   }
 
   default_cache_behavior {
@@ -256,6 +317,28 @@ resource "aws_cloudfront_distribution" "team_auth" {
 
   viewer_certificate {
     cloudfront_default_certificate = true
+  }
+}
+
+# Standard logging (v2); see the portal module's twin for the us-east-1 and
+# shared-destination notes.
+resource "aws_cloudwatch_log_delivery_source" "team_auth_cf" {
+  region = "us-east-1"
+
+  name         = "agent-platform-team-auth-cf${var.name_suffix}"
+  log_type     = "ACCESS_LOGS"
+  resource_arn = aws_cloudfront_distribution.team_auth.arn
+}
+
+resource "aws_cloudwatch_log_delivery" "team_auth_cf" {
+  region = "us-east-1"
+
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.team_auth_cf.name
+  delivery_destination_arn = var.cf_log_destination_arn
+
+  s3_delivery_configuration {
+    suffix_path                 = "AWSLogs/${data.aws_caller_identity.current.account_id}/CloudFront/{DistributionId}/{yyyy}/{MM}/{dd}"
+    enable_hive_compatible_path = false
   }
 }
 

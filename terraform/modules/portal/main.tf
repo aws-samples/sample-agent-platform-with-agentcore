@@ -93,6 +93,13 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "frontend" {
 
 # ----------------------------- CloudFront ----------------------------------
 
+# Value for the x-origin-verify header (see the API origin below). Not a
+# credential a human ever handles — rotation = taint this resource.
+resource "random_password" "origin_verify" {
+  length  = 48
+  special = false
+}
+
 resource "aws_cloudfront_origin_access_control" "frontend" {
   name                              = "agent-platform-frontend${var.name_suffix}"
   origin_access_control_origin_type = "s3"
@@ -170,6 +177,16 @@ resource "aws_cloudfront_distribution" "portal" {
       origin_read_timeout      = 60
       origin_keepalive_timeout = 5
     }
+
+    # Proves to the ALB that the request came through THIS distribution. The
+    # ALB security group admits the whole CloudFront origin-facing prefix
+    # list, which covers every distribution on the planet — without this
+    # header a third party could point their own distribution at the ALB's
+    # DNS name and reach the backend around the intended edge.
+    custom_header {
+      name  = "x-origin-verify"
+      value = random_password.origin_verify.result
+    }
   }
 
   default_cache_behavior {
@@ -219,6 +236,34 @@ resource "aws_cloudfront_distribution" "portal" {
 
   viewer_certificate {
     cloudfront_default_certificate = true
+  }
+}
+
+# Standard logging (v2) via the CloudWatch vended-logs framework — the legacy
+# logging_config block is the S3-ACL-based pipeline AWS has superseded. The
+# delivery source/delivery for a CloudFront distribution must live in
+# us-east-1 regardless of where the stack deploys; the destination (in the
+# platform module, shared with team_auth) points at the regional log bucket.
+resource "aws_cloudwatch_log_delivery_source" "portal_cf" {
+  region = "us-east-1"
+
+  name         = "agent-platform-portal-cf${var.name_suffix}"
+  log_type     = "ACCESS_LOGS"
+  resource_arn = aws_cloudfront_distribution.portal.arn
+}
+
+resource "aws_cloudwatch_log_delivery" "portal_cf" {
+  region = "us-east-1"
+
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.portal_cf.name
+  delivery_destination_arn = var.cf_log_destination_arn
+
+  s3_delivery_configuration {
+    # {DistributionId} keeps the two distributions' logs apart in the shared
+    # bucket; the path must stay under AWSLogs/<account>/ or the bucket
+    # policy stops matching.
+    suffix_path                 = "AWSLogs/${local.account}/CloudFront/{DistributionId}/{yyyy}/{MM}/{dd}"
+    enable_hive_compatible_path = false
   }
 }
 

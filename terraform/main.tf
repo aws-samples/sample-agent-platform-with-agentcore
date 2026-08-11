@@ -78,6 +78,8 @@ module "portal" {
   kernel_repos              = module.platform.kernel_repos
   workspace_bucket          = module.platform.workspace_bucket
   platform_table            = module.platform.platform_table
+  log_bucket                = module.platform.log_bucket
+  cf_log_destination_arn    = module.platform.cf_log_destination_arn
   backend_image_tag         = coalesce(var.backend_image_tag, var.image_tag)
   interactive_runtime_arn   = module.runtime[0].interactive_runtime_arn
   sdk_runtime_arn           = module.runtime[0].sdk_runtime_arn
@@ -97,9 +99,11 @@ module "team_auth" {
   vpc_id              = module.network.vpc_id
   public_subnet_ids   = module.network.public_subnet_ids
   private_subnet_ids  = module.network.private_subnet_ids
-  team_auth_repos     = module.platform.team_auth_repos
-  team_auth_image_tag = coalesce(var.team_auth_image_tag, var.image_tag)
-  name_suffix         = var.name_suffix
+  team_auth_repos        = module.platform.team_auth_repos
+  team_auth_image_tag    = coalesce(var.team_auth_image_tag, var.image_tag)
+  log_bucket             = module.platform.log_bucket
+  cf_log_destination_arn = module.platform.cf_log_destination_arn
+  name_suffix            = var.name_suffix
 }
 
 module "team_demo" {

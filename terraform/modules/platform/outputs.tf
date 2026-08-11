@@ -30,6 +30,21 @@ output "team_auth_repos" {
   }
 }
 
+output "log_bucket" {
+  value = {
+    name = aws_s3_bucket.logs.bucket
+    arn  = aws_s3_bucket.logs.arn
+  }
+  # log delivery (ALB attribute change, CloudWatch delivery creation) is
+  # validated against the bucket policy — make consumers wait for it
+  depends_on = [aws_s3_bucket_policy.logs]
+}
+
+output "cf_log_destination_arn" {
+  value      = aws_cloudwatch_log_delivery_destination.cf_logs.arn
+  depends_on = [aws_s3_bucket_policy.logs]
+}
+
 output "llm_gateway_secret" {
   value = {
     name = aws_secretsmanager_secret.llm_gateway.name

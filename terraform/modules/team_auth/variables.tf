@@ -17,6 +17,17 @@ variable "team_auth_repos" {
   }))
 }
 
+variable "log_bucket" {
+  type = object({
+    name = string
+    arn  = string
+  })
+}
+
+variable "cf_log_destination_arn" {
+  type = string
+}
+
 variable "team_auth_image_tag" {
   type = string
 }

@@ -92,6 +92,37 @@ the existing ones) before phase 3. Cutover to replace CDK entirely is the
 reverse: deploy with an empty suffix **after** `cdk destroy`, or import the
 CDK-created resources — do not run both with identical names.
 
+## Hardening beyond the CDK stacks
+
+Closes the gaps reported in issue #6 (plus one the report missed — the
+team-auth ALB had the same CloudFront exposure as the portal ALB):
+
+* **CloudFront → ALB origin verification.** Both ALB security groups admit
+  the AWS-managed CloudFront origin-facing prefix list, which covers *every*
+  distribution, not just ours. Each distribution now injects an
+  `x-origin-verify` secret header and the listeners default to 403,
+  forwarding only when the header matches. Rotation: `terraform taint` the
+  module's `random_password.origin_verify` and apply.
+* **CORS is scoped to the portal's own CloudFront domain** instead of `*`
+  (the backend sets `allow_credentials`, and `*` + credentials means any
+  origin could read authenticated responses if auth ever moved to cookies).
+* **Raw HTTP access logs on all three layers**, kept 90 days in a dedicated
+  log bucket (platform module): CloudFront standard logging **v2** for both
+  distributions (the CloudWatch vended-logs framework — delivery source and
+  delivery live in us-east-1 by requirement; the legacy `logging_config`
+  S3-ACL pipeline is superseded), ALB access logs, and API Gateway stage
+  access logs. The stage logging needs the **account-level** API Gateway
+  CloudWatch role; Terraform cannot set that per-stack. If the stage apply
+  fails with "CloudWatch Logs role ARN must be set in account settings":
+
+  ```bash
+  aws apigateway update-account --patch-operations \
+    op=replace,path=/cloudwatchRoleArn,value=<role-arn-with-AmazonAPIGatewayPushToCloudWatchLogs>
+  ```
+* **Recovery paths for the control-plane data**: DynamoDB point-in-time
+  recovery, workspace-bucket versioning, and ECR `scan_on_push` (kernel
+  images run agent code under an IAM role).
+
 ## Known differences from the CDK stacks
 
 * The legacy shared role `agent-platform-runtime-role` is not ported — it
@@ -113,5 +144,6 @@ CDK-created resources — do not run both with identical names.
   likewise ended up in the API GW integration config). Protect the state
   file accordingly (remote backend + encryption).
 
-No remote state backend is configured — add your customer's standard
-`backend "s3"` block before real use.
+No remote state backend is configured by default — copy
+`backend.tf.example` to `backend.tf` (bootstrap commands inside) before
+real use.

@@ -35,6 +35,17 @@ variable "platform_table" {
   })
 }
 
+variable "log_bucket" {
+  type = object({
+    name = string
+    arn  = string
+  })
+}
+
+variable "cf_log_destination_arn" {
+  type = string
+}
+
 variable "backend_image_tag" {
   type = string
 }

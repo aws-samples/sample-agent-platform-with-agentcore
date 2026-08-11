@@ -225,7 +225,11 @@ locals {
       PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
       PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
       PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
-      PLATFORM_CORS_ORIGINS              = "*"
+      # Scoped to the portal's own origin. The API sits behind the same
+      # CloudFront domain as the SPA, so same-origin calls need no CORS at
+      # all — this only readmits the one legitimate cross-origin caller
+      # while ending the reflect-any-Origin + allow-credentials combination.
+      PLATFORM_CORS_ORIGINS              = "https://${aws_cloudfront_distribution.portal.domain_name}"
       PLATFORM_COGNITO_POOL_ID           = aws_cognito_user_pool.portal.id
       PLATFORM_COGNITO_CLIENT_ID         = aws_cognito_user_pool_client.portal.id
       PLATFORM_SCHEDULER_GROUP           = aws_scheduler_schedule_group.portal.name
@@ -343,6 +347,12 @@ resource "aws_lb" "portal" {
   internal           = false
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
+
+  access_logs {
+    bucket  = var.log_bucket.name
+    prefix  = "portal-alb"
+    enabled = true
+  }
 }
 
 resource "aws_lb_target_group" "backend" {
@@ -361,12 +371,46 @@ resource "aws_lb_target_group" "backend" {
   }
 }
 
+# Default-deny: the security group admits every CloudFront distribution's
+# origin-facing ranges, so the listener only forwards requests carrying the
+# x-origin-verify header this deployment's distribution injects. Anything
+# else — including another account's distribution pointed at our DNS name —
+# gets a bare 403.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.portal.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Forbidden"
+      status_code  = "403"
+    }
+  }
+
+  # Sequencing, not configuration: on the apply that introduces the header
+  # scheme, don't start rejecting header-less requests until CloudFront has
+  # finished propagating the custom_header everywhere (Terraform waits for
+  # the distribution to reach Deployed). Without this the listener can flip
+  # minutes before the edge stops sending bare requests.
+  depends_on = [aws_cloudfront_distribution.portal]
+}
+
+resource "aws_lb_listener_rule" "origin_verify" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 1
+
+  condition {
+    http_header {
+      http_header_name = "x-origin-verify"
+      values           = [random_password.origin_verify.result]
+    }
+  }
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.backend.arn
   }
@@ -440,6 +484,8 @@ resource "aws_ecs_service" "backend" {
 
   depends_on = [
     aws_lb_listener.http,
+    # the backend target group is only attached to the LB via this rule now
+    aws_lb_listener_rule.origin_verify,
     aws_lb_listener.service_entry,
   ]
 }
