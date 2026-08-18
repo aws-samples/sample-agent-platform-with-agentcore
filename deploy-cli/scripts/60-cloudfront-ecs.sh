@@ -140,6 +140,19 @@ aws s3api put-bucket-policy --bucket "$FRONTEND_BUCKET" --policy file:///tmp/fe-
 log "frontend bucket policy pinned to $DIST_ID"
 
 # ------------------------------------------------------------------ ECS
+# AWSServiceRoleForECS is account-global and CloudFormation creates it implicitly,
+# so the CDK and terraform paths never have to name it. On an account that has
+# never run ECS in any region, create-service below fails with "Unable to assume
+# the service linked role" instead. Needs iam:CreateServiceLinkedRole (§1.3).
+if ! aws iam get-role --role-name AWSServiceRoleForECS >/dev/null 2>&1; then
+  log "creating the ECS service-linked role (first ECS use in this account)"
+  aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com >/dev/null 2>&1 || true
+  # Creation is asynchronous: create-service keeps failing until ECS can assume it.
+  retry_until "the ECS service-linked role to exist" 12 5 \
+    aws iam get-role --role-name AWSServiceRoleForECS \
+    || die "AWSServiceRoleForECS is missing. Have an admin run: aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com"
+fi
+
 CLUSTER="agent-platform${SUFFIX}"
 aws ecs create-cluster --cluster-name "$CLUSTER" >/dev/null 2>&1 || true
 save CLUSTER "$CLUSTER"
