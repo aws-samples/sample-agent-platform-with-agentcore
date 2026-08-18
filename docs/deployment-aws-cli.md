@@ -69,7 +69,9 @@ sts
 ```
 
 `iam:CreateRole`, `iam:PutRolePolicy` and `iam:PassRole` are required — the
-platform creates eight execution roles. Review what they grant in the upstream
+platform creates eight execution roles. `iam:CreateServiceLinkedRole` is also
+required on an account that has never used ECS; see §6.3. Review what they grant
+in the upstream
 [`docs/permissions.md`](https://github.com/aws-samples/sample-agent-platform-with-agentcore/blob/main/docs/permissions.md)
 before approving.
 
@@ -189,10 +191,13 @@ for pair in \
   "backend:backend"; do
   name="${pair%%:*}"; dir="${pair##*:}"
   docker buildx build --platform linux/arm64 \
-    -t "$REGISTRY/$PREFIX/$name:latest" --push "$dir"
+    -t "${REGISTRY}/${PREFIX}/${name}:latest" --push "$dir"
 done
 cd -
 ```
+
+The braces around `${name}` are load-bearing if you paste this into zsh — see
+§6.4.
 
 ### Phase 4 — runtimes (~4 min)
 
@@ -224,6 +229,12 @@ Or run everything at once (image push still has to happen between phases 2 and 4
 ```bash
 bash scripts/00-deploy-all.sh
 ```
+
+Every phase runs under `set -euo pipefail`, so a failure in any one of them ends
+the whole run: the phases after it never execute and the closing summary with the
+portal URL never prints. Read the last lines of output rather than the absence of
+a summary — fix the reported cause and re-run, which resumes rather than
+duplicates.
 
 ### Phase 6 — frontend (~2 min)
 
@@ -440,7 +451,27 @@ already.
 be given a `LocationConstraint`; every other region must. Handled, but worth
 knowing if you extend the scripts.
 
+**The ECS service-linked role is nobody's resource.** CloudFormation creates
+`AWSServiceRoleForECS` implicitly, so neither the CDK nor the Terraform path ever
+names it. Only a pure-CLI run on an account that has never used ECS **in any
+region** — the role is account-global — reaches `create-service` without it, and
+fails with `Unable to assume the service linked role`. `60-cloudfront-ecs.sh`
+creates it and waits, which is why the deployer needs
+`iam:CreateServiceLinkedRole`. The reason this went unnoticed for so long is that
+it self-heals: the rejected call triggers the role's creation asynchronously, so
+re-running the phase succeeds and the requirement stays invisible.
+
 ### 6.4 Shell portability
+
+**In zsh, an unbraced `$var:` eats the colon.** `:l` is a zsh parameter-expansion
+modifier meaning "lowercase", so `"$REGISTRY/$PREFIX/$name:latest"` expands to
+`…/mcp-tools-kernelatest` — the tag separator is gone. bash has no such modifier,
+so the same line is correct there. This matters only for blocks you paste into an
+interactive shell, which on macOS is zsh: the scripts themselves are `#!/bin/bash`
+and unaffected. The symptom points at the wrong phase — the push fails with
+`name unknown: The repository … does not exist`, which reads as a phase 2
+problem, when in fact the four repositories were created correctly and are simply
+empty. Brace every expansion followed by a literal colon.
 
 **macOS ships bash 3.2 (2007).** `mapfile`, associative arrays and `${var^^}`
 do not exist there. The first version of `10-network.sh` used
