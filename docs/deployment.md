@@ -395,6 +395,9 @@ headers.
 | `CREATE_FAILED` on runtime stack | Image tag not pushed to ECR yet — run `scripts/build-and-push.sh` first |
 | Runtime never becomes READY | Check `/aws/bedrock-agentcore/runtimes/*` CloudWatch logs; usually a container boot error |
 | First invoke very slow | Expected: cold start provisions a microVM and restores the S3 workspace |
+| Invoke fails with `RuntimeClientError: Runtime initialization time exceeded … 120s` | VPC-mode image pull is blocked: layers download from S3 (`prod-<region>-starport-layer-bucket`), so the runtime subnets need an S3 gateway-endpoint route **and** the runtime SG needs `443 → S3 prefix list` egress — outbound rules that only reference endpoint SGs silently drop it. The runtime showing READY proves nothing here: that's a control-plane check, the pull happens at session start. See permissions.md §10 |
+| Runtime log group has only zero-byte `otel-*`/`spans` streams, no `[start.sh]` lines | The container never started (see above), or `logs` egress from the runtime SG is blocked — fix logs first, stdout is the only window into `start.sh` |
+| Portal `connect` dies at the front door (408/504) and no session appears | Often a *derivative* of a container-init failure: warmup blocks on the cold start until whatever sits in front times out first. Reproduce with a direct CLI invoke (payload `{"action":"warmup"}`, `runtimeSessionId` ≥33 chars) to get the real error. Heuristic: a hang means network, an instant error means IAM |
 
 ## Teardown
 
