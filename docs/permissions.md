@@ -424,3 +424,57 @@ demo's. Each is a small, local edit — the platform is built to be forked
 For anything that changes a role's scope, re-run `cdk synth --all` and diff the
 resulting `AWS::IAM::Policy` resources so the security team reviews the exact
 JSON that will be deployed.
+
+### Locked-down networking (VPC egress)
+
+The runtimes run in VPC mode ([§9](#9-data-and-network-boundaries)), so **all**
+container traffic — including the image pull at session cold start — is subject
+to your route tables, security groups, and any inspection layer in the path.
+Lessons from deploying into zero-trust enterprise VPCs:
+
+1. **Egress dependency matrix.** What each security group must be able to
+   reach on 443, per principal:
+
+   | Principal | Must reach | Why |
+   |---|---|---|
+   | Runtime SG (all kernels) | `ecr.api`, `ecr.dkr` | Image auth + manifest at session start |
+   | | **S3 via prefix list** — the regional ECR layer bucket (`prod-<region>-starport-layer-bucket`) and the workspace bucket | **Image layers live in S3, not in ECR** — the two ECR endpoints alone are not enough. Workspace restore/sync uses the same path |
+   | | `logs` | Container stdout → `/aws/bedrock-agentcore/runtimes/*` — your only window into `start.sh` |
+   | | `bedrock-runtime` (Bedrock mode) **or** the LLM gateway host + `secretsmanager` (gateway mode) | Model calls; the gateway key is read at container start |
+   | | `bedrock-agentcore` | MCP tools runtime (SigV4 proxy) and built-in tool sessions |
+   | | The portal domain (CloudFront) | The interactive kernel refreshes its per-session workspace credentials through the backend API |
+   | Backend SG (ECS task) | `dynamodb` + `s3` (prefix lists), `sts`, `bedrock-agentcore`, `bedrock-agentcore-control`, `logs` | Control plane, workspace-credential minting, and the warmup invoke |
+
+2. **Gateway endpoints match by prefix list — endpoint-SG-only egress
+   silently blocks them.** A zero-trust security group whose outbound rules
+   reference only interface-endpoint security groups drops every S3 and
+   DynamoDB packet, even when the gateway endpoint and its route exist.
+   Add explicit `443 → <prefix list>` egress rules, and put the *bucket*-level
+   restriction where it belongs: the gateway endpoint's policy (scope it to
+   the ECR layer bucket and the workspace bucket).
+
+3. **There is no service-managed S3 escape hatch anymore.** Agent runtimes
+   created after the May 2026 rollout have `requireServiceS3Endpoint`
+   permanently off — image-layer traffic is governed exclusively by your VPC
+   and the field cannot be re-enabled. Plan the S3 path from day one.
+
+4. **Control-plane validation is not a data-plane pull.** A runtime creating
+   successfully and showing `READY` only proves the execution role can read
+   the image metadata. The real layer download happens at *session* cold
+   start, through your VPC. The signature of a blocked pull is
+   `RuntimeClientError: Runtime initialization time exceeded … 120s` on
+   invoke, with an empty runtime log group.
+
+5. **Fully private variant.** Every hop above supports PrivateLink, including
+   the AgentCore data plane (`com.amazonaws.<region>.bedrock-agentcore`), so
+   the backend can run with no public egress at all. One exception: the
+   browser terminal connects to
+   `wss://bedrock-agentcore.<region>.amazonaws.com` directly from the user's
+   machine — corporate proxies must allow that domain *and* WebSocket
+   upgrade, and callers need
+   `bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStream`.
+
+`scripts/collect-network-diag.sh` collects the full evidence set for this
+section (runtime network config, route tables, endpoints, SG rules, log
+groups, and a live warmup probe) read-only in one pass — useful when the
+diagnosis has to be run by someone else inside the locked-down account.
