@@ -71,6 +71,12 @@ variable "workspace_access_role_arn" {
   type = string
 }
 
+variable "llm_edge_url" {
+  description = "Internal base URL of the llm-edge service. Empty means gateway-mode model routing is unavailable, and the backend rejects it rather than handing the gateway key to a container."
+  type        = string
+  default     = ""
+}
+
 variable "oidc_issuer" {
   type    = string
   default = ""

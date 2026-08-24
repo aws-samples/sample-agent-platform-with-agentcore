@@ -26,12 +26,21 @@ if [ -n "${CLUSTER:-}" ] && [ -n "${SERVICE:-}" ]; then
   t aws ecs delete-cluster --cluster "$CLUSTER"
 fi
 
+# ---- llm-edge ECS (its own cluster; absent on Bedrock-direct deployments) ----
+if [ -n "${EDGE_CLUSTER:-}" ] && [ -n "${EDGE_SERVICE:-}" ]; then
+  t aws ecs update-service --cluster "$EDGE_CLUSTER" --service "$EDGE_SERVICE" --desired-count 0
+  log "waiting for llm-edge tasks to drain…"
+  aws ecs wait services-stable --cluster "$EDGE_CLUSTER" --services "$EDGE_SERVICE" 2>/dev/null || true
+  t aws ecs delete-service --cluster "$EDGE_CLUSTER" --service "$EDGE_SERVICE" --force
+  t aws ecs delete-cluster --cluster "$EDGE_CLUSTER"
+fi
+
 # ---- load balancers (listeners die with the LB; target groups must follow it) ----
-for arn in "${ALB_ARN:-}" "${NLB_ARN:-}"; do
+for arn in "${ALB_ARN:-}" "${NLB_ARN:-}" "${EDGE_ALB:-}"; do
   [ -n "$arn" ] && t aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
 done
 sleep 25   # target groups stay "in use" briefly after the LB goes
-for arn in "${TG_ALB:-}" "${TG_NLB:-}"; do
+for arn in "${TG_ALB:-}" "${TG_NLB:-}" "${EDGE_TG:-}"; do
   [ -n "$arn" ] && t aws elbv2 delete-target-group --target-group-arn "$arn"
 done
 
@@ -98,7 +107,7 @@ done
 
 # ---- table / ecr ----
 [ -n "${TABLE:-}" ] && t aws dynamodb delete-table --table-name "$TABLE"
-for r in "${KERNEL_REPOS[@]}"; do
+for r in "${KERNEL_REPOS[@]}" "${SERVICE_REPOS[@]}"; do
   t aws ecr delete-repository --repository-name "agent-platform${SUFFIX}/$r" --force
 done
 
@@ -111,7 +120,8 @@ done
 for r in "agent-platform-interactive-role${SUFFIX}" "agent-platform-sdk-role${SUFFIX}" \
          "agent-platform-mcp-tools-role${SUFFIX}" "agent-platform-workspace-access${SUFFIX}" \
          "agent-platform-backend-task${SUFFIX}" "agent-platform-backend-exec${SUFFIX}" \
-         "agent-platform-schedule-runner${SUFFIX}" "agent-platform-scheduler${SUFFIX}"; do
+         "agent-platform-schedule-runner${SUFFIX}" "agent-platform-scheduler${SUFFIX}" \
+         "agent-platform-llm-edge${SUFFIX}" "agent-platform-llm-edge-exec${SUFFIX}"; do
   for p in $(aws iam list-role-policies --role-name "$r" --query 'PolicyNames[]' --output text 2>/dev/null); do
     t aws iam delete-role-policy --role-name "$r" --policy-name "$p"
   done
@@ -135,7 +145,7 @@ done
 for rt in "${RT_PUB:-}" "${RT_PRIV:-}"; do
   [ -n "$rt" ] && t aws ec2 delete-route-table --route-table-id "$rt"
 done
-for sg in "${ALB_SG:-}" "${SVC_SG:-}" "${RUNTIME_SG:-}"; do
+for sg in "${ALB_SG:-}" "${SVC_SG:-}" "${EDGE_ALB_SG:-}" "${EDGE_SVC_SG:-}" "${RUNTIME_SG:-}"; do
   [ -n "$sg" ] && t aws ec2 delete-security-group --group-id "$sg"
 done
 [ -n "${VPC_ID:-}" ] && t aws ec2 delete-vpc --vpc-id "$VPC_ID"

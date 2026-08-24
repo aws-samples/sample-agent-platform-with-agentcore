@@ -128,6 +128,7 @@ Everything else is set in `lib/common.sh`. The knobs you may want to change:
 | `VPC_CIDR` | `10.20.0.0/16` | must not overlap anything you plan to peer with |
 | `IMAGE_TAG` | `latest` | the tag the runtimes and ECS pull |
 | `ANTHROPIC_MODEL` | Sonnet 4.5 profile | baked into the kernels as the default |
+| `ENABLE_LLM_EDGE` | `0` | `1` deploys `llm-edge`, required for the litellm model backend — it holds the gateway key so no kernel container receives one (phase 4b) |
 | `STATE_DIR` | `./.state` | where resource ids are recorded — **see §6** |
 
 Leaving `SUFFIX` empty produces the same names the CDK and Terraform stacks use
@@ -188,7 +189,8 @@ for pair in \
   "claude-code-kernel:runtimes/claude-code-kernel" \
   "agent-sdk-kernel:runtimes/agent-sdk-kernel" \
   "mcp-tools-kernel:runtimes/mcp-tools-kernel" \
-  "backend:backend"; do
+  "backend:backend" \
+  "llm-edge:services/llm-edge"; do
   name="${pair%%:*}"; dir="${pair##*:}"
   docker buildx build --platform linux/arm64 \
     -t "${REGISTRY}/${PREFIX}/${name}:latest" --push "$dir"
@@ -211,6 +213,62 @@ for all three to reach `READY`.
 
 The script sleeps 20 seconds between attaching the inline policies and creating
 the runtimes. That wait is load-bearing — see §6.
+
+Note what these roles do **not** get: read access to the LLM gateway secret. A
+kernel role is reachable from inside the session it serves — the Dev Workbench
+hands its user a root shell in that microVM, and the headless kernel runs agent
+tools in a subprocess — so a kernel that can read the gateway key is a kernel
+whose users have it. Gateway access goes through the service in the next phase.
+
+### Phase 4b — llm-edge (~4 min, litellm backend only)
+
+Skip this phase for a Bedrock-direct deployment: there is no gateway key to
+protect, the container's IAM role does the calling, and nothing extractable
+exists in the first place.
+
+```bash
+bash scripts/35-llm-edge.sh
+```
+
+Creates an internal ALB, a target group on `/healthz`, two security groups, the
+edge task and execution roles, a log group, its own ECS cluster and a
+two-task Fargate service. Records `LLM_EDGE_URL` in the state file, which
+phase 6 reads into the backend's `PLATFORM_LLM_EDGE_URL`.
+
+What the phase buys:
+
+- The gateway key is readable by exactly one principal,
+  `agent-platform-llm-edge`, in a task no session can enter (ECS Exec is
+  deliberately not enabled on it).
+- A kernel receives a short-lived grant scoped to that session's model allowance
+  instead of a credential. The kernel's `ANTHROPIC_AUTH_TOKEN` is the literal
+  string `unused`; the grant lives in the kernel process behind a loopback shim.
+- The edge re-reads the upstream URL, the secret name and the permitted model
+  list from the grant on every call, so nothing a container claims about its own
+  routing is trusted.
+
+Two things worth knowing before you change it:
+
+- The listener is **plain HTTP on an internal ALB**. That leg carries prompt
+  content, so a deployment handling regulated data should terminate TLS with a
+  certificate for a name it owns. The default is HTTP because a private listener
+  needs such a name and that cannot be assumed here.
+- Idle timeout is 900 s. A single model response can stream for many minutes and
+  the 60 s default cuts it mid-answer. This is also why there is no managed SigV4
+  validator in front: VPC Lattice caps a connection at 10 minutes and API Gateway
+  buffers responses, either of which truncates a long completion.
+
+Order matters twice here. It must run after phase 4 (it needs the VPC and the
+runtime security group) and before phase 6 (which bakes the URL into the backend
+task definition). If you run it later, re-run `60-cloudfront-ecs.sh` afterwards
+or the backend keeps an empty `PLATFORM_LLM_EDGE_URL` and refuses gateway
+routing with a 503.
+
+`00-deploy-all.sh` runs this phase only when `ENABLE_LLM_EDGE=1`:
+
+```bash
+ENABLE_LLM_EDGE=1 bash scripts/00-deploy-all.sh
+```
 
 ### Phase 5 — portal (~8 min)
 

@@ -81,12 +81,13 @@ data "aws_iam_policy_document" "agent_common" {
     }
   }
 
-  # LLM gateway key — read at container start.
-  statement {
-    sid       = "LlmGatewaySecret"
-    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-    resources = [var.llm_gateway_secret.arn]
-  }
+  # No grant on the LLM gateway secret, deliberately. A kernel role is
+  # reachable from inside the session it serves: the Dev Workbench hands the
+  # user a root shell in that microVM, and the headless kernel runs agent tools
+  # in a subprocess. So a kernel that *can* read the gateway key is a kernel
+  # whose users have the gateway key, whatever the code does with it. Only the
+  # llm-edge task role holds that read now (modules/llm_edge/iam.tf), and
+  # kernels reach the gateway through it with a per-session grant.
 
   # The model control plane (Governance -> Model backends) can route any
   # agent to Bedrock per invocation, regardless of the deployment default.

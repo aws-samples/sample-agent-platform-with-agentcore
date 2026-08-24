@@ -169,6 +169,10 @@ env = {
   "PLATFORM_SDK_RUNTIME_ARN": "$SDK_RUNTIME_ARN",
   "PLATFORM_MCP_TOOLS_RUNTIME_ARN": "$MCP_TOOLS_RUNTIME_ARN",
   "PLATFORM_WORKSPACE_ACCESS_ROLE_ARN": "$WORKSPACE_ROLE_ARN",
+  # Empty unless 35-llm-edge.sh ran. Empty means gateway model routing is
+  # unavailable and the backend refuses it, rather than falling back to handing
+  # the gateway key to a container.
+  "PLATFORM_LLM_EDGE_URL": "${LLM_EDGE_URL:-}",
   # Scoped to this distribution, not "*" — matches the upstream hardening.
   "PLATFORM_CORS_ORIGINS": "https://$DIST_DOMAIN",
   "PLATFORM_COGNITO_POOL_ID": "$POOL_ID",

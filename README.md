@@ -108,7 +108,9 @@ cd infrastructure
 pip install -r requirements.txt
 cdk deploy NetworkStack PlatformStack
 
-# 2. Store your LLM gateway key (skip if using Bedrock direct)
+# 2. Store your LLM gateway key (skip if using Bedrock direct).
+#    Readable only by the llm-edge service; it never enters a kernel container.
+#    Gateway mode also needs enable_llm_edge=true — see docs/deployment.md §2.
 aws secretsmanager put-secret-value \
   --secret-id agent-platform/llm-gateway-key \
   --secret-string '{"api_key":"sk-..."}'

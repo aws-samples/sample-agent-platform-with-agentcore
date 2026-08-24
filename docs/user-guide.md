@@ -402,8 +402,12 @@ sessions alike:
 - **Two backends** — Amazon Bedrock (direct, via the kernel container's IAM
   role; use `global.` cross-region inference profile IDs) and an
   Anthropic-compatible **LLM gateway** (e.g. LiteLLM; the API key lives in
-  Secrets Manager, only its *name* is stored here). Each has an enable
-  switch and a model catalog that feeds the dropdowns elsewhere.
+  Secrets Manager, only its *name* is stored here, and only the `llm-edge`
+  service can read it — a session container never receives it). Each has an
+  enable switch and a model catalog that feeds the dropdowns elsewhere.
+  Gateway mode requires `llm-edge` to be deployed (`enable_llm_edge`); with it
+  missing, the platform refuses to route a session rather than falling back to
+  handing out the key.
 - **Platform default** — which backend an agent uses when it doesn't pick
   one.
 - **Per-agent choice** — the Publish page's edit dialog has a *Model

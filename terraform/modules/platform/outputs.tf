@@ -30,6 +30,13 @@ output "team_auth_repos" {
   }
 }
 
+output "llm_edge_repo" {
+  value = {
+    url = aws_ecr_repository.llm_edge.repository_url
+    arn = aws_ecr_repository.llm_edge.arn
+  }
+}
+
 output "log_bucket" {
   value = {
     name = aws_s3_bucket.logs.bucket

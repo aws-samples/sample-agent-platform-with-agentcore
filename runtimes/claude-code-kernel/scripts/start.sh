@@ -12,14 +12,20 @@ set -e
 # ---------------------------------------------------------------------------
 # 1. Model access
 #
-# Gateway mode (default when ANTHROPIC_BASE_URL is set):
-#   Claude Code talks to an Anthropic-compatible gateway (e.g. LiteLLM) via
-#   /v1/messages. The API key is read from Secrets Manager at startup and
-#   exported so every child shell (ttyd → bash → claude) inherits it.
-#
-# Bedrock mode (set CLAUDE_CODE_USE_BEDROCK=1, leave ANTHROPIC_BASE_URL unset):
+# Bedrock mode (set CLAUDE_CODE_USE_BEDROCK=1):
 #   Claude Code calls Amazon Bedrock with the container's IAM role. Use
 #   cross-region inference profiles (model IDs prefixed with `global.`).
+#
+# Gateway mode: nothing happens here, on purpose.
+#   The session's user is root in this microVM, so a credential exported into
+#   this environment is a credential they have. This script used to read the
+#   LLM gateway key from Secrets Manager and export it as ANTHROPIC_AUTH_TOKEN,
+#   which put a long-lived, platform-wide key one `env` away from anyone with
+#   the terminal. The key now lives only in the llm-edge service; the container
+#   receives a short-lived, session-scoped grant in the warmup payload, and
+#   contract-server keeps it in memory behind a loopback shim rather than
+#   putting it in the environment. Gateway routing is therefore always
+#   per-session and can no longer be baked into the container.
 # ---------------------------------------------------------------------------
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
@@ -29,23 +35,18 @@ export AWS_DEFAULT_REGION="$AWS_REGION"
 # sandbox here — without this, every MCP/tool call pops a permission dialog.
 export IS_SANDBOX=1
 
-if [ -n "$ANTHROPIC_BASE_URL" ]; then
-  echo "[start.sh] model access: LLM gateway ($ANTHROPIC_BASE_URL)"
-  LLM_GATEWAY_SECRET_NAME="${LLM_GATEWAY_SECRET_NAME:-agent-platform/llm-gateway-key}"
-  GATEWAY_KEY=$(aws secretsmanager get-secret-value \
-    --secret-id "$LLM_GATEWAY_SECRET_NAME" \
-    --region "$AWS_REGION" \
-    --query 'SecretString' --output text 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['api_key'])" 2>/dev/null || echo "")
-  if [ -n "$GATEWAY_KEY" ]; then
-    export ANTHROPIC_AUTH_TOKEN="$GATEWAY_KEY"
-  else
-    echo "[start.sh] WARNING: could not read $LLM_GATEWAY_SECRET_NAME — model calls will fail"
-  fi
-elif [ "$CLAUDE_CODE_USE_BEDROCK" = "1" ]; then
+if [ "$CLAUDE_CODE_USE_BEDROCK" = "1" ]; then
   echo "[start.sh] model access: Amazon Bedrock (IAM role, cross-region inference)"
+elif [ -n "$ANTHROPIC_BASE_URL" ]; then
+  # A gateway address baked into the container environment is now dead weight:
+  # reaching the gateway requires a per-session grant that only arrives at
+  # warmup. Clear it so a stale value can't send a Bedrock-routed session at an
+  # endpoint it has no credential for.
+  echo "[start.sh] NOTE: ignoring container-level ANTHROPIC_BASE_URL — gateway routing is per-session"
+  unset ANTHROPIC_BASE_URL
+  echo "[start.sh] model access: resolved per session at warmup"
 else
-  echo "[start.sh] WARNING: neither ANTHROPIC_BASE_URL nor CLAUDE_CODE_USE_BEDROCK is set"
+  echo "[start.sh] model access: resolved per session at warmup"
 fi
 
 # ---------------------------------------------------------------------------

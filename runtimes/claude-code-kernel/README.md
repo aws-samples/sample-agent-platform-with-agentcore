@@ -21,12 +21,19 @@ terminal connection flow (SigV4 pre-signed WSS URLs).
 | `WORKSPACE_S3_BUCKET` | ✅ | Bucket for per-session workspace persistence |
 | `WORKSPACE_S3_PREFIX` | | Key prefix, default `workspaces` |
 | `WORKSPACE_SYNC_INTERVAL` | | Sync period in seconds, default `30` |
-| `ANTHROPIC_BASE_URL` | one of | LLM gateway endpoint (gateway mode) |
-| `LLM_GATEWAY_SECRET_NAME` | | Secrets Manager secret holding `{"api_key": "..."}`, default `agent-platform/llm-gateway-key` |
-| `CLAUDE_CODE_USE_BEDROCK` | one of | Set `1` for Bedrock direct mode (use `global.` cross-region model IDs) |
+| `CLAUDE_CODE_USE_BEDROCK` | | Set `1` for Bedrock direct mode (use `global.` cross-region model IDs) |
 | `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` | | Model overrides |
 | `MCP_RUNTIME_ARN` | | Optional: ARN of an MCP-protocol AgentCore Runtime to expose as tools |
 | `AWS_REGION` | | Defaults to `us-east-1` |
+
+Gateway mode has no environment variables here on purpose. The session's user is
+root in this microVM, so a credential in this environment is a credential they
+have; the gateway key stays in the `llm-edge` service and the container receives
+a per-session grant in its warmup payload instead. `contract-server` keeps that
+grant in memory and Claude Code reaches the gateway through a loopback shim, so
+`ANTHROPIC_AUTH_TOKEN` in a gateway-routed session is the literal string
+`unused`. A gateway URL left in the container environment is ignored and
+cleared at startup.
 
 ## Build
 

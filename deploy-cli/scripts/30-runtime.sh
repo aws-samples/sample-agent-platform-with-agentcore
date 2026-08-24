@@ -9,7 +9,12 @@ load
 step "runtime roles + AgentCore runtimes ($NAME)"
 
 WS_ARN="arn:aws:s3:::$WORKSPACE_BUCKET"
-LLM_ARN="$(aws secretsmanager describe-secret --secret-id "$LLM_SECRET" --query ARN --output text)"
+# No gateway-secret ARN is looked up here on purpose. A kernel role is reachable
+# from inside the session it serves — root shell in the Dev Workbench microVM,
+# agent tools in the headless kernel's subprocess — so a kernel that *can* read
+# the gateway key is a kernel whose users have it. Only the llm-edge task role
+# holds that read (35-llm-edge.sh); kernels reach the gateway through it with a
+# per-session grant the backend mints.
 REPO_ARNS="$(for r in "${KERNEL_REPOS[@]}"; do
   aws ecr describe-repositories --repository-names "agent-platform${SUFFIX}/$r" \
     --query 'repositories[0].repositoryArn' --output text; done | paste -sd',' - \
@@ -41,7 +46,6 @@ JSON
 agent_stmts() { cat <<JSON
 {"Sid":"Skills","Effect":"Allow","Action":"s3:GetObject","Resource":"$WS_ARN/skills/*"}
 {"Sid":"SkillsList","Effect":"Allow","Action":"s3:ListBucket","Resource":"$WS_ARN","Condition":{"StringLike":{"s3:prefix":["skills/*","skills/"]}}}
-{"Sid":"LlmGatewaySecret","Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],"Resource":"$LLM_ARN"}
 {"Sid":"BedrockInvoke","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],"Resource":"*"}
 {"Sid":"InvokeMcpRuntimes","Effect":"Allow","Action":"bedrock-agentcore:InvokeAgentRuntime","Resource":["arn:aws:bedrock-agentcore:$AWS_REGION:$ACCOUNT_ID:runtime/mcp_tools_kernel*","arn:aws:bedrock-agentcore:$AWS_REGION:$ACCOUNT_ID:runtime/mcp_tools_kernel*/runtime-endpoint/*"]}
 {"Sid":"InvokeGateways","Effect":"Allow","Action":"bedrock-agentcore:InvokeGateway","Resource":["arn:aws:bedrock-agentcore:$AWS_REGION:$ACCOUNT_ID:gateway/*","arn:aws:bedrock-agentcore:us-east-1:$ACCOUNT_ID:gateway/*"]}
@@ -101,7 +105,7 @@ log "workspace-access role ready"
 # ---------------------------------------------------------------- runtimes
 # Env shared by both agent kernels (mirrors locals.common_env with use_bedrock=1).
 common_env_json() { cat <<JSON
-{"AWS_REGION":"$AWS_REGION","LLM_GATEWAY_SECRET_NAME":"$LLM_SECRET","CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"$ANTHROPIC_MODEL","ANTHROPIC_SMALL_FAST_MODEL":"$ANTHROPIC_SMALL_FAST_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL":"$ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL":"$ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL":"$ANTHROPIC_SMALL_FAST_MODEL"}
+{"AWS_REGION":"$AWS_REGION","CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"$ANTHROPIC_MODEL","ANTHROPIC_SMALL_FAST_MODEL":"$ANTHROPIC_SMALL_FAST_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL":"$ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL":"$ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL":"$ANTHROPIC_SMALL_FAST_MODEL"}
 JSON
 }
 

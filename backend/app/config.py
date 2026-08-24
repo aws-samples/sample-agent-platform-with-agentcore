@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     # only works against a stack that still grants it workspaces/*.
     workspace_access_role_arn: str = ""
 
+    # Internal base URL of the llm-edge service, which holds the LLM gateway
+    # key so no kernel container ever receives one. Empty = gateway-mode model
+    # routing is unavailable and the backend refuses it; the alternative would
+    # be reverting to exporting the key into a container the session's user is
+    # root in.
+    llm_edge_url: str = ""
+
     # EventBridge Scheduler wiring (outputs of the PortalStack). When all of
     # group/lambda/role are set, the scheduler runs in "eventbridge" mode:
     # each platform schedule is mirrored to an EventBridge Scheduler schedule

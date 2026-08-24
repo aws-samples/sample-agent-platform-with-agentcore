@@ -26,7 +26,8 @@ with an upstream update.
 |---|---|---|
 | Your AWS account / region | `CDK_DEFAULT_ACCOUNT`, `CDK_DEFAULT_REGION` | shell env at `cdk deploy` |
 | An existing VPC (quota-constrained or enterprise) | `-c existing_vpc_id=… -c existing_nat_eip=…` | CDK context — see [network_stack.py](infrastructure/stacks/network_stack.py) |
-| Your LLM gateway / Bedrock mode | `ANTHROPIC_BASE_URL` or `CLAUDE_CODE_USE_BEDROCK=1` | runtime env; key in Secrets Manager |
+| Bedrock direct mode | `CLAUDE_CODE_USE_BEDROCK=1` | runtime env; no key involved |
+| Your LLM gateway | `enable_llm_edge=true` + the backend's `base_url` in Governance → Model backends | key in Secrets Manager, read only by `llm-edge`; kernels get a per-session grant, never the key |
 | Backend runtime settings (table, buckets, ARNs, Cognito, CORS) | `PLATFORM_*` env vars | [backend/app/config.py](backend/app/config.py), `backend/.env.example` |
 
 `infrastructure/cdk.context.json` is **git-ignored on purpose** — it caches

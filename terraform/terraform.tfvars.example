@@ -17,7 +17,12 @@ existing_nat_eip            = "" # informational, surfaced as an output
 
 # --- model backend ----------------------------------------------------------
 # Bedrock model IDs must be cross-region inference profiles (global. prefix).
-llm_gateway_url                = ""
+#
+# For the LLM gateway backend, set enable_llm_edge = true and configure base_url
+# under Governance -> Model backends -> litellm. There is no gateway URL here:
+# the address and key belong to the llm-edge service, not to kernel containers.
+# (llm_gateway_url is retired and rejected if set.)
+enable_llm_edge                = false
 use_bedrock                    = "1"
 anthropic_model                = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 anthropic_small_fast_model     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"

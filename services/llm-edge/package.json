@@ -1,0 +1,16 @@
+{
+  "name": "agent-platform-llm-edge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Platform-side LLM gateway hop: holds the gateway key, authorizes per-session model access, streams responses through",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0"
+  }
+}

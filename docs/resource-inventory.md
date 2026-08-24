@@ -48,7 +48,7 @@ subnet IDs from variables instead.
 | `aws_dynamodb_table` | `agent-platform` | Single-table control plane: sessions, channels, invocation ledger, audit, WSTOKEN lookup items | PK/SK schema, PAY_PER_REQUEST, **PITR enabled** | — |
 | `aws_ecr_repository` ×4 | `agent-platform/{claude-code-kernel,agent-sdk-kernel,mcp-tools-kernel,backend}` | Kernel + backend images | `scan_on_push` (kernel images run agent code under an IAM role); `force_delete = true` | — |
 | `aws_ecr_repository` ×2 | `agent-platform/{keycloak,team-api}` | team-auth demo images (repos exist even when the module is off, so phase-1 pushes work) | same | — |
-| `aws_secretsmanager_secret` + `_version` | `agent-platform/llm-gateway` | LLM gateway API key the kernels read at startup | created as a **placeholder** with `ignore_changes` — the real value is set out-of-band | — |
+| `aws_secretsmanager_secret` + `_version` | `agent-platform/llm-gateway` | LLM gateway API key, read only by the `llm-edge` task role (never by a kernel) | created as a **placeholder** with `ignore_changes` — the real value is set out-of-band | — |
 
 ## runtime (11)
 

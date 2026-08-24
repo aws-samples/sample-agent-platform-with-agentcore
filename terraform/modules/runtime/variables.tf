@@ -21,13 +21,6 @@ variable "workspace_bucket" {
   })
 }
 
-variable "llm_gateway_secret" {
-  type = object({
-    name = string
-    arn  = string
-  })
-}
-
 variable "kernel_tags" {
   description = "Image tag per kernel repo"
   type        = map(string)
@@ -35,7 +28,6 @@ variable "kernel_tags" {
 
 variable "model_env" {
   type = object({
-    llm_gateway_url                = string
     use_bedrock                    = string
     anthropic_model                = string
     anthropic_small_fast_model     = string

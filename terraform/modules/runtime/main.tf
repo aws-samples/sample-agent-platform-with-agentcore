@@ -4,12 +4,16 @@
 # Gateway (docs/architecture.md — Networking).
 
 locals {
+  # Neither the gateway address nor the name of its secret is passed to a
+  # kernel any more. Both used to be here so the container could fetch the key
+  # itself at startup; a session's user is root in that container, so that put a
+  # platform-wide key one `env` away from whoever held the terminal. Gateway
+  # routing now arrives per session, as an endpoint on llm-edge plus a
+  # session-scoped token (see backend/app/services/llm_credentials_service.py).
   common_env = merge(
     {
-      AWS_REGION              = local.region
-      LLM_GATEWAY_SECRET_NAME = var.llm_gateway_secret.name
+      AWS_REGION = local.region
     },
-    var.model_env.llm_gateway_url != "" ? { ANTHROPIC_BASE_URL = var.model_env.llm_gateway_url } : {},
     var.model_env.use_bedrock == "1" ? { CLAUDE_CODE_USE_BEDROCK = "1" } : {},
     var.model_env.anthropic_model != "" ? { ANTHROPIC_MODEL = var.model_env.anthropic_model } : {},
     var.model_env.anthropic_small_fast_model != "" ? { ANTHROPIC_SMALL_FAST_MODEL = var.model_env.anthropic_small_fast_model } : {},

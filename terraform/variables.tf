@@ -41,9 +41,21 @@ variable "vpc_cidr" {
 # ----------------------------- model backend -------------------------------
 
 variable "llm_gateway_url" {
-  description = "Anthropic-compatible LLM gateway base URL (LiteLLM etc.). Empty = talk to Bedrock directly."
+  description = <<-EOT
+    Retired. A gateway URL is no longer given to kernel containers: gateway
+    access needs a per-session grant, so the address lives in the model control
+    plane (Governance -> Model backends -> litellm -> base_url) and is read by
+    the llm-edge service. Kept declared, and rejected when set, so a deployment
+    that still sets it gets told where the setting went instead of silently
+    getting Bedrock.
+  EOT
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.llm_gateway_url == ""
+    error_message = "llm_gateway_url is retired. Set enable_llm_edge = true and configure base_url under Governance -> Model backends -> litellm; see docs/deployment.md section 2."
+  }
 }
 
 variable "use_bedrock" {
@@ -173,6 +185,34 @@ variable "enable_portal" {
   description = "Create the portal (requires backend image pushed + enable_runtime)."
   type        = bool
   default     = true
+}
+
+variable "enable_llm_edge" {
+  description = "Create the llm-edge service. Required to use the 'litellm' model backend: it holds the gateway key so session containers never receive one. A Bedrock-direct deployment can leave this off."
+  type        = bool
+  default     = false
+}
+
+variable "llm_edge_image_tag" {
+  type    = string
+  default = ""
+}
+
+variable "llm_edge_certificate_arn" {
+  description = "ACM certificate for the internal llm-edge listener. Empty serves plain HTTP inside the VPC; set this to encrypt the leg carrying prompt content."
+  type        = string
+  default     = ""
+}
+
+variable "llm_edge_desired_count" {
+  description = "llm-edge task count. Every gateway-mode model call goes through this service, so 2 keeps it serving through deployments."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.llm_edge_desired_count >= 1
+    error_message = "llm_edge_desired_count must be at least 1."
+  }
 }
 
 variable "enable_team_auth" {
