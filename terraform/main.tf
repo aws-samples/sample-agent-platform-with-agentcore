@@ -24,7 +24,6 @@ locals {
   }
 
   model_env = {
-    llm_gateway_url                = var.llm_gateway_url
     use_bedrock                    = var.use_bedrock
     anthropic_model                = var.anthropic_model
     anthropic_small_fast_model     = var.anthropic_small_fast_model
@@ -59,12 +58,34 @@ module "runtime" {
   runtime_sg_id           = module.network.runtime_sg_id
   kernel_repos            = module.platform.kernel_repos
   workspace_bucket        = module.platform.workspace_bucket
-  llm_gateway_secret      = module.platform.llm_gateway_secret
   kernel_tags             = local.kernel_tags
   model_env               = local.model_env
   async_artifact_prefixes = var.async_artifact_prefixes
   name_suffix             = var.name_suffix
   runtime_name_suffix     = local.runtime_suffix
+}
+
+# Required for the "litellm" model backend: it holds the gateway key so that
+# session containers never receive it. Off by default because a Bedrock-direct
+# deployment has no gateway key to protect and would just be paying for an ALB
+# and two tasks. With gateway mode enabled in the model control plane but this
+# off, the backend refuses to route a session rather than falling back to
+# handing out the key.
+module "llm_edge" {
+  source = "./modules/llm_edge"
+  count  = var.enable_llm_edge && var.enable_runtime ? 1 : 0
+
+  vpc_id             = module.network.vpc_id
+  private_subnet_ids = module.network.private_subnet_ids
+  runtime_sg_id      = module.network.runtime_sg_id
+  llm_edge_repo      = module.platform.llm_edge_repo
+  image_tag          = coalesce(var.llm_edge_image_tag, var.image_tag)
+  llm_gateway_secret = module.platform.llm_gateway_secret
+  platform_table     = module.platform.platform_table
+  log_bucket         = module.platform.log_bucket
+  certificate_arn    = var.llm_edge_certificate_arn
+  desired_count      = var.llm_edge_desired_count
+  name_suffix        = var.name_suffix
 }
 
 module "portal" {
@@ -90,6 +111,7 @@ module "portal" {
   oidc_client_id            = var.oidc_client_id
   oidc_audience             = var.oidc_audience
   service_api_allowed_vpces = var.service_api_allowed_vpces
+  llm_edge_url              = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].edge_url : ""
   name_suffix               = var.name_suffix
 }
 
@@ -119,7 +141,6 @@ module "team_demo" {
   private_subnet_ids  = module.network.private_subnet_ids
   runtime_sg_id       = module.network.runtime_sg_id
   kernel_repos        = module.platform.kernel_repos
-  llm_gateway_secret  = module.platform.llm_gateway_secret
   execution_role_arn  = module.runtime[0].sdk_role_arn
   discovery_url       = module.team_auth[0].discovery_url
   image_tag           = coalesce(var.team_demo_image_tag, var.image_tag)

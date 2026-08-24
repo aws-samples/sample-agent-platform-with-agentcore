@@ -9,8 +9,16 @@ from botocore.config import Config
 from botocore.exceptions import ConnectionClosedError, EndpointConnectionError
 
 from app.config import settings
+from app.services.llm_credentials_service import llm_credentials_service
 
 logger = logging.getLogger(__name__)
+
+# Gateway-grant lifetimes. A synchronous invocation is bounded by the AgentCore
+# invoke ceiling, so an hour is generous. An async task runs unattended for up
+# to the platform's 8h ceiling with no way to renew, so its grant has to cover
+# that or the agent loses model access partway through.
+LLM_GRANT_TTL_S = 3600
+ASYNC_GRANT_TTL_S = 9 * 3600
 
 
 class KernelService:
@@ -70,6 +78,7 @@ class KernelService:
         memory: dict | None = None,
         model: dict | None = None,
         async_output: dict | None = None,
+        user: str = "",
     ) -> dict:
         """Proxy an invocation to the headless kernel.
 
@@ -97,6 +106,34 @@ class KernelService:
             payload["memory"] = memory
         if model:
             # per-invocation model routing (see model_config_service.resolve)
+            if model.get("backend") == "gateway":
+                # The gateway key stays in llm-edge. Mint a grant scoped to this
+                # invocation's session and strip the routing fields, so the
+                # kernel receives an endpoint and a token instead of a key it
+                # could fetch itself. An async run has no refresh channel and
+                # may execute for hours, so its grant is given matching life.
+                creds = llm_credentials_service.mint(
+                    sid,
+                    user,
+                    model,
+                    ttl_s=ASYNC_GRANT_TTL_S if async_output else LLM_GRANT_TTL_S,
+                )
+                if not creds:
+                    return {
+                        "ok": False,
+                        "result": "",
+                        "raw": {
+                            "error": (
+                                "gateway model routing is unavailable: the "
+                                "llm-edge service is not deployed "
+                                "(set enable_llm_edge)"
+                            )
+                        },
+                    }
+                payload["llm_credentials"] = creds
+                model = {
+                    k: v for k, v in model.items() if k not in ("base_url", "secret_name")
+                }
             payload["model"] = model
         if async_output and async_output.get("key"):
             payload["async"] = async_output

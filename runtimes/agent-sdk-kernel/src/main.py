@@ -30,9 +30,12 @@ Payload contract::
         "model": {                  // optional: per-invocation model routing
             "backend": "bedrock" | "gateway",
             "model": "global.anthropic.claude-… | gateway alias",
-            "base_url": "https://…",        // gateway only
-            "secret_name": "agent-platform/llm-gateway-key",  // gateway only
             "small_fast_model": "…"         // background/haiku-class calls
+        },
+        "llm_credentials": {        // required when model.backend == "gateway"
+            "endpoint": "http://…",         // internal llm-edge listener
+            "session_id": "…",              // identifies the grant to the edge
+            "token": "…", "expires_at": 1234567890
         }
     }
 
@@ -43,9 +46,14 @@ agent run continues in the background. On completion the kernel writes the
 final answer to ``s3://{bucket}/{key}`` plus a ``{key}.status.json`` sidecar
 ({ok, usage, error}) that callers poll as the completion signal.
 
-Model access is resolved from the environment (see resolve_model_env):
-either an Anthropic-compatible LLM gateway (ANTHROPIC_BASE_URL + key from
-Secrets Manager) or Amazon Bedrock via the container's IAM role.
+Model access: Amazon Bedrock via the container's IAM role, or an
+Anthropic-compatible gateway reached through the platform's llm-edge service.
+No gateway key exists in this container — the SDK spawns a CLI subprocess where
+agent tools run, so a credential in that environment is a credential the agent
+has. A gateway-routed invocation carries a scoped grant in its payload; the
+grant stays in this process and the CLI is pointed at a loopback shim
+(llm_shim) with a token that is meaningless outside this container and after
+this invocation.
 """
 
 import asyncio
@@ -55,6 +63,7 @@ import os
 import re
 
 import boto3
+import llm_shim
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from claude_agent_sdk import (
     AssistantMessage,
@@ -77,41 +86,38 @@ DEFAULT_SYSTEM_PROMPT = os.environ.get(
 
 
 def resolve_model_env() -> None:
-    """Resolve model credentials once at process start.
-
-    Gateway mode: ANTHROPIC_BASE_URL is set → fetch the API key from Secrets
-    Manager and export it as ANTHROPIC_AUTH_TOKEN (inherited by the Claude
-    Code subprocess the SDK spawns).
+    """Settle the container's default model access at process start.
 
     Bedrock mode: CLAUDE_CODE_USE_BEDROCK=1 → nothing to fetch; the SDK uses
     the container's IAM role. Use cross-region inference profiles
     (``global.``-prefixed model IDs).
+
+    Gateway mode is deliberately absent. This function used to read the LLM
+    gateway key from Secrets Manager and export it as ANTHROPIC_AUTH_TOKEN,
+    which meant every CLI subprocess the SDK spawned — and therefore every
+    agent tool running inside it — inherited a long-lived, platform-wide
+    credential. The key now lives only in the llm-edge service; a gateway-routed
+    invocation arrives with a scoped grant in its payload, which stays in this
+    process behind the loopback shim (see llm_shim and build_model_env).
     """
-    if os.environ.get("ANTHROPIC_BASE_URL"):
-        secret_name = os.environ.get(
-            "LLM_GATEWAY_SECRET_NAME", "agent-platform/llm-gateway-key"
-        )
-        region = os.environ.get("AWS_REGION", "us-east-1")
-        try:
-            sm = boto3.client("secretsmanager", region_name=region)
-            secret = json.loads(
-                sm.get_secret_value(SecretId=secret_name)["SecretString"]
-            )
-            os.environ["ANTHROPIC_AUTH_TOKEN"] = secret["api_key"]
-            logger.info("model access: LLM gateway (%s)", os.environ["ANTHROPIC_BASE_URL"])
-        except Exception:
-            logger.exception(
-                "could not read %s — model calls will fail", secret_name
-            )
-    elif os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
+    if os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
         logger.info("model access: Amazon Bedrock (IAM role)")
-    else:
+        return
+    if os.environ.get("ANTHROPIC_BASE_URL"):
+        # A gateway address baked into the container environment can no longer
+        # be used: reaching the gateway needs a per-invocation grant. Clear it
+        # so a stale value can't point the CLI at an endpoint it has no
+        # credential for.
         logger.warning(
-            "neither ANTHROPIC_BASE_URL nor CLAUDE_CODE_USE_BEDROCK is set"
+            "ignoring container-level ANTHROPIC_BASE_URL — gateway routing is per-invocation"
         )
+        os.environ.pop("ANTHROPIC_BASE_URL", None)
+        os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+    logger.info("model access: resolved per invocation from the payload")
 
 
 resolve_model_env()
+llm_shim.start()
 
 
 _SECRET_CACHE: dict[str, str] = {}
@@ -153,8 +159,10 @@ def resolve_secret_placeholders(target: str) -> str:
     return re.sub(r"\{\{secret:([A-Za-z0-9/_+=.@-]+)\}\}", _lookup, target)
 
 
-def build_model_env(spec: dict) -> tuple[dict[str, str], str | None]:
-    """Per-invocation model routing → (env overrides, model override).
+def build_model_env(
+    spec: dict, grant: dict | None = None
+) -> tuple[dict[str, str], str | None, str]:
+    """Per-invocation model routing → (env overrides, model override, local token).
 
     The Claude Agent SDK spawns a fresh CLI subprocess per query and merges
     ``options.env`` over the process environment, so one shared kernel
@@ -163,6 +171,11 @@ def build_model_env(spec: dict) -> tuple[dict[str, str], str | None]:
     CLI treats "" as unset), so switching direction works regardless of which
     mode the container was deployed with. An empty/absent spec keeps the
     container defaults (resolve_model_env at process start).
+
+    For gateway routing the returned env contains no gateway credential: the
+    CLI is pointed at the loopback shim and given a container-local token. The
+    third return value is that token, which the caller must release once the
+    invocation finishes.
     """
     backend = str(spec.get("backend") or "")
     model = str(spec.get("model") or "") or None
@@ -177,16 +190,21 @@ def build_model_env(spec: dict) -> tuple[dict[str, str], str | None]:
             env["ANTHROPIC_MODEL"] = model
         if small:
             env["ANTHROPIC_SMALL_FAST_MODEL"] = small
-        return env, model
+        return env, model, ""
     if backend == "gateway":
-        base_url = str(spec.get("base_url") or "")
-        secret_name = str(spec.get("secret_name") or "agent-platform/llm-gateway-key")
-        if not base_url:
-            raise ValueError("model.backend=gateway requires model.base_url")
+        # No key is fetched and the upstream address is not even in the spec —
+        # the backend strips base_url/secret_name before sending it here. The
+        # CLI talks to the loopback shim with a token that means nothing outside
+        # this container and nothing after this invocation.
+        if not grant:
+            raise ValueError(
+                "model.backend=gateway requires llm_credentials in the payload"
+            )
+        local_token = llm_shim.register(grant)
         env = {
             "CLAUDE_CODE_USE_BEDROCK": "",
-            "ANTHROPIC_BASE_URL": base_url,
-            "ANTHROPIC_AUTH_TOKEN": _secret_value(secret_name),
+            "ANTHROPIC_BASE_URL": llm_shim.BASE_URL,
+            "ANTHROPIC_AUTH_TOKEN": local_token,
         }
         if model:
             env["ANTHROPIC_MODEL"] = model
@@ -202,7 +220,7 @@ def build_model_env(spec: dict) -> tuple[dict[str, str], str | None]:
             env[f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL"] = str(
                 aliases.get(family) or ""
             )
-        return env, model
+        return env, model, local_token
     raise ValueError(f"unknown model backend: {backend!r}")
 
 
@@ -557,9 +575,14 @@ async def invoke(payload: dict, context) -> dict:
     model_spec = (payload or {}).get("model") or {}
     model_env: dict[str, str] = {}
     model_override: str | None = None
+    # Local shim token for a gateway-routed run; "" for Bedrock or container
+    # default. Released when the run finishes so it cannot be reused.
+    grant_token = ""
     if model_spec:
         try:
-            model_env, model_override = build_model_env(model_spec)
+            model_env, model_override, grant_token = build_model_env(
+                model_spec, (payload or {}).get("llm_credentials")
+            )
             logger.info(
                 "model routing: backend=%s model=%s",
                 model_spec.get("backend"), model_override or "(default)",
@@ -591,10 +614,18 @@ async def invoke(payload: dict, context) -> dict:
         )
         _ASYNC_TASKS.add(task)
         task.add_done_callback(_ASYNC_TASKS.discard)
+        if grant_token:
+            # An async run keeps calling the model long after this handler
+            # returns, so its shim entry is released when the task ends, not
+            # here.
+            task.add_done_callback(lambda _t, tok=grant_token: llm_shim.release(tok))
         return {"ok": True, "kernel": "agent-sdk-kernel", "accepted": True,
                 "task_id": task_id, "output_key": key}
 
-    answer, usage, is_error = await run_agent(prompt, options)
+    try:
+        answer, usage, is_error = await run_agent(prompt, options)
+    finally:
+        llm_shim.release(grant_token)
     if memory and not is_error:
         store_memory_event(memory, session_id, prompt, answer)
 

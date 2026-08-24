@@ -7,7 +7,7 @@
 </defs>
 <rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
 <text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">Agent Platform on Amazon Bedrock AgentCore</text>
-<text x="40" y="68" font-size="12" fill="#5A6B7B">Interactive cloud workspaces (Claude Code web terminal) + headless kernels behind one portal · schedules, channels, memory, evals in one governed pipeline · machine callers via a private SigV4 entry · fixed-EIP egress to an allow-listed LLM gateway · existing APIs via AgentCore Gateway</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">Interactive cloud workspaces (Claude Code web terminal) + headless kernels behind one portal · schedules, channels, memory, evals in one governed pipeline · machine callers via a private SigV4 entry · gateway key never in a session container · existing APIs via AgentCore Gateway</text>
 <rect x="200" y="88" width="1265" height="652" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
 <text x="218" y="728" font-size="11" font-weight="700" fill="#0B7E7F">AWS Cloud</text>
 <rect x="740" y="122" width="565" height="386" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
@@ -15,8 +15,8 @@
 <path class="flow" d="M 115.0 408.0 L 307.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 353.0 408.0 L 547.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 593.0 408.0 L 807.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
-<path class="flow" d="M 853.0 408.0 L 1057.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
-<path class="flow" d="M 1103.0 408.0 L 1517.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 853.0 408.0 L 962.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1203.0 408.0 L 1517.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 115.0 560.0 L 307.0 560.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 353.0 560.0 L 420.0 560.0 L 420.0 420.0 L 547.0 420.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 92.0 385.0 L 92.0 104.0 L 830.0 104.0 L 830.0 385.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
@@ -29,8 +29,8 @@
 <path class="flow" d="M 570.0 431.0 L 570.0 560.0 L 440.0 560.0 L 440.0 637.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 830.0 431.0 L 830.0 637.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 853.0 408.0 L 853.0 540.0 L 1060.0 540.0 L 1060.0 637.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
-<path d="M 807.0 408.0 L 807.0 510.0 L 240.0 510.0 L 240.0 660.0 L 277.0 660.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
-<path d="M 1080.0 431.0 L 1080.0 568.0 L 1220.0 568.0 L 1220.0 637.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 985.0 431.0 L 985.0 510.0 L 240.0 510.0 L 240.0 660.0 L 277.0 660.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 1180.0 431.0 L 1180.0 568.0 L 1220.0 568.0 L 1220.0 637.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
 <path d="M 330.0 191.0 L 330.0 385.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
 <path class="flow" d="M 1000.0 191.0 L 1000.0 300.0 L 1367.0 300.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
 <path class="flow" d="M 1413.0 300.0 L 1517.0 300.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
@@ -41,9 +41,9 @@
 <rect x="637" y="385" width="127" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="700" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">InvokeAgentRuntime</text>
 <rect x="918" y="385" width="74" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
-<text x="955" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">LLM egress</text>
+<text x="907" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">per-session grant</text><text x="1082" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">LLM egress</text>
 <rect x="1150" y="385" width="173" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
-<text x="1236" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">single EIP · allow-listed</text>
+<text x="1290" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">single EIP · allow-listed</text>
 <rect x="131" y="537" width="150" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="206" y="547" text-anchor="middle" font-size="9.5" fill="#48586a">SigV4 · x-robot-token</text>
 <rect x="428" y="465" width="118" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
@@ -69,7 +69,7 @@
 <rect x="912" y="518" width="100" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="962" y="528" text-anchor="middle" font-size="9.5" fill="#48586a">built-in tools</text>
 <rect x="600" y="490" width="147" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
-<text x="673" y="500" text-anchor="middle" font-size="9.5" fill="#48586a">reads LLM key at boot</text>
+<text x="673" y="500" text-anchor="middle" font-size="9.5" fill="#48586a">gateway key · llm-edge only</text>
 <rect x="1101" y="575" width="133" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="1168" y="585" text-anchor="middle" font-size="9.5" fill="#48586a">alt: Bedrock direct</text>
 <rect x="270" y="290" width="120" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
@@ -139,13 +139,15 @@
 </clipPath>
 </defs>
 </g><text x="830" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">claude-code-kernel</text><text x="830" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">Claude Code · ttyd+tmux</text>
-<g transform="translate(1057.00,385.00) scale(0.9583)">
+<g transform="translate(1157.00,385.00) scale(0.9583)">
 
     
     <g id="nat__Icon-Resource/Networking-and-Content-Delivery/Res_Amazon-VPC_NAT-Gateway_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
         <path d="M13.6255,35.9209 L13.6255,33.0829 L15.3995,34.5019 L13.6255,35.9209 Z M13.2505,30.2209 C12.9495,29.9799 12.5365,29.9329 12.1915,30.1009 C11.8465,30.2679 11.6255,30.6169 11.6255,31.0019 L11.6255,38.0019 C11.6255,38.3869 11.8465,38.7359 12.1915,38.9029 C12.3305,38.9699 12.4785,39.0019 12.6255,39.0019 C12.8485,39.0019 13.0695,38.9279 13.2505,38.7829 L17.6255,35.2829 C17.8625,35.0929 18.0005,34.8059 18.0005,34.5019 C18.0005,34.1979 17.8625,33.9109 17.6255,33.7209 L13.2505,30.2209 Z M37.2515,26.8369 L37.2515,22.9149 L39.2125,24.8759 L37.2515,26.8369 Z M41.3335,24.1689 L36.9585,19.7939 C36.6725,19.5079 36.2445,19.4219 35.8685,19.5769 C35.4945,19.7319 35.2515,20.0969 35.2515,20.5009 L35.2515,23.8759 L27.6255,23.8759 L27.6255,14.3759 C27.6255,13.8229 27.1785,13.3759 26.6255,13.3759 L18.9315,13.3759 L18.9315,15.3759 L25.6255,15.3759 L25.6255,23.8759 L18.7505,23.8759 L18.7505,25.8759 L25.6255,25.8759 L25.6255,34.3769 L18.9315,34.3769 L18.9315,36.3769 L26.6255,36.3769 C27.1785,36.3769 27.6255,35.9299 27.6255,35.3769 L27.6255,25.8759 L35.2515,25.8759 L35.2515,29.2519 C35.2515,29.6559 35.4955,30.0219 35.8685,30.1759 C35.9925,30.2279 36.1225,30.2519 36.2515,30.2519 C36.5115,30.2519 36.7675,30.1499 36.9585,29.9589 L41.3335,25.5829 C41.7245,25.1919 41.7245,24.5599 41.3335,24.1689 L41.3335,24.1689 Z M13.6255,26.2959 L13.6255,23.4569 L15.3995,24.8759 L13.6255,26.2959 Z M13.2505,20.5949 C12.9495,20.3539 12.5365,20.3079 12.1915,20.4749 C11.8465,20.6419 11.6255,20.9909 11.6255,21.3759 L11.6255,28.3769 C11.6255,28.7619 11.8465,29.1109 12.1915,29.2779 C12.3305,29.3449 12.4785,29.3769 12.6255,29.3769 C12.8485,29.3769 13.0695,29.3029 13.2505,29.1579 L17.6255,25.6569 C17.8625,25.4669 18.0005,25.1799 18.0005,24.8759 C18.0005,24.5719 17.8625,24.2849 17.6255,24.0949 L13.2505,20.5949 Z M13.6255,15.7949 L13.6255,12.9569 L15.3995,14.3759 L13.6255,15.7949 Z M13.2505,10.0949 C12.9495,9.8539 12.5365,9.8069 12.1915,9.9749 C11.8465,10.1419 11.6255,10.4909 11.6255,10.8759 L11.6255,17.8759 C11.6255,18.2609 11.8465,18.6099 12.1915,18.7769 C12.3305,18.8439 12.4785,18.8759 12.6255,18.8759 C12.8485,18.8759 13.0695,18.8019 13.2505,18.6569 L17.6255,15.1569 C17.8625,14.9669 18.0005,14.6799 18.0005,14.3759 C18.0005,14.0719 17.8625,13.7849 17.6255,13.5949 L13.2505,10.0949 Z M24.0005,44.0029 C12.9725,44.0029 3.9995,35.0299 3.9995,24.0009 C3.9995,12.9729 12.9725,3.9999 24.0005,3.9999 C35.0295,3.9999 44.0025,12.9729 44.0025,24.0009 C44.0025,35.0299 35.0295,44.0029 24.0005,44.0029 L24.0005,44.0029 Z M24.0005,1.9999 C11.8685,1.9999 1.9995,11.8689 1.9995,24.0009 C1.9995,36.1329 11.8685,46.0029 24.0005,46.0029 C36.1325,46.0029 46.0025,36.1329 46.0025,24.0009 C46.0025,11.8689 36.1325,1.9999 24.0005,1.9999 L24.0005,1.9999 Z" id="nat__AWS-Amazon-VPC_NAT-gateway_Resource-Icon_light-bg" fill="#8C4FFF"></path>
     </g>
-</g><text x="1080" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">NAT Gateway</text><text x="1080" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">fixed EIP</text>
+</g><text x="1180" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">NAT Gateway</text><text x="1180" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">fixed EIP</text>
+<path d="M 1008.0 408.0 L 1157.0 408.0" fill="none" stroke="#2563EB" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="962.0" y="385.0" width="46" height="46" rx="8" fill="#4338CA"/><path d="M974 405 h22 v14 h-22 z M978 405 v-4 a7 7 0 0 1 14 0 v4" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><text x="985" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">llm-edge</text><text x="985" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">holds gateway key</text>
 <rect x="1517.0" y="385.0" width="46" height="46" rx="8" fill="#4F46E5"/><path d="M1529 400 l9 8 l-9 8 M1539 400 l9 8 l-9 8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><text x="1540" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">LLM Gateway</text><text x="1540" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">LiteLLM · IP allow-list</text>
 <g transform="translate(307.00,145.00) scale(0.5750)">
 
@@ -320,13 +322,13 @@
 <circle cx="211" cy="408" r="9" fill="#232F3E"/><text x="211" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">1</text>
 <circle cx="450" cy="408" r="9" fill="#232F3E"/><text x="450" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">2</text>
 <circle cx="700" cy="408" r="9" fill="#232F3E"/><text x="700" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">3</text>
-<circle cx="955" cy="408" r="9" fill="#232F3E"/><text x="955" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">4</text>
+<circle cx="907" cy="408" r="9" fill="#232F3E"/><text x="907" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">4</text>
 <circle cx="1310" cy="408" r="9" fill="#232F3E"/><text x="1310" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">5</text>
 <text x="40" y="810" font-size="11" font-weight="700" fill="#16202E">Flows</text>
 <circle cx="92" cy="806" r="5" fill="#1D4ED8"/><text x="102" y="810" font-size="10.5" fill="#5A6B7B">request →</text>
 <circle cx="185" cy="806" r="5" fill="#0F766E"/><text x="195" y="810" font-size="10.5" fill="#5A6B7B">reply ←</text>
 <circle cx="264" cy="806" r="5" fill="#0369A1"/><text x="274" y="810" font-size="10.5" fill="#5A6B7B">tools/memory</text>
 <circle cx="378" cy="806" r="5" fill="#15803D"/><text x="388" y="810" font-size="10.5" fill="#5A6B7B">scheduling</text>
-<text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ VPC egress → ⑤ LLM gateway · EventBridge Scheduler → Lambda fires schedules (retries + DLQ) · workspace + conversation resume from S3</text>
+<text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ per-session grant → llm-edge → ⑤ NAT egress → LLM gateway · EventBridge Scheduler → Lambda fires schedules (retries + DLQ) · workspace + conversation resume from S3</text>
 <text x="40" y="850" font-size="10" fill="#5A6B7B">machine callers enter via a private SigV4 API Gateway (per-channel caller allowlist · optional robot SSO token) into the same governed pipeline · AgentCore Memory = last-10-turn replay + cross-session recall</text>
 </svg>

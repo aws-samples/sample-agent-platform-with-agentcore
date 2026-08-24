@@ -9,15 +9,16 @@
 data "aws_region" "current" {}
 
 locals {
+  # As in modules/runtime: the gateway address and its secret name are no
+  # longer handed to a kernel. Gateway routing is delivered per invocation with
+  # a scoped grant instead of letting the container fetch the key itself.
   env = merge(
     {
-      AWS_REGION              = data.aws_region.current.region
-      LLM_GATEWAY_SECRET_NAME = var.llm_gateway_secret.name
+      AWS_REGION = data.aws_region.current.region
       # bump to force a new runtime version when the image tag is mutable
       # (AgentCore resolves the tag at version creation)
       KERNEL_BUILD = var.team_demo_build
     },
-    var.model_env.llm_gateway_url != "" ? { ANTHROPIC_BASE_URL = var.model_env.llm_gateway_url } : {},
     var.model_env.use_bedrock == "1" ? { CLAUDE_CODE_USE_BEDROCK = "1" } : {},
     var.model_env.anthropic_model != "" ? { ANTHROPIC_MODEL = var.model_env.anthropic_model } : {},
     var.model_env.anthropic_small_fast_model != "" ? { ANTHROPIC_SMALL_FAST_MODEL = var.model_env.anthropic_small_fast_model } : {},

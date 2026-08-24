@@ -128,6 +128,18 @@ resource "aws_ecr_repository" "team_auth" {
   }
 }
 
+# Kept out of kernel_repo_names on purpose: the kernel execution roles are
+# granted pull on every repo in that set, and nothing in a session container
+# should be able to pull the image of the service that holds the gateway key.
+resource "aws_ecr_repository" "llm_edge" {
+  name         = "agent-platform${var.name_suffix}/llm-edge"
+  force_delete = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
 # ------------------------------ access logs --------------------------------
 # One bucket for raw HTTP logs from the edge layers (CloudFront standard
 # logging v2 and ALB access logs; the API Gateway stage logs to CloudWatch in

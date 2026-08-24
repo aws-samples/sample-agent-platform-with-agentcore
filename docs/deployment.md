@@ -45,15 +45,20 @@ lookup). Pass the same `-c` flags to every subsequent `cdk deploy`.
 
 ## 2. Choose your model access mode
 
-This picks the **container default** — what a call uses when nothing else is
-specified. After deployment the Governance page's *Model backends* card can
-enable both backends side by side and route per published agent at
-invocation time (see the user guide); the options below only decide the
-baked-in fallback.
+After deployment the Governance page's *Model backends* card can enable both
+backends side by side and route per published agent at invocation time (see the
+user guide). What you choose here is the **Bedrock-direct container default**:
+gateway mode is never a container default, because reaching the gateway needs a
+per-session grant rather than a baked-in credential.
 
 ### Option A — LLM gateway (LiteLLM etc.)
 
-1. Store the gateway API key:
+Gateway mode is **always per session**, never a container default: reaching the
+gateway requires a grant the backend mints for one session, because a kernel
+container's user is root inside it and must not hold the gateway key. That grant
+is served by the `llm-edge` service, so gateway mode needs it deployed.
+
+1. Store the gateway API key. Only the `llm-edge` task role can read it:
 
    ```bash
    aws secretsmanager put-secret-value \
@@ -61,18 +66,30 @@ baked-in fallback.
      --secret-string '{"api_key":"sk-your-gateway-key"}'
    ```
 
-2. Set the gateway URL in `infrastructure/cdk.json` context (or pass `-c`):
+2. Build and push the `llm-edge` image (included in
+   `scripts/build-and-push.sh`) and deploy the service:
 
-   ```json
-   "llm_gateway_url": "https://your-litellm-endpoint.example.com"
+   ```hcl
+   enable_llm_edge = true
+   # optional: encrypt the internal listener, which carries prompt content
+   # llm_edge_certificate_arn = "arn:aws:acm:…"
    ```
 
-3. **Allow-list the NAT EIP** (`NatEipAddress/32`) on your gateway's ingress —
-   all runtime egress leaves from that address.
+3. Point the backend at your gateway in the portal: **Governance → Model
+   backends → litellm**, setting `base_url` and the model catalog. The URL lives
+   in the control plane, not in a container.
+
+4. **Allow-list the NAT EIP** (`NatEipAddress/32`) on your gateway's ingress.
+   `llm-edge` egresses through the same NAT as the rest of the platform, so that
+   address is still the only source your gateway sees.
+
+With `enable_llm_edge = false`, selecting the litellm backend makes the platform
+refuse the session with a 503 instead of falling back to handing a container the
+key.
 
 ### Option B — Bedrock direct
 
-Leave `llm_gateway_url` empty and set:
+Set:
 
 ```json
 "use_bedrock": "1",

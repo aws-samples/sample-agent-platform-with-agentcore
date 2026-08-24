@@ -25,5 +25,7 @@ build claude-code-kernel "$ROOT/runtimes/claude-code-kernel"
 build agent-sdk-kernel  "$ROOT/runtimes/agent-sdk-kernel"
 build mcp-tools-kernel  "$ROOT/runtimes/mcp-tools-kernel"
 build backend           "$ROOT/backend"
+# Only needed when the 'litellm' model backend is used (enable_llm_edge).
+build llm-edge          "$ROOT/services/llm-edge"
 
 echo "All images pushed. Next: cdk deploy AgentPlatformRuntime"

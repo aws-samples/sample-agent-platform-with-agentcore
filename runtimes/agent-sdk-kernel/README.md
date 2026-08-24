@@ -26,12 +26,18 @@ POST /invocations
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_BASE_URL` | one of | LLM gateway endpoint (gateway mode) |
-| `LLM_GATEWAY_SECRET_NAME` | | Secrets Manager secret with `{"api_key": "..."}`, default `agent-platform/llm-gateway-key` |
-| `CLAUDE_CODE_USE_BEDROCK` | one of | Set `1` for Bedrock direct (use `global.` cross-region model IDs) |
+| `CLAUDE_CODE_USE_BEDROCK` | | Set `1` for Bedrock direct (use `global.` cross-region model IDs) |
 | `ANTHROPIC_MODEL` | | Model override |
 | `KERNEL_SYSTEM_PROMPT` | | Default system prompt |
 | `KERNEL_MAX_TURNS` | | Default max agent turns (10) |
+
+Gateway mode has no environment variables here on purpose. The SDK spawns a CLI
+subprocess and agent tools execute inside it, so a credential in that
+environment is a credential the agent has. The gateway key stays in the
+`llm-edge` service; a gateway-routed invocation carries a scoped grant in its
+payload, the grant stays in the kernel process, and the CLI is pointed at a
+loopback shim with a token that means nothing outside this container or after
+the invocation.
 
 ## Build
 

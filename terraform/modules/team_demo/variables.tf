@@ -13,13 +13,6 @@ variable "kernel_repos" {
   }))
 }
 
-variable "llm_gateway_secret" {
-  type = object({
-    name = string
-    arn  = string
-  })
-}
-
 variable "execution_role_arn" {
   description = "The runtime module's SDK role — identical image, identical AWS needs"
   type        = string
@@ -41,7 +34,6 @@ variable "team_demo_build" {
 
 variable "model_env" {
   type = object({
-    llm_gateway_url                = string
     use_bedrock                    = string
     anthropic_model                = string
     anthropic_small_fast_model     = string

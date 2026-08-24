@@ -182,6 +182,7 @@ def invoke(
             skills=skills or None,
             memory=memory,
             model=model_spec,
+            user=user,
         )
     except Exception as e:
         observability_service.record(
@@ -266,6 +267,7 @@ def invoke_async_and_wait(
             memory=None,
             model=cfg["model_spec"],
             async_output={"bucket": settings.workspace_bucket, "key": output_key},
+            user=user,
         )
         out["runtime_session_id"] = accept.get("runtime_session_id", "")
         if not (accept.get("ok") and accept.get("raw", {}).get("accepted")):

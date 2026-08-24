@@ -18,6 +18,7 @@ from app.services.audit_service import audit_service
 from app.services.ecosystem_service import ecosystem_service
 from app.services.model_config_service import model_config_service
 from app.services.session_service import session_service
+from app.services.llm_credentials_service import llm_credentials_service
 from app.services.workspace_credentials_service import workspace_credentials_service
 from app.services.workspace_service import workspace_service
 
@@ -62,17 +63,27 @@ def _session_config(item: dict) -> dict | None:
 
 @router.post("/workspace-credentials")
 def refresh_workspace_credentials(body: dict):
-    """Container-facing: renew the session-scoped S3 credentials.
+    """Container-facing: renew the session's short-lived grants.
 
     Authenticated by the per-session refresh token delivered in the warmup
     payload (constant-time compare) — the container has no Cognito identity.
-    Deliberately NOT behind get_current_user."""
+    Deliberately NOT behind get_current_user.
+
+    Renews both the workspace S3 credentials and, for a gateway-routed session,
+    the model-gateway token. One call for both: the container already polls this
+    on the credential-expiry cadence and the two grants share a lifetime, so
+    this needs no second endpoint and no second refresh secret."""
+    runtime_session_id = str(body.get("runtime_session_id", ""))
     creds = workspace_credentials_service.refresh(
-        str(body.get("runtime_session_id", "")), str(body.get("token", ""))
+        runtime_session_id, str(body.get("token", ""))
     )
     if not creds:
         raise HTTPException(status_code=401, detail="Invalid session or token")
-    return {"workspace_credentials": creds}
+    resp: dict = {"workspace_credentials": creds}
+    llm = llm_credentials_service.rotate(runtime_session_id)
+    if llm:
+        resp["llm_credentials"] = llm
+    return resp
 
 
 @router.post("", response_model=SessionResponse)
@@ -136,6 +147,28 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
             spec = model_config_service.resolve(
                 item.get("model_backend", ""), item.get("model", "")
             )
+            if spec and spec.get("backend") == "gateway":
+                # The gateway key stays in llm-edge. The kernel gets an
+                # endpoint plus a session-scoped token, and the routing fields
+                # are stripped from what the container sees: the edge re-reads
+                # them from the grant, so a container has nothing to forge.
+                creds = llm_credentials_service.mint(
+                    item["runtime_session_id"], user, spec
+                )
+                if not creds:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "gateway model routing is unavailable: the llm-edge "
+                            "service is not deployed (set enable_llm_edge)"
+                        ),
+                    )
+                config["llm_credentials"] = creds
+                spec = {
+                    k: v
+                    for k, v in spec.items()
+                    if k not in ("base_url", "secret_name")
+                }
             if spec:
                 config["model"] = spec
         except ValueError as e:
@@ -175,6 +208,10 @@ def stop_session(session_id: str, user: str = Depends(get_current_user)):
     if not item:
         raise HTTPException(status_code=404, detail="Session not found")
     session_service.set_status(user, session_id, "dormant")
+    # The next connect mints a fresh grant, so drop this one now: a token
+    # scraped out of the container stops working when the session does rather
+    # than lingering until its hour is up.
+    llm_credentials_service.revoke(item["runtime_session_id"])
     item["status"] = "dormant"
     return _to_response(item)
 
@@ -185,6 +222,7 @@ def delete_session(session_id: str, user: str = Depends(get_current_user)):
     if not item:
         raise HTTPException(status_code=404, detail="Session not found")
     session_service.set_status(user, session_id, "terminated")
+    llm_credentials_service.revoke(item["runtime_session_id"])
     audit_service.record(user, "session.delete", f"session:{item.get('name', session_id)}")
     return {"ok": True}
 

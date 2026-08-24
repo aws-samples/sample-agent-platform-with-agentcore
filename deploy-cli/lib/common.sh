@@ -50,6 +50,10 @@ LLM_SECRET="agent-platform${SUFFIX}/llm-gateway-key"
 ENTRY_SECRET="agent-platform${SUFFIX}/service-entry"
 
 KERNEL_REPOS=(claude-code-kernel agent-sdk-kernel mcp-tools-kernel backend)
+# Kept out of KERNEL_REPOS deliberately: the kernel execution roles are granted
+# ECR pull on every repo in that list, and nothing in a session container should
+# be able to pull the image of the service that holds the gateway key.
+SERVICE_REPOS=(llm-edge)
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
 # Model ids the runtimes bake in (mirrors terraform.tfvars).

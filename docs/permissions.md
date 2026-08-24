@@ -74,7 +74,7 @@ tools role (#3) carries **only** the first three rows:
 | `EcrAuth` | `ecr:GetAuthorizationToken` | `*` | Token endpoint is not resource-scopable (AWS API constraint). See [§4](#4-wildcard-resource-statements). |
 | `Logs` | `logs:CreateLogGroup`, `CreateLogStream`, `PutLogEvents`, `DescribeLogGroups`, `DescribeLogStreams` | `arn:aws:logs:{region}:{account}:log-group:/aws/bedrock-agentcore/*` | Kernel + AgentCore runtime logs. Scoped to the AgentCore log-group prefix. |
 | `Skills` / `SkillsList` | `s3:GetObject`; `s3:ListBucket` conditioned on `s3:prefix` | `skills/*` in the workspace bucket only | Mount skill packages before the agent starts. Read-only. |
-| *(LLM gateway secret, `grant_read`)* | `secretsmanager:GetSecretValue`, `DescribeSecret` | `agent-platform/llm-gateway-key-*` only | Read the gateway API key at container start (never baked into the image). |
+| *(no LLM gateway secret grant)* | — | — | Deliberately absent. A kernel role is reachable from inside the session it serves (root shell in the Dev Workbench microVM; agent tools in the headless kernel's CLI subprocess), so a kernel that can read the gateway key is a kernel whose users have it. Only `agent-platform-llm-edge` holds that read; kernels reach the gateway through it with a per-session grant. |
 | `InvokeMcpRuntimes` | `bedrock-agentcore:InvokeAgentRuntime` | `runtime/mcp_tools_kernel-*` and its `runtime-endpoint/*` only | Kernels reach the AgentCore-hosted MCP server through `mcp-proxy-for-aws`, which SigV4-signs with this role. Scoped to the MCP runtime name — **not** all runtimes. |
 | `InvokeGateways` | `bedrock-agentcore:InvokeGateway` | `gateway/*` in this account, in both the platform's region and `us-east-1` | Kernels reach registry entries of kind `agentcore-gateway` (SigV4 through `mcp-proxy-for-aws`) — the feed pipelines' managed Web Search connector is one. Gateway IDs are generated at deploy time, so this is scoped by account+region rather than to a single gateway; `us-east-1` is listed explicitly because the Web Search connector is offered only there. |
 | `BuiltinTools` | `bedrock-agentcore:StartCodeInterpreterSession`, `InvokeCodeInterpreter`, `StopCodeInterpreterSession`, `GetCodeInterpreterSession`, `StartBrowserSession`, `StopBrowserSession`, `GetBrowserSession`, `UpdateBrowserStream`, `ConnectBrowserAutomationStream`, `ConnectBrowserLiveViewStream` | `code-interpreter/aws.codeinterpreter.v1`, `browser/aws.browser.v1` (AWS-managed), plus `{account}:code-interpreter/*` and `{account}:browser/*` (custom variants) | Code Interpreter and Browser built-in tools run in AWS-managed sandboxes under this role — no separate tool runtime to deploy. |
@@ -366,7 +366,7 @@ review:
 |---|---|---|
 | Workspace S3 bucket | Session files, Claude Code conversation history, skill packages, pipeline feed artifacts | `BLOCK_ALL` public access, S3-managed encryption, `enforce_ssl=True`, `RETAIN` on stack delete (so session data is not lost accidentally). Access only via the two roles above. |
 | DynamoDB `agent-platform` | Session/agent/schedule/channel/eval/ledger/policy/audit records | Encrypted at rest (AWS-owned key by default; switch to a CMK if required). PAY_PER_REQUEST. |
-| Secrets Manager (`agent-platform/*`) | LLM gateway key, optional remote-MCP key, portal-admin password | Encrypted; read only by the specifically-scoped roles. Never baked into images — read at container/Lambda start. |
+| Secrets Manager (`agent-platform/*`) | LLM gateway key, optional remote-MCP key, portal-admin password | Encrypted; read only by the specifically-scoped roles. Never baked into images. The gateway key is readable only by the `llm-edge` task role and never enters a kernel container. |
 | CloudWatch Logs | Kernel, backend, and Lambda logs | Prefix-scoped grants; one-week retention on the platform's own groups. |
 
 Network boundary:
@@ -440,7 +440,7 @@ Lessons from deploying into zero-trust enterprise VPCs:
    | Runtime SG (all kernels) | `ecr.api`, `ecr.dkr` | Image auth + manifest at session start |
    | | **S3 via prefix list** — the regional ECR layer bucket (`prod-<region>-starport-layer-bucket`) and the workspace bucket | **Image layers live in S3, not in ECR** — the two ECR endpoints alone are not enough. Workspace restore/sync uses the same path |
    | | `logs` | Container stdout → `/aws/bedrock-agentcore/runtimes/*` — your only window into `start.sh` |
-   | | `bedrock-runtime` (Bedrock mode) **or** the LLM gateway host + `secretsmanager` (gateway mode) | Model calls; the gateway key is read at container start |
+   | | `bedrock-runtime` (Bedrock mode) **or** the internal `llm-edge` listener (gateway mode) | Model calls. In gateway mode a kernel never reaches the gateway host itself and needs no `secretsmanager` access: the key lives in `llm-edge`, which is what egresses to the gateway |
    | | `bedrock-agentcore` | MCP tools runtime (SigV4 proxy) and built-in tool sessions |
    | | The portal domain (CloudFront) | The interactive kernel refreshes its per-session workspace credentials through the backend API |
    | Backend SG (ECS task) | `dynamodb` + `s3` (prefix lists), `sts`, `bedrock-agentcore`, `bedrock-agentcore-control`, `logs` | Control plane, workspace-credential minting, and the warmup invoke |

@@ -13,9 +13,10 @@
  * auto-starts Claude Code — disconnects detach instead of killing the process.
  */
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const url = require("url");
-const { spawn, execFile, execFileSync } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const WebSocket = require("ws");
 
 const PORT = 8080;
@@ -92,11 +93,153 @@ async function refreshWorkspaceCredentials() {
     }
     const body = await resp.json();
     if (body.workspace_credentials) saveWorkspaceCredentials(body.workspace_credentials);
+    // The same call renews the model-gateway grant for a gateway-routed
+    // session; a Bedrock-direct session simply gets no llm_credentials back.
+    if (body.llm_credentials) setLlmGrant(body.llm_credentials);
   } catch (e) {
     console.log(`[creds] refresh error: ${e.message}`);
   }
 }
 setInterval(refreshWorkspaceCredentials, 5 * 60_000);
+
+// ---------------------------------------------------------------------------
+// Model access: the loopback shim.
+//
+// The session's user is root in this microVM, so anything placed in the
+// container is theirs: environment, files, process memory, and the execution
+// role's credentials. The LLM gateway key therefore never arrives here. It
+// lives in llm-edge, an internal service, and this container gets only a
+// short-lived token scoped to this session's model allowance.
+//
+// Claude Code speaks plain HTTP to ANTHROPIC_BASE_URL, so the token has to be
+// attached by something. Doing it here rather than through
+// ANTHROPIC_AUTH_TOKEN is the whole point: the grant stays in this process's
+// memory and never lands in an environment variable or a file, so `env` and a
+// grep over /tmp both come up empty.
+//
+// What a determined tenant can still do is call this port directly. That is
+// intended — it is their own session's allowance, capped and attributed to
+// them — and it is bounded: the token expires within the hour, the edge
+// listener has no route from outside the VPC, and the edge re-checks which
+// models this session may use on every call.
+// ---------------------------------------------------------------------------
+const LLM_SHIM_PORT = 8787;
+
+// {endpoint, token, expires_at} — set from the warmup payload and rotated by
+// the same refresh call that renews workspace credentials.
+let llmGrant = null;
+
+function setLlmGrant(grant) {
+  if (!grant || !grant.endpoint || !grant.token) return;
+  llmGrant = grant;
+  console.log(
+    `[model] gateway grant active via ${grant.endpoint}` +
+      (grant.expires_at ? ` (expires ${new Date(grant.expires_at * 1000).toISOString()})` : ""),
+  );
+}
+
+// Hop-by-hop headers, plus the client's own auth: Claude Code sends the
+// placeholder "unused", which must not reach the edge.
+const SHIM_DROP_HEADERS = new Set([
+  "authorization",
+  "x-api-key",
+  "host",
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "upgrade",
+  "proxy-authorization",
+  // gzip would force a compressor to buffer the stream; ask for identity so
+  // every SSE frame reaches Claude Code as it is produced.
+  "accept-encoding",
+]);
+
+function startLlmShim() {
+  const server = http.createServer((req, res) => {
+    if (!llmGrant) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "unavailable",
+            message:
+              "no model grant for this session yet — the platform delivers one at warmup",
+          },
+        }),
+      );
+      return;
+    }
+
+    let target;
+    try {
+      target = new URL(llmGrant.endpoint.replace(/\/+$/, "") + req.url);
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end(`bad edge endpoint: ${e.message}`);
+      return;
+    }
+
+    const headers = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (!SHIM_DROP_HEADERS.has(k.toLowerCase())) headers[k] = v;
+    }
+    headers["authorization"] = `Bearer ${llmGrant.token}`;
+    // The grant names the session it was issued for; fall back to the ID
+    // AgentCore injected in case an older backend omits it.
+    headers["x-platform-session-id"] = llmGrant.session_id || runtimeSessionId || "";
+    headers["accept-encoding"] = "identity";
+
+    const client = target.protocol === "https:" ? https : http;
+    const upstream = client.request(
+      target,
+      { method: req.method, headers, timeout: 15 * 60_000 },
+      (up) => {
+        const out = {};
+        for (const [k, v] of Object.entries(up.headers)) {
+          if (!["connection", "keep-alive", "transfer-encoding"].includes(k.toLowerCase())) {
+            out[k] = v;
+          }
+        }
+        res.writeHead(up.statusCode || 502, out);
+        // Straight pipe: nothing here may buffer, or token-by-token output
+        // would arrive as one blob at the end of the response.
+        up.pipe(res);
+      },
+    );
+
+    upstream.on("timeout", () => upstream.destroy(new Error("edge timeout")));
+    upstream.on("error", (e) => {
+      console.log(`[model] edge request failed: ${e.message}`);
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            type: "error",
+            error: { type: "upstream_error", message: e.message },
+          }),
+        );
+      } else {
+        res.destroy();
+      }
+    });
+
+    // The request body is streamed through unread — the shim has no reason to
+    // inspect it, and the edge is what authorizes the requested model.
+    req.pipe(upstream);
+  });
+
+  server.requestTimeout = 0;
+  server.timeout = 0;
+  server.headersTimeout = 65_000;
+  // Loopback only. Nothing outside this microVM should be able to spend the
+  // session's allowance.
+  server.listen(LLM_SHIM_PORT, "127.0.0.1", () =>
+    console.log(`[model] loopback shim listening on 127.0.0.1:${LLM_SHIM_PORT}`),
+  );
+}
+
+startLlmShim();
 
 // ---------------------------------------------------------------------------
 // Per-session model routing.
@@ -140,25 +283,15 @@ function applyModelSpec(spec) {
       lines.push(`export ANTHROPIC_SMALL_FAST_MODEL=${shq(spec.small_fast_model)}`);
     // keep the container's baked-in (Bedrock) alias steering
   } else if (backend === "gateway") {
-    if (!spec.base_url) throw new Error("gateway spec missing base_url");
-    const secretName = String(spec.secret_name || "agent-platform/llm-gateway-key");
-    const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
-    // execFileSync (no shell); uses the container's default credential chain —
-    // the execution role holds the read grant for the gateway-key secret.
-    const raw = execFileSync(
-      "aws",
-      ["secretsmanager", "get-secret-value", "--secret-id", secretName,
-       "--region", region, "--query", "SecretString", "--output", "text"],
-      { timeout: 15_000 },
-    ).toString().trim();
-    let key = raw;
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.api_key) key = parsed.api_key;
-    } catch { /* raw string secret */ }
+    // No credential is written here, and the upstream gateway's address is not
+    // even known to this container: the spec arrives with base_url and
+    // secret_name stripped. Claude Code is pointed at the loopback shim, which
+    // attaches this session's grant on the way out. Where a tenant used to
+    // find the platform-wide gateway key in the environment, they now find the
+    // literal string "unused".
     lines.push("unset CLAUDE_CODE_USE_BEDROCK");
-    lines.push(`export ANTHROPIC_BASE_URL=${shq(spec.base_url)}`);
-    lines.push(`export ANTHROPIC_AUTH_TOKEN=${shq(key)}`);
+    lines.push(`export ANTHROPIC_BASE_URL=http://127.0.0.1:${LLM_SHIM_PORT}`);
+    lines.push("export ANTHROPIC_AUTH_TOKEN=unused");
     if (spec.model) lines.push(`export ANTHROPIC_MODEL=${shq(spec.model)}`);
     // a baked-in Bedrock haiku ID must not leak into gateway calls
     lines.push(
@@ -387,6 +520,11 @@ function handleHttp(req, res) {
           // restore, which otherwise waits for the credentials file.
           fs.writeFileSync(WS_CREDS_NONE, "1");
         }
+        // Must land before the model spec is applied: applyModelSpec points
+        // Claude Code at the loopback shim, and the shim needs the grant to be
+        // in place before the first shell spawns. Warmup always completes
+        // before the backend mints the WSS URL, so it is.
+        if (cfg.llm_credentials) setLlmGrant(cfg.llm_credentials);
         if (cfg.model) {
           try {
             applyModelSpec(cfg.model);

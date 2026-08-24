@@ -110,7 +110,7 @@ save TABLE "$TABLE"
 log "table ready (PITR + SSE)"
 
 # ------------------------------------------------------------------ ecr
-for r in "${KERNEL_REPOS[@]}"; do
+for r in "${KERNEL_REPOS[@]}" "${SERVICE_REPOS[@]}"; do
   repo="agent-platform${SUFFIX}/${r}"
   if aws ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1; then
     log "ecr exists $repo"
