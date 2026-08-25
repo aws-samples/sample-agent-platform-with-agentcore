@@ -16,12 +16,17 @@ It shows how a platform team can offer two hosting models behind one portal:
 Both kernels route model traffic through a configurable **LLM gateway**
 (e.g. LiteLLM) with a **fixed egress IP** (VPC mode + NAT Gateway), so the
 platform works in enterprises that enforce model allow-lists, budgets and
-source-IP restrictions. Direct Bedrock access (cross-region inference) is
-supported as an alternative.
+source-IP restrictions. The gateway key lives in a platform-side service and
+**never enters a session container** — a session's user is root in its own
+microVM, so a kernel gets a short-lived, per-session grant rather than a
+credential. Direct Bedrock access (cross-region inference) is supported as an
+alternative.
 
 ![portal overview](docs/images/portal-overview.png)
 
-![architecture](docs/images/architecture.svg)
+<!-- ?v= bumps the URL so GitHub's image cache serves the current diagram
+     instead of a stale copy at the same path. Bump it whenever the SVG changes. -->
+![architecture](docs/images/architecture.svg?v=2)
 
 ## What's inside
 
