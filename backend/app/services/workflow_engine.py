@@ -96,7 +96,8 @@ class WorkflowEngine:
             run_workflow=None, timeout_s: int | None = None) -> dict:
         """Execute one script to completion (blocking; call from a thread).
 
-        ``call_agent(prompt, opts, phase, parent_span)`` is the injected bridge
+        ``call_agent(prompt, opts, phase, parent_span)`` returns
+        ``(value, error)`` and is the injected bridge
         to the governed invocation pipeline. ``run_workflow(name, args)``,
         when provided, serves the script's ``workflow()`` calls (one level of
         nesting — pipeline_service passes it for top-level runs only).
@@ -142,6 +143,15 @@ class WorkflowEngine:
                     # hour of guessing.
                     logger.warning("workflow reply dropped, script is gone: msg %s", msg_id)
 
+        log_lock = threading.Lock()
+
+        def add_log(text: str) -> None:
+            # called from both the reader loop (script log()) and the worker
+            # pool (agent failures), so the cap check needs the lock
+            with log_lock:
+                if len(logs) < LOG_CAP:
+                    logs.append(str(text)[:500])
+
         def touch_phase(now: float) -> dict | None:
             entry = phases.get(state["phase"])
             if entry:
@@ -152,12 +162,24 @@ class WorkflowEngine:
             t = msg.get("type")
             if t == "agent":
                 entry = phases.get(state["phase"])
-                value = call_agent(
-                    msg.get("prompt", ""), msg.get("opts") or {},
+                opts = msg.get("opts") or {}
+                value, err = call_agent(
+                    msg.get("prompt", ""), opts,
                     phase=state["phase"], parent_span=entry["id"] if entry else None,
                 )
                 touch_phase(time.time())
-                reply(msg["id"], value)
+                # Every failure states its own reason in the run log, next to
+                # the script's own lines. Before this the reason lived only in
+                # the run's agents[] array while the script logged whatever it
+                # assumed had happened: a gateway slowdown once had every one of
+                # seventeen read-timeout victims logging "no valid JSON", and
+                # finding the truth meant querying DynamoDB by hand.
+                if err:
+                    label = str(opts.get("label") or msg.get("prompt", "")[:30]).replace("\n", " ")
+                    add_log(f"agent failed · {label[:60]} · {state['phase'] or '-'}: {err}")
+                # wrapped so the shim can hand the script both, while keeping
+                # agent() itself returning value-or-null as the contract says
+                reply(msg["id"], {"__agent_reply": True, "value": value, "error": err or ""})
             elif t == "s3read":
                 reply(msg["id"], self._s3read(msg.get("key", "")))
             elif t == "s3write":
@@ -214,8 +236,7 @@ class WorkflowEngine:
                             phases[title] = {"id": TraceBuilder.new_id(), "start": time.time(), "end": None}
                         on_phase(title)
                     elif t == "log":
-                        if len(logs) < LOG_CAP:
-                            logs.append(str(msg.get("msg", ""))[:500])
+                        add_log(msg.get("msg", ""))
                     elif t == "done":
                         state["result"], state["done"] = msg.get("result"), True
                     elif t == "fatal":

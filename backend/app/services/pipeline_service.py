@@ -356,8 +356,16 @@ class PipelineService:
     def _call_agent(self, sk: str, prompt: str, opts: dict, *, user: str, ref: str,
                     phase: str, tb, parent_span: str | None):
         """The agent() bridge: one governed invocation + a per-agent run record
-        + a trace span. Returns text, a parsed object (when a schema is given),
-        or None on failure — matching the Workflow tool's agent() contract."""
+        + a trace span.
+
+        Returns ``(value, error)``. ``value`` is text, a parsed object (when a
+        schema is given), or None on failure — matching the Workflow tool's
+        agent() contract, which the shim still honours for ``agent()``.
+        ``error`` is the precise reason ('' when ok) and exists because scripts
+        used to be unable to tell a model flake from a read timeout: both
+        surfaced as None, so retry logic had to guess from elapsed time.
+        2026-08-19 that guess re-sent 16 read-timeout calls in a fan-out phase
+        as if they were flake, and the amplification killed the run."""
         from app.services.agent_service import agent_service
         from app.services.governance_service import QuotaExceeded, SourceDisabled
         from app.services.invocation_service import invoke, invoke_async_and_wait
@@ -408,7 +416,7 @@ class PipelineService:
                                      "error": entry.get("error")},
                         error=not entry["ok"],
                     )
-                return value
+                return value, entry.get("error", "")
 
             eff_prompt = prompt
             if schema and target == "agent-sdk":
@@ -460,7 +468,7 @@ class PipelineService:
                 },
                 error=not entry["ok"],
             )
-        return value
+        return value, entry.get("error", "")
 
 
 pipeline_service = PipelineService()
