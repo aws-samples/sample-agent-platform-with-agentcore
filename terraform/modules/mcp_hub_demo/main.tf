@@ -128,6 +128,13 @@ resource "aws_instance" "hub" {
   tags = {
     Name = "agent-platform-mcp-hub${var.name_suffix}"
   }
+
+  lifecycle {
+    # Account-level patch-management automation (SSM Quick Setup and the
+    # like) tags instances after launch; without this, every plan tries to
+    # strip its tag and the zero-change baseline flaps forever.
+    ignore_changes = [tags["Patch Group"], tags_all["Patch Group"]]
+  }
 }
 
 # ------------------------- demo application host ----------------------------
@@ -211,5 +218,10 @@ resource "aws_instance" "app" {
 
   tags = {
     Name = "agent-platform-demo-app${var.name_suffix}"
+  }
+
+  lifecycle {
+    # same as the hub instance: external patch-management tagging
+    ignore_changes = [tags["Patch Group"], tags_all["Patch Group"]]
   }
 }
