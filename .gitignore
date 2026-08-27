@@ -47,3 +47,10 @@ cdk.context.json
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Your own deployment's operational state — agent instructions pinned to your
+# environment, editor settings, archived stack templates. Keep it in a repo of
+# your own rather than in the sample.
+CLAUDE.md
+.kiro/
+.cfn-archive/
