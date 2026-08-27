@@ -71,8 +71,8 @@ rebuild.
 ### Add an integration *kind* — a known multi-file change
 
 The registry classifies each MCP entry by `kind` (`agentcore-runtime` |
-`agentcore-gateway` | `url` | `builtin`). Introducing a **new kind** (say, a
-different transport) is deliberate
+`agentcore-gateway` | `url` | `mcp-hub` | `builtin`). Introducing a **new
+kind** (say, a different transport) is deliberate
 shotgun surgery across the resolve → dispatch path, so it is worth listing the
 exact touch points:
 

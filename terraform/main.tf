@@ -103,6 +103,7 @@ module "portal" {
   cf_log_destination_arn    = module.platform.cf_log_destination_arn
   backend_image_tag         = coalesce(var.backend_image_tag, var.image_tag)
   backend_desired_count     = var.backend_desired_count
+  entry_desired_count       = var.entry_desired_count
   interactive_runtime_arn   = module.runtime[0].interactive_runtime_arn
   sdk_runtime_arn           = module.runtime[0].sdk_runtime_arn
   mcp_tools_runtime_arn     = module.runtime[0].mcp_tools_runtime_arn
@@ -128,6 +129,24 @@ module "team_auth" {
   log_bucket             = module.platform.log_bucket
   cf_log_destination_arn = module.platform.cf_log_destination_arn
   name_suffix            = var.name_suffix
+}
+
+# Optional: a customer-owned MCP hub as the tool backend (in place of
+# AgentCore Gateway) plus an EC2 playing the calling application. Verifies
+# tokens against the team_auth Keycloak, so that module is a prerequisite.
+module "mcp_hub_demo" {
+  source = "./modules/mcp_hub_demo"
+  count  = var.enable_mcp_hub_demo && var.enable_portal && var.enable_team_auth && var.enable_runtime ? 1 : 0
+
+  vpc_id                    = module.network.vpc_id
+  private_subnet_ids        = module.network.private_subnet_ids
+  runtime_sg_id             = module.network.runtime_sg_id
+  workspace_bucket          = module.platform.workspace_bucket
+  hub_source_s3_key         = var.mcp_hub_source_s3_key
+  keycloak_issuer_url       = module.team_auth[0].issuer_url
+  service_api_url           = module.portal[0].service_entry_api_url
+  service_api_execution_arn = module.portal[0].service_entry_api_execution_arn
+  name_suffix               = var.name_suffix
 }
 
 module "team_demo" {

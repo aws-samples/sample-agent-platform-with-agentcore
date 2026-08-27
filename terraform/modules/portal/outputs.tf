@@ -37,3 +37,7 @@ output "service_entry_api_url" {
 output "service_entry_api_id" {
   value = aws_api_gateway_rest_api.service_entry.id
 }
+
+output "service_entry_api_execution_arn" {
+  value = aws_api_gateway_rest_api.service_entry.execution_arn
+}

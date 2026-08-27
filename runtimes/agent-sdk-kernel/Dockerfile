@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir -r /opt/requirements.txt
 COPY src/ /app/
 # Same install path as the interactive kernel so registry entries with
 # kind=builtin resolve identically in both hosting models.
-RUN mkdir -p /opt/platform && cp /app/builtin_tools_mcp.py /opt/platform/
+RUN mkdir -p /opt/platform \
+    && cp /app/builtin_tools_mcp.py /app/mcp_hub_proxy.py /app/mcphub_hmac.py /opt/platform/
 WORKDIR /app
 
 EXPOSE 8080

@@ -87,7 +87,7 @@ class EcosystemService:
             "SK": f"MCP#{uuid.uuid4().hex[:12]}",
             "name": name,
             "description": description,
-            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | builtin
+            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | mcp-hub | builtin
             "target": target,  # runtime ARN | gateway MCP URL | http(s) URL
             # optional request headers for ``url`` servers. Values may contain
             # {{secret:name}} (resolved in the kernel) or {{user_token}}
@@ -151,6 +151,11 @@ class EcosystemService:
         )
 
     def create_mcp_server(self, name, description, kind, target, headers=None) -> dict:
+        if kind == "mcp-hub" and not headers:
+            # the hub resolves the acting user from this header; default the
+            # standard identity-forwarding placeholder so a console-registered
+            # hub works without hand-writing header JSON
+            headers = {"X-MCPHUB-SSO-TOKEN": "{{user_token}}"}
         return self._to_public(
             self._put_mcp(name, description, kind, target, headers=headers)
         )
@@ -176,6 +181,20 @@ class EcosystemService:
         self._ensure_seeded()
         mcp = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("MCP#")}
         skills = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("SKILL#")}
+        hub_names = [
+            mcp[i]["name"]
+            for i in mcp_server_ids
+            if i in mcp and mcp[i].get("kind") == "mcp-hub"
+        ]
+        if hub_names:
+            # an mcp-hub server signs its requests as a *published agent*
+            # (per-agent HMAC credentials); a session or raw-kernel call has
+            # no Actor identity to sign with
+            raise ValueError(
+                f"MCP hub server(s) {', '.join(hub_names)} authenticate as a "
+                "published agent — attach them to an agent and invoke that "
+                "agent instead"
+            )
         return {
             "mcp_servers": [
                 {

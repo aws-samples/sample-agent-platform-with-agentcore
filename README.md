@@ -94,7 +94,10 @@ See [docs/architecture.md](docs/architecture.md) for the full design, including
 how the browser ⇄ AgentCore WebSocket terminal works — and
 [docs/user-guide.md](docs/user-guide.md) for how to *use* the platform, page
 by page (sessions, publishing agents, channels, memory, evals, quotas, and
-calling the API from code).
+calling the API from code). Running your own MCP hub as the tool backend in
+place of AgentCore Gateway — with a dedicated data plane for published agents
+and HMAC-authenticated application access — is covered in
+[docs/mcp-hub-integration.md](docs/mcp-hub-integration.md).
 
 ## Prerequisites
 

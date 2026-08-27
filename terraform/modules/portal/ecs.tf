@@ -167,6 +167,23 @@ data "aws_iam_policy_document" "task" {
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [aws_secretsmanager_secret.service_entry.arn]
   }
+
+  # Per-agent MCP hub HMAC credentials: publishing an agent with an mcp-hub
+  # attachment mints its Actor key pair here; deleting the agent retires it.
+  # The secret VALUE is only ever read to return the (non-secret) access key —
+  # invocation payloads carry the secret name and the runtime role does the
+  # data-path read.
+  statement {
+    sid = "McpHubCredentialMint"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/mcp-hub${var.name_suffix}/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "task" {
@@ -240,6 +257,7 @@ locals {
       PLATFORM_SERVICE_ENTRY_SECRET_NAME = aws_secretsmanager_secret.service_entry.name
       PLATFORM_SERVICE_API_URL           = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
       PLATFORM_SERVICE_API_ARN_BASE      = "arn:aws:execute-api:${local.region}:${local.account}:${aws_api_gateway_rest_api.service_entry.id}/svc"
+      PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
     },
     var.oidc_issuer != "" ? {
       PLATFORM_OIDC_ISSUER    = var.oidc_issuer
@@ -484,16 +502,82 @@ resource "aws_ecs_service" "backend" {
     container_port   = 8000
   }
 
+  depends_on = [
+    aws_lb_listener.http,
+    # the backend target group is only attached to the LB via this rule now
+    aws_lb_listener_rule.origin_verify,
+  ]
+}
+
+# --------------------------- data-plane service -----------------------------
+# The same backend image in ENTRY_ONLY mode: only the IAM service entry
+# (submit/poll for published agents) is mounted. This is the service the
+# private service-entry API lands on, so production agent traffic never
+# traverses the management console's deployment — the console can be locked
+# down (or stopped outright) without touching the serving path, and a console
+# exposure never fronts data-plane traffic.
+
+resource "aws_ecs_task_definition" "entry" {
+  family                   = "agent-platform-entry${var.name_suffix}"
+  cpu                      = "512"
+  memory                   = "1024"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  task_role_arn            = aws_iam_role.task.arn
+  execution_role_arn       = aws_iam_role.execution.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "backend"
+      image     = "${var.kernel_repos["backend"].url}:${var.backend_image_tag}"
+      essential = true
+      portMappings = [
+        { containerPort = 8000, protocol = "tcp" }
+      ]
+      environment = [
+        for k in sort(keys(merge(local.backend_env, { PLATFORM_ENTRY_ONLY = "1" }))) :
+        { name = k, value = merge(local.backend_env, { PLATFORM_ENTRY_ONLY = "1" })[k] }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.backend.name
+          awslogs-region        = local.region
+          awslogs-stream-prefix = "entry"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_ecs_service" "entry" {
+  name            = "agent-platform-entry${var.name_suffix}"
+  cluster         = aws_ecs_cluster.portal.id
+  task_definition = aws_ecs_task_definition.entry.arn
+  desired_count   = var.entry_desired_count
+  launch_type     = "FARGATE"
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  network_configuration {
+    subnets          = var.private_subnet_ids
+    security_groups  = [aws_security_group.service.id]
+    assign_public_ip = false
+  }
+
   load_balancer {
     target_group_arn = aws_lb_target_group.service_entry.arn
     container_name   = "backend"
     container_port   = 8000
   }
 
-  depends_on = [
-    aws_lb_listener.http,
-    # the backend target group is only attached to the LB via this rule now
-    aws_lb_listener_rule.origin_verify,
-    aws_lb_listener.service_entry,
-  ]
+  depends_on = [aws_lb_listener.service_entry]
 }
