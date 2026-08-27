@@ -32,6 +32,11 @@ variable "team_auth_image_tag" {
   type = string
 }
 
+# Resolved by the root module, which falls back to team_auth_image_tag.
+variable "keycloak_image_tag" {
+  type = string
+}
+
 variable "name_suffix" {
   type    = string
   default = ""

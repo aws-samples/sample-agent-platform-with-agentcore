@@ -119,11 +119,12 @@ module "team_auth" {
   source = "./modules/team_auth"
   count  = var.enable_team_auth ? 1 : 0
 
-  vpc_id              = module.network.vpc_id
-  public_subnet_ids   = module.network.public_subnet_ids
-  private_subnet_ids  = module.network.private_subnet_ids
+  vpc_id                 = module.network.vpc_id
+  public_subnet_ids      = module.network.public_subnet_ids
+  private_subnet_ids     = module.network.private_subnet_ids
   team_auth_repos        = module.platform.team_auth_repos
   team_auth_image_tag    = coalesce(var.team_auth_image_tag, var.image_tag)
+  keycloak_image_tag     = coalesce(var.keycloak_image_tag, var.team_auth_image_tag, var.image_tag)
   log_bucket             = module.platform.log_bucket
   cf_log_destination_arn = module.platform.cf_log_destination_arn
   name_suffix            = var.name_suffix

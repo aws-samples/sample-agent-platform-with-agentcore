@@ -38,6 +38,7 @@ image_tag = "latest"
 # mcp_tools_image_tag   = ""
 # backend_image_tag     = ""
 # team_auth_image_tag   = ""
+# keycloak_image_tag    = ""   # defaults to team_auth_image_tag; set to move Keycloak alone
 # team_demo_image_tag   = ""
 
 # --- portal auth ------------------------------------------------------------

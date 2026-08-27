@@ -1,9 +1,10 @@
 # Port of TeamAuthStack: the external IdP (Keycloak) and three team-scoped
 # backend APIs, all behind one ALB + CloudFront.
 #
-# Test-grade by design: Keycloak runs in dev mode with an in-memory H2
-# database (realm structure re-imports from the image at boot; user passwords
-# are re-seeded by scripts/seed_team_idp.py after any task restart).
+# Keycloak runs in production mode against RDS PostgreSQL (rds.tf), so realm
+# state, seeded credentials and user sessions all survive a task replacement.
+# scripts/seed_team_idp.py is a one-time bootstrap now, not a post-restart
+# repair step.
 #
 # The AgentCore Gateway + targets are created by scripts/deploy_team_gateway.py
 # and the JWT-inbound demo runtime lives in the team_demo module — both need

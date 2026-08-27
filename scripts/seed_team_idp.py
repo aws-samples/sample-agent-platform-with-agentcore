@@ -20,20 +20,29 @@ passwords are deliberately NOT in the image or the repo. This script:
   5. sanity-checks a password-grant login for each user and prints the
      ``team`` claim from the issued access token.
 
-Keycloak dev mode uses an in-memory database, so re-run this script after any
-Keycloak task restart.
+Since 2026-08-19 Keycloak runs in production mode on RDS PostgreSQL, so this is
+a one-time bootstrap after the first deploy rather than a repair step after
+every task restart. It stays idempotent: re-running it re-applies the stored
+values instead of generating new ones.
 
 Usage:
     python3 scripts/seed_team_idp.py [--base-url https://dxxxx.cloudfront.net]
 
-Without --base-url the script reads the TeamAuthUrl output of the
-AgentPlatformTeamAuth CloudFormation stack.
+Without --base-url / --portal-url the script reads the `team_auth_url` and
+`portal_url` outputs of the Terraform state in terraform/. It used to read the
+AgentPlatformTeamAuth / AgentPlatformPortal CloudFormation stacks, which were
+deleted in the 2026-08-10 Terraform migration — the portal lookup then failed
+into a warning and skipped registering the redirect URI, which is the step a
+broken login most needs. Both lookups are fatal now; pass
+--skip-portal-redirect to deliberately seed before the portal exists.
 """
 
 import argparse
 import base64
 import json
+import os
 import secrets
+import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import time
 import urllib.parse
@@ -41,22 +50,37 @@ import urllib.request
 
 import boto3
 
+TERRAFORM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "terraform")
+
 REALM = "agent-platform"
 CLIENT_ID = "portal-web"
 DELEGATE_CLIENT = "gateway-delegate"
 ROBOT_CLIENT = "robot-order-service"
 ROBOT_TEAM_GROUP = "team-a"
-USERS = ["alice", "bob", "carol", "admin"]
+USERS = ["alice", "bob", "carol", "admin", "jim"]
 ADMIN_USER = "admin"
 ADMIN_GROUP = "platform-admin"
 # desired group membership per user — enforced on every run so a Keycloak
 # instance booted from an older realm image converges to the current model
-# (admin is the only administrator; alice/bob/carol are regular developers)
+# (admin and jim are the administrators; alice/bob/carol are regular developers)
 USER_GROUPS = {
     "alice": ["team-a"],
     "bob": ["team-b"],
     "carol": ["team-c"],
     "admin": [ADMIN_GROUP],
+    "jim": [ADMIN_GROUP],
+}
+# Enough to create an account the realm import did not bring. The import runs
+# with Keycloak's default IGNORE_EXISTING strategy, so against the persistent
+# database a new entry in realm-agent-platform.json never reaches an existing
+# realm — it has to be created through the admin API, here. The realm file
+# still carries these users so a fresh deployment gets them on first boot.
+USER_PROFILES = {
+    "alice": {"firstName": "Alice", "lastName": "TeamA", "email": "alice@example.com"},
+    "bob": {"firstName": "Bob", "lastName": "TeamB", "email": "bob@example.com"},
+    "carol": {"firstName": "Carol", "lastName": "TeamC", "email": "carol@example.com"},
+    "admin": {"firstName": "Platform", "lastName": "Admin", "email": "admin@example.com"},
+    "jim": {"firstName": "Jim", "lastName": "Admin", "email": "jim@example.com"},
 }
 ADMIN_SECRET = "agent-platform/keycloak-admin"  # nosec B105 - secret names
 USERS_SECRET = "agent-platform/team-demo-users"  # nosec B105
@@ -86,6 +110,31 @@ def _api(url: str, token: str, method: str = "GET", payload: dict | None = None)
         return json.loads(raw) if raw else None
 
 
+def _terraform_output(name: str, tf_dir: str) -> str | None:
+    """Read one Terraform output, or None if it cannot be read.
+
+    Callers decide whether a miss is fatal — it is for both of this script's
+    lookups, but the reason differs (no Terraform CLI, no state access, or the
+    stack simply not deployed yet), so the message belongs at the call site.
+    """
+    try:
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+            ["terraform", f"-chdir={tf_dir}", "output", "-raw", name],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"  terraform output {name} failed: {exc}", file=sys.stderr)
+        return None
+    if proc.returncode != 0:
+        print(f"  terraform output {name} failed: {proc.stderr.strip()}", file=sys.stderr)
+        return None
+    value = proc.stdout.strip()
+    return value or None
+
+
 def _claims(jwt_token: str) -> dict:
     payload = jwt_token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
@@ -94,14 +143,27 @@ def _claims(jwt_token: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", help="CloudFront base URL of the team-auth stack")
-    parser.add_argument("--stack", default="AgentPlatformTeamAuth")
+    parser.add_argument(
+        "--base-url",
+        help="CloudFront base URL of the team-auth deployment "
+        "(default: the team_auth_url Terraform output)",
+    )
     parser.add_argument(
         "--portal-url",
         help="Portal origin to allow as an OIDC redirect target "
-        "(default: the PortalUrl output of AgentPlatformPortal)",
+        "(default: the portal_url Terraform output)",
     )
-    parser.add_argument("--portal-stack", default="AgentPlatformPortal")
+    parser.add_argument(
+        "--terraform-dir",
+        default=TERRAFORM_DIR,
+        help="directory holding the Terraform state to read URLs from",
+    )
+    parser.add_argument(
+        "--skip-portal-redirect",
+        action="store_true",
+        help="do not register a portal redirect URI (only when the portal is not deployed yet; "
+        "browser sign-in stays broken until it is registered)",
+    )
     parser.add_argument(
         "--rotate-passwords",
         action="store_true",
@@ -109,11 +171,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    base_url = args.base_url
+    base_url = args.base_url or _terraform_output("team_auth_url", args.terraform_dir)
     if not base_url:
-        cfn = boto3.client("cloudformation")
-        outputs = cfn.describe_stacks(StackName=args.stack)["Stacks"][0]["Outputs"]
-        base_url = next(o["OutputValue"] for o in outputs if o["OutputKey"] == "TeamAuthUrl")
+        print(
+            "could not determine the team-auth URL: pass --base-url, or run from a "
+            "checkout whose terraform/ has state access",
+            file=sys.stderr,
+        )
+        return 1
     base_url = base_url.rstrip("/")
     issuer = f"{base_url}/realms/{REALM}"
     print(f"IdP: {issuer}")
@@ -146,9 +211,9 @@ def main() -> int:
     print("admin token OK")
 
     # ------------------------- set user passwords ----------------------
-    # Keycloak dev mode loses passwords on restart, so they must be re-applied
-    # every run — but re-applying the *same* value keeps already-distributed
-    # credentials (and anyone's browser session) working.
+    # Passwords now persist in the database, so this is normally a first-run
+    # step. Re-applying the *same* stored value keeps it safe to run again:
+    # already-distributed credentials (and anyone's browser session) survive.
     stored_creds: dict[str, str] = {}
     if not args.rotate_passwords:
         try:
@@ -177,29 +242,37 @@ def main() -> int:
             f"{base_url}/admin/realms/{REALM}/users?username={username}&exact=true",
             admin_token,
         )
-        if not found and username == ADMIN_USER:
-            # instances booted from an older realm image predate this user
+        if not found:
+            # The realm this instance booted from predates the user: either an
+            # older realm image, or — the usual case now — a realm that already
+            # existed, so IGNORE_EXISTING skipped the import entirely.
+            profile = USER_PROFILES.get(username)
+            if not profile:
+                print(
+                    f"user {username} not found in realm {REALM} and no USER_PROFILES "
+                    "entry to create them from",
+                    file=sys.stderr,
+                )
+                return 1
             _api(
                 f"{base_url}/admin/realms/{REALM}/users",
                 admin_token,
                 method="POST",
                 payload={
-                    "username": ADMIN_USER,
+                    "username": username,
                     "enabled": True,
                     "emailVerified": True,
-                    "firstName": "Platform",
-                    "lastName": "Admin",
-                    "email": "admin@example.com",
+                    **profile,
                 },
             )
             found = _api(
                 f"{base_url}/admin/realms/{REALM}/users?username={username}&exact=true",
                 admin_token,
             )
+            if not found:
+                print(f"user {username} could not be created in realm {REALM}", file=sys.stderr)
+                return 1
             print(f"user created: {username}")
-        if not found:
-            print(f"user {username} not found in realm {REALM}", file=sys.stderr)
-            return 1
         user_id = found[0]["id"]
         password = stored_creds.get(username) or secrets.token_urlsafe(18)
         reused = username in stored_creds
@@ -247,7 +320,7 @@ def main() -> int:
     upsert_secret(
         USERS_SECRET,
         json.dumps({"issuer": issuer, "client_id": CLIENT_ID, "users": creds}),
-        "Team-auth demo user credentials (alice/bob/carol + platform admin)",
+        "Team-auth demo user credentials (alice/bob/carol + admin/jim platform admins)",
     )
     print(f"credentials stored in Secrets Manager: {USERS_SECRET}")
 
@@ -257,16 +330,20 @@ def main() -> int:
     # END of a URI, so the realm file cannot ship a host pattern — register
     # the deployed origin here instead (idempotent, re-applied after restarts).
     portal_url = args.portal_url
-    if not portal_url:
-        try:
-            cfn = boto3.client("cloudformation")
-            outputs = cfn.describe_stacks(StackName=args.portal_stack)["Stacks"][0]["Outputs"]
-            portal_url = next(
-                o["OutputValue"] for o in outputs if o["OutputKey"] == "PortalUrl"
+    if not portal_url and not args.skip_portal_redirect:
+        portal_url = _terraform_output("portal_url", args.terraform_dir)
+        # Deliberately fatal. This lookup used to fail into a warning, which is
+        # how a re-seed could report success while leaving browser sign-in
+        # rejecting every request with invalid_redirect_uri.
+        if not portal_url:
+            print(
+                "could not determine the portal URL, so the redirect URI would go "
+                "unregistered and browser sign-in would keep failing with "
+                "invalid_redirect_uri. Pass --portal-url, or --skip-portal-redirect "
+                "if the portal really is not deployed yet.",
+                file=sys.stderr,
             )
-        except Exception as exc:  # noqa: BLE001 - portal not deployed yet
-            print(f"  portal stack not available ({exc}); skipping redirect URI")
-            portal_url = ""
+            return 1
     if portal_url:
         origin = portal_url.rstrip("/")
         portal_clients = _api(
@@ -292,10 +369,10 @@ def main() -> int:
 
     # -------------------- gateway-delegate client secret ----------------
     # AgentCore Identity performs the RFC 8693 token exchange as this
-    # confidential client. Keycloak dev mode regenerates client secrets on
-    # every realm re-import, so we hold the source of truth in Secrets
-    # Manager and write it BACK into Keycloak — the AgentCore credential
-    # provider stays valid across Keycloak restarts.
+    # confidential client. A realm re-import generates a fresh client secret,
+    # so we hold the source of truth in Secrets Manager and write it BACK into
+    # Keycloak — the AgentCore credential provider then stays valid no matter
+    # how the realm got (re)created.
     try:
         stored = json.loads(sm.get_secret_value(SecretId=DELEGATE_SECRET)["SecretString"])
         delegate_secret = stored["client_secret"]
@@ -407,7 +484,7 @@ def main() -> int:
         f"aud={robot_claims.get('aud')}"
     )
 
-    print("\nIdP seeded. Next: cdk deploy AgentPlatformTeamDemo && "
+    print("\nIdP seeded. Next: terraform apply (brings up the team-demo runtime) && "
           "python3 scripts/deploy_team_gateway.py")
     return 0
 
