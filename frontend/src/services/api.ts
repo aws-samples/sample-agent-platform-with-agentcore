@@ -333,7 +333,7 @@ export interface ArtifactContent {
   truncated: boolean
 }
 
-import { clearLocalSession, getToken } from './auth'
+import { accessTokenNeedsRefresh, clearLocalSession, getToken, refreshAccessToken } from './auth'
 
 const BASE = ''
 
@@ -342,14 +342,28 @@ const BASE = ''
 let meCache: Promise<Identity> | null = null
 let meCacheToken: string | null = null
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+function send(path: string, init?: RequestInit): Promise<Response> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
+  return fetch(`${BASE}${path}`, { ...init, headers })
+}
 
-  const resp = await fetch(`${BASE}${path}`, { ...init, headers })
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Renew ahead of expiry so a long-lived tab keeps working instead of being
+  // bounced to the login page once every access-token lifespan.
+  if (accessTokenNeedsRefresh()) await refreshAccessToken()
+
+  let resp = await send(path, init)
   if (resp.status === 401) {
-    // Expired/invalid token — force a fresh sign-in (the IdP session, if any,
+    // The token can still die in flight, or the clock can be off. Spend one
+    // silent renewal and replay before writing the session off; `init.body` is
+    // always a JSON string here, so replaying it is safe.
+    const renewed = await refreshAccessToken()
+    if (renewed) resp = await send(path, init)
+  }
+  if (resp.status === 401) {
+    // Nothing left to try — force a fresh sign-in (the IdP session, if any,
     // is left alone so re-authentication can be silent)
     clearLocalSession()
     window.location.href = '/login'
