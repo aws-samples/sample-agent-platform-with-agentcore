@@ -8,7 +8,9 @@
  *   redirect to the IdP, exchange the code with PKCE, store the **access
  *   token** — the same credential the backend forwards to JWT-protected
  *   AgentCore runtimes/gateways, so IdP claims like `team` propagate
- *   end to end.
+ *   end to end. The refresh token is stored alongside it so a lapsing access
+ *   token is renewed silently (see `refreshAccessToken`) rather than bouncing
+ *   the user to the login page once every `accessTokenLifespan`.
  */
 
 const TOKEN_KEY = 'agent-platform:id-token'
@@ -16,6 +18,14 @@ const USER_KEY = 'agent-platform:user'
 const PKCE_KEY = 'agent-platform:pkce'
 // OIDC only: kept solely as the `id_token_hint` for RP-initiated logout.
 const LOGOUT_HINT_KEY = 'agent-platform:logout-hint'
+// OIDC only: traded for a fresh access token when the current one runs out.
+// Its own lifetime is bounded by the realm's SSO session, so this is what
+// decides how long a user stays signed in across tabs and restarts.
+const REFRESH_KEY = 'agent-platform:refresh-token'
+
+/** Renew this many seconds before the access token's `exp`, so an in-flight
+ *  request never races its own expiry (and tolerates small clock skew). */
+const REFRESH_SKEW_SECONDS = 60
 
 export interface PublicConfig {
   auth_mode: 'cognito' | 'oidc' | 'token' | 'open'
@@ -49,6 +59,7 @@ export function clearLocalSession(): void {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
   localStorage.removeItem(LOGOUT_HINT_KEY)
+  localStorage.removeItem(REFRESH_KEY)
   sessionStorage.removeItem(PKCE_KEY)
 }
 
@@ -193,4 +204,102 @@ export async function completeOidcLogin(code: string, state: string): Promise<vo
   localStorage.setItem(TOKEN_KEY, accessToken)
   localStorage.setItem(USER_KEY, username)
   if (data.id_token) localStorage.setItem(LOGOUT_HINT_KEY, data.id_token)
+  // Keycloak issues a refresh token for the authorization-code grant without
+  // the `offline_access` scope being asked for; it is what carries the session
+  // past the (deliberately short) access-token lifespan.
+  if (data.refresh_token) localStorage.setItem(REFRESH_KEY, data.refresh_token)
+}
+
+// --------------------------- Silent renewal ------------------------------
+
+function accessTokenExpiry(token: string): number | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return typeof payload.exp === 'number' ? payload.exp : null
+  } catch {
+    return null
+  }
+}
+
+/** True when a stored access token is at, or close to, its expiry.
+ *
+ * False when there is no token at all — that case is a sign-in, not a renewal.
+ * Also false when `exp` cannot be read: rejecting such a token here would sign
+ * the user out on every request, so it is left for the server to judge.
+ */
+export function accessTokenNeedsRefresh(): boolean {
+  const token = getToken()
+  if (!token) return false
+  const exp = accessTokenExpiry(token)
+  if (exp === null) return false
+  return exp - Date.now() / 1000 <= REFRESH_SKEW_SECONDS
+}
+
+let refreshInFlight: Promise<string | null> | null = null
+
+/** Trade the stored refresh token for a fresh access token.
+ *
+ * Concurrent callers share one exchange: a page load fires several requests at
+ * once and each would otherwise post its own grant, which hammers the IdP and,
+ * should the realm ever turn on refresh-token rotation, would invalidate the
+ * token its siblings are still holding.
+ *
+ * Resolves to the new access token, or to null when no silent renewal is
+ * possible (no refresh token, non-OIDC mode, ended IdP session, network
+ * failure). Null means the caller must fall back to interactive sign-in.
+ */
+export function refreshAccessToken(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = exchangeRefreshToken().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+async function exchangeRefreshToken(): Promise<string | null> {
+  const refreshToken = localStorage.getItem(REFRESH_KEY)
+  if (!refreshToken) return null
+
+  // Cognito mode (USER_PASSWORD_AUTH) stores no refresh token, so this path is
+  // OIDC-only; bail out rather than post to the wrong token endpoint.
+  let cfg: PublicConfig
+  try {
+    cfg = await getPublicConfig()
+  } catch {
+    return null
+  }
+  if (cfg.auth_mode !== 'oidc' || !cfg.oidc_issuer) return null
+
+  let data: Record<string, unknown>
+  try {
+    const resp = await fetch(`${cfg.oidc_issuer}/protocol/openid-connect/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: cfg.oidc_client_id,
+        refresh_token: refreshToken,
+      }),
+    })
+    data = (await resp.json()) as Record<string, unknown>
+    if (!resp.ok) {
+      // The IdP session has ended (expired, revoked, or signed out elsewhere).
+      // Drop the dead token so later requests stop retrying a lost cause.
+      localStorage.removeItem(REFRESH_KEY)
+      return null
+    }
+  } catch {
+    // A network or CORS failure says nothing about the token's validity: keep
+    // it, since the next attempt may succeed once connectivity is back.
+    return null
+  }
+
+  if (typeof data.access_token !== 'string') return null
+  localStorage.setItem(TOKEN_KEY, data.access_token)
+  // Keycloak reissues the siblings on every exchange; storing them keeps the
+  // session renewable and the logout hint current.
+  if (typeof data.refresh_token === 'string') localStorage.setItem(REFRESH_KEY, data.refresh_token)
+  if (typeof data.id_token === 'string') localStorage.setItem(LOGOUT_HINT_KEY, data.id_token)
+  return data.access_token
 }
