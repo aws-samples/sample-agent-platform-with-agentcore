@@ -96,9 +96,10 @@ def create_session(req: SessionCreateRequest, user: str = Depends(get_current_us
             model_config_service.resolve(req.model_backend, req.model)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-    # Same fail-fast for attachments this hosting model cannot serve (an
-    # mcp-hub server signs as a published agent — a workbench session has no
-    # Actor identity), before the session record exists.
+    # Same fail-fast for attachments that cannot resolve, before the session
+    # record exists. Resolving an mcp-hub attachment also lazy-mints the
+    # shared dev-workbench Actor pair, so the first hub session pays the
+    # Secrets Manager round-trip here rather than at warmup.
     if req.mcp_server_ids or req.skill_ids:
         try:
             ecosystem_service.resolve_session_config(req.mcp_server_ids, req.skill_ids)

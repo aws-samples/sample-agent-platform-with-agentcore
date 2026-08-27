@@ -16,6 +16,13 @@ runtime role, which is granted exactly this prefix.
 
 Registering the pair with the hub is the hub operator's step (config or
 HUB_ACTORS env there); the deploy tooling shows how to sync it.
+
+The Dev Workbench (and the Debug console) is one more application in the
+hub's eyes: sessions there sign with a single shared platform Actor
+(``WORKBENCH_ACTOR_ID``) rather than a per-agent pair — a workbench session
+has no published-agent identity, and the hub operator should not have to
+register a new Actor per developer. The acting *user* still rides in the
+forwarded SSO token, so per-user permissions are unaffected.
 """
 
 import json
@@ -28,34 +35,45 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# The shared Actor identity for anything that is not a published agent:
+# workbench sessions and Debug console runs. Its access key is the bare ID
+# (no "agent-" prefix) so hub logs read unambiguously.
+WORKBENCH_ACTOR_ID = "dev-workbench"
+
+
 class McpHubCredentialsService:
     def __init__(self) -> None:
         self.sm = boto3.client("secretsmanager", region_name=settings.aws_region)
 
     @staticmethod
-    def secret_name(agent_id: str) -> str:
-        return f"{settings.mcp_hub_secret_prefix}/{agent_id}"
+    def secret_name(actor_id: str) -> str:
+        return f"{settings.mcp_hub_secret_prefix}/{actor_id}"
 
-    def ensure(self, agent_id: str) -> str:
-        """Create the agent's credential pair if it does not exist yet;
-        return the access key either way. Idempotent — a republish keeps the
-        existing pair so the hub's actor registry stays valid."""
-        name = self.secret_name(agent_id)
+    def ensure(self, actor_id: str, access_key: str | None = None) -> str:
+        """Create the credential pair if it does not exist yet; return the
+        access key either way. Idempotent — a republish keeps the existing
+        pair so the hub's actor registry stays valid."""
+        name = self.secret_name(actor_id)
         try:
             existing = self.sm.get_secret_value(SecretId=name)
             return str(json.loads(existing["SecretString"]).get("access_key", ""))
         except self.sm.exceptions.ResourceNotFoundException:
             pass
-        access_key = f"agent-{agent_id}"
+        access_key = access_key or f"agent-{actor_id}"
         self.sm.create_secret(
             Name=name,
-            Description=f"MCP hub HMAC credentials (Actor) for published agent {agent_id}",
+            Description=f"MCP hub HMAC credentials (Actor) for {actor_id}",
             SecretString=json.dumps(
                 {"access_key": access_key, "secret_key": secrets.token_urlsafe(32)}
             ),
         )
-        logger.info("minted mcp-hub credentials for agent %s", agent_id)
+        logger.info("minted mcp-hub credentials for %s", actor_id)
         return access_key
+
+    def ensure_workbench(self) -> str:
+        """The shared Dev Workbench / Debug console Actor (lazy-minted on the
+        first hub attachment outside a published agent)."""
+        return self.ensure(WORKBENCH_ACTOR_ID, access_key=WORKBENCH_ACTOR_ID)
 
     def rotate(self, agent_id: str) -> str:
         """New secret key, same access key. The hub must learn the new value

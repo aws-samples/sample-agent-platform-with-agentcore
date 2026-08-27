@@ -181,30 +181,35 @@ class EcosystemService:
         self._ensure_seeded()
         mcp = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("MCP#")}
         skills = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("SKILL#")}
-        hub_names = [
-            mcp[i]["name"]
-            for i in mcp_server_ids
-            if i in mcp and mcp[i].get("kind") == "mcp-hub"
-        ]
-        if hub_names:
-            # an mcp-hub server signs its requests as a *published agent*
-            # (per-agent HMAC credentials); a session or raw-kernel call has
-            # no Actor identity to sign with
-            raise ValueError(
-                f"MCP hub server(s) {', '.join(hub_names)} authenticate as a "
-                "published agent — attach them to an agent and invoke that "
-                "agent instead"
-            )
+
+        def _server(entry: dict) -> dict:
+            server = {
+                "name": entry["name"],
+                "kind": entry["kind"],
+                "target": entry["target"],
+                **({"headers": entry["headers"]} if entry.get("headers") else {}),
+            }
+            if entry.get("kind") == "mcp-hub":
+                # A hub attachment outside a published agent (workbench
+                # session, Debug console) signs as the shared dev-workbench
+                # Actor — one platform-owned pair, lazily minted here, that
+                # the hub operator registers once. The acting user still
+                # rides in the forwarded SSO token, so hub-side permissions
+                # stay per-user.
+                from app.services.mcp_hub_credentials_service import (
+                    WORKBENCH_ACTOR_ID,
+                    mcp_hub_credentials_service,
+                )
+
+                mcp_hub_credentials_service.ensure_workbench()
+                server["credentials_secret"] = mcp_hub_credentials_service.secret_name(
+                    WORKBENCH_ACTOR_ID
+                )
+            return server
+
         return {
             "mcp_servers": [
-                {
-                    "name": mcp[i]["name"],
-                    "kind": mcp[i]["kind"],
-                    "target": mcp[i]["target"],
-                    **({"headers": mcp[i]["headers"]} if mcp[i].get("headers") else {}),
-                }
-                for i in mcp_server_ids
-                if i in mcp
+                _server(mcp[i]) for i in mcp_server_ids if i in mcp
             ],
             "skills": [
                 {

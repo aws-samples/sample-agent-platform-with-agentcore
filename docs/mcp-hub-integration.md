@@ -32,7 +32,9 @@ the hub as `X-MCPHUB-SSO-TOKEN` — where the hub (and each backend,
 independently) verifies it and derives the caller's permissions from its
 claims. The HMAC signature answers a different question: *which application*
 sent the request. On this platform that application is the **published
-agent**.
+agent** — or, for pre-publish development in the workbench and Debug
+console, the shared **dev-workbench** Actor (see "The development path"
+below).
 
 ## The data-plane split
 
@@ -91,9 +93,33 @@ Republishing keeps the pair; deleting the agent retires it (7-day recovery).
   (`McpHubCredentialsService.rotate` keeps the access key), then refresh the
   hub's actor registry before the next invocation.
 
-Because the credential is the *agent's*, `mcp-hub` attachments only work on
-published agents. Attaching one to a Dev Workbench session or a raw kernel
-call is refused with an explanatory error rather than failing downstream.
+### The development path: workbench and Debug console
+
+Building an agent *against* the hub happens before publishing, so the Dev
+Workbench (cloud-hosted Claude Code) and the Debug console can attach an
+`mcp-hub` server too. Outside a published agent there is no per-agent pair;
+those calls sign as one shared platform Actor instead:
+
+- **Actor**: `dev-workbench` — a single access/secret pair, lazily minted
+  into Secrets Manager (`…/mcp-hub/dev-workbench`) on the first attachment
+  and registered with the hub once (`hmac actor verified: dev-workbench` in
+  hub logs). The hub can rate-limit or revoke all development traffic as one
+  application without touching any published agent.
+- **User**: the *portal user's own* SSO token, forwarded per session/run.
+  Hub-side permissions therefore stay per-user — two developers attaching
+  the same hub see different tools if their departments differ. For this to
+  verify, the portal client's tokens must carry the hub's audience and a
+  `department` claim (the demo seed adds an audience mapper and a per-user
+  attribute mapper; your IdP equivalent applies).
+- **Token at rest**: the interactive kernel keeps the forwarded token in a
+  file under `/tmp` inside the microVM — never in `/workspace/.mcp.json`,
+  which syncs to S3. The signing proxy re-reads that file per request, so
+  reconnecting a workbench session refreshes an expired token in place.
+
+One asymmetry to know: a *portal user's* token has the IdP's normal (short)
+lifetime, not the application service account's 8 hours. A workbench session
+that outlives it will see hub calls fail with a 401 until the session is
+reconnected.
 
 ### Where the SSO token comes from, and its lifetime  ⚠️
 

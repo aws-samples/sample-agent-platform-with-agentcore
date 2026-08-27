@@ -18,6 +18,15 @@ Checks:
                  hr backend for a sales-department identity and the agent
                  says so
 
+Plus the *development* path — the same hub attached outside a published
+agent, where requests sign as the shared ``dev-workbench`` Actor and the
+forwarded token is the portal user's own:
+
+    WB-ALLOW     Debug-console invoke as admin (department=sales) reaches the
+                 order tools
+    WB-USER      the same invoke as alice (department=hr) gets HR data — the
+                 hub routes per user, not per attachment
+
 Run after scripts/seed_mcp_hub_demo.py.
 """
 
@@ -83,9 +92,9 @@ def run_on(ssm, instance_id: str, script: str, timeout_s: int = 900) -> tuple[bo
     return False, "", "ssm polling timed out"
 
 
-def find_channel_id() -> str:
-    """The channel id isn't a Terraform output (it lives in the platform's
-    registry) — look it up the same way the seed script created it."""
+def portal_token(username: str) -> str:
+    """Password-grant login as a demo portal user (credentials seeded to
+    Secrets Manager by seed_team_idp.py)."""
     import urllib.parse
     import urllib.request
 
@@ -93,22 +102,38 @@ def find_channel_id() -> str:
     users_cfg = json.loads(
         sm.get_secret_value(SecretId="agent-platform/team-demo-users")["SecretString"]
     )
-    issuer = users_cfg["issuer"]
     body = urllib.parse.urlencode({
         "grant_type": "password", "client_id": users_cfg["client_id"],
-        "username": "admin", "password": users_cfg["users"]["admin"],
+        "username": username, "password": users_cfg["users"][username],
         "scope": "openid",
     }).encode()
     with urllib.request.urlopen(  # nosec B310 - fixed https base
-        urllib.request.Request(f"{issuer}/protocol/openid-connect/token", data=body)
+        urllib.request.Request(
+            f"{users_cfg['issuer']}/protocol/openid-connect/token", data=body
+        )
     ) as resp:
-        token = json.load(resp)["access_token"]
+        return json.load(resp)["access_token"]
+
+
+def portal_api(path: str, token: str, payload: dict | None = None, timeout_s: int = 660):
+    import urllib.request
+
     portal_url = tf_output("portal_url").rstrip("/")
     req = urllib.request.Request(
-        f"{portal_url}/api/v1/channels", headers={"Authorization": f"Bearer {token}"}
+        f"{portal_url}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"},
+        method="POST" if payload is not None else "GET",
     )
-    with urllib.request.urlopen(req) as resp:  # nosec B310
-        channels = json.load(resp)
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:  # nosec B310
+        return json.load(resp)
+
+
+def find_channel_id() -> str:
+    """The channel id isn't a Terraform output (it lives in the platform's
+    registry) — look it up the same way the seed script created it."""
+    channels = portal_api("/api/v1/channels", portal_token("admin"))
     channel = next((c for c in channels if c["name"] == DEMO_CHANNEL_NAME), None)
     if not channel:
         raise SystemExit(f"channel {DEMO_CHANNEL_NAME} not found — run seed_mcp_hub_demo.py")
@@ -169,6 +194,48 @@ def main() -> int:
         f"status={(record or {}).get('status')} leaked={leaked} result={result_text[:160]!r}"
         if record else tail,
     )
+
+    # ---- development path: hub attached outside a published agent ---------
+    # (Debug console; the workbench uses the same resolution and the same
+    # dev-workbench Actor). The forwarded token is the portal user's own, so
+    # what the hub serves flips with the user, not with the attachment.
+    hub_entry = next(
+        (s for s in portal_api("/api/v1/ecosystem/mcp-servers", portal_token("admin"))
+         if s.get("kind") == "mcp-hub"),
+        None,
+    )
+    if not hub_entry:
+        check("WB-ALLOW", False, "no mcp-hub registry entry — run seed_mcp_hub_demo.py")
+    else:
+        def wb_invoke(username: str, prompt: str) -> dict:
+            try:
+                return portal_api(
+                    "/api/v1/kernels/agent-sdk/invoke", portal_token(username),
+                    payload={"prompt": prompt, "max_turns": 8,
+                             "mcp_server_ids": [hub_entry["id"]]},
+                )
+            except Exception as exc:  # noqa: BLE001 — recorded as a failure
+                return {"ok": False, "result": f"invoke error: {exc}"}
+
+        res = wb_invoke(
+            "admin",
+            "Use your order tools to list recent orders and summarize them in one line.",
+        )
+        check(
+            "WB-ALLOW",
+            bool(res.get("ok")) and "ORD-" in res.get("result", ""),
+            f"ok={res.get('ok')} result={res.get('result', '')[:160]!r}",
+        )
+
+        res = wb_invoke(
+            "alice",
+            "Use the hr search_employee tool to look up Alice Zhang's level and location.",
+        )
+        check(
+            "WB-USER",
+            bool(res.get("ok")) and "L5" in res.get("result", ""),
+            f"ok={res.get('ok')} result={res.get('result', '')[:160]!r}",
+        )
 
     print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'all passed'}")
     return 1 if failures else 0

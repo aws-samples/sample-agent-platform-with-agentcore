@@ -202,13 +202,14 @@ export default function EcosystemPage() {
           <option value="agentcore-runtime">AgentCore Runtime (ARN, SigV4 via kernel role)</option>
           <option value="agentcore-gateway">AgentCore Gateway (MCP URL, SigV4 via kernel role)</option>
           <option value="url">HTTP URL (streamable-http, no auth)</option>
-          <option value="mcp-hub">MCP Hub (HMAC-signed, per published agent)</option>
+          <option value="mcp-hub">MCP Hub (HMAC-signed)</option>
         </select>
         {mKind === 'mcp-hub' && (
           <p className="mt-1.5 text-xs text-slate-500">
-            A self-hosted MCP hub with MCPHUB-HMAC-SHA256 inbound auth. Requests are signed with
-            per-agent credentials minted at publish time, so this attachment only works on
-            published agents — register the agent's access key with the hub after publishing.
+            A self-hosted MCP hub with MCPHUB-HMAC-SHA256 inbound auth. Published agents sign
+            with per-agent credentials minted at publish time (register the agent's access key
+            with the hub after publishing); workbench sessions and the Debug console sign as the
+            shared <span className="font-mono">dev-workbench</span> actor.
           </p>
         )}
         <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">

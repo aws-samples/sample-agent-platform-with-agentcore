@@ -272,9 +272,9 @@ class AgentService:
         for server in cfg["mcp_servers"]:
             # mcp-hub servers sign as this agent: hand the kernel the *name*
             # of the agent's credential secret (the runtime role fetches the
-            # pair; the keys themselves never ride in a payload). Only a
-            # published agent has an Actor identity — that is why raw-kernel
-            # attachments of this kind are refused in invocation_service.
+            # pair; the keys themselves never ride in a payload). Workbench
+            # sessions and Debug console runs sign as the shared dev-workbench
+            # Actor instead (ecosystem_service.resolve_session_config).
             if server.get("kind") == "mcp-hub":
                 server["credentials_secret"] = agent.get(
                     "mcp_hub_secret_name"

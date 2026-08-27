@@ -18,15 +18,21 @@ What this script does (idempotent throughout):
      docs/mcp-hub-integration.md;
    - credentials to Secrets Manager under the demo-app secret name, which
      only the app EC2's role may read.
-2. **Platform** (portal admin API) — register the ``mcp-hub`` ecosystem
+2. **IdP, portal users** — map the portal client for workbench hub access:
+   an audience mapper for the hub resource URL plus a ``department`` claim
+   sourced from a per-user attribute (alice=hr, everyone else=sales), so a
+   Dev Workbench session's forwarded token passes the hub's checks and
+   different users demonstrably see different tools.
+3. **Platform** (portal admin API) — register the ``mcp-hub`` ecosystem
    entry pointing at the hub endpoint, publish the demo agent with that
    attachment (publishing mints the agent's HMAC Actor pair), and create an
    ``iam`` channel targeting the agent with the app EC2 role allowlisted.
-3. **Hub** — push the agent's actor secret *name* to the hub host over SSM;
-   the box pulls the value under its own role (key material never transits
-   the SSM command log) and restarts the hub.
-4. **Verify** — client-credentials login as the app; print the claims the
-   chain depends on.
+4. **Hub** — mint the shared ``dev-workbench`` Actor (workbench sessions and
+   Debug console runs sign with it), then push both actor secret *names* to
+   the hub host over SSM; the box pulls the values under its own role (key
+   material never transits the SSM command log) and restarts the hub.
+5. **Verify** — client-credentials login as the app and password login as a
+   portal user; print the claims the chain depends on.
 
 Usage:
     python3 scripts/seed_mcp_hub_demo.py [--platform-audience agent-platform]
@@ -241,8 +247,98 @@ def main() -> int:
     print(f"app client pinned: {APP_CLIENT} (department={APP_DEPARTMENT}, "
           f"token lifespan {TOKEN_LIFESPAN_S // 3600}h)")
 
-    # ------------------------ platform objects --------------------------
+    # -------------- portal users: hub access from the workbench ------------
+    # A Dev Workbench session (or a Debug console run) forwards the *portal
+    # user's* token to the hub, so that token must carry what the hub
+    # verifies: the hub resource URL in ``aud`` and a ``department`` claim.
+    # The audience is a client mapper on the portal client; the department
+    # comes from a per-user attribute so different users demonstrably see
+    # different tools.
     users_cfg = json.loads(sm.get_secret_value(SecretId=USERS_SECRET)["SecretString"])
+    portal_client_id = users_cfg["client_id"]
+    portal_clients = _api(
+        f"{base_url}/admin/realms/{REALM}/clients?clientId={portal_client_id}",
+        admin_token,
+    )
+    if not portal_clients:
+        raise SystemExit(f"portal client {portal_client_id} not found — run seed_team_idp.py first")
+    portal_uuid = portal_clients[0]["id"]
+    portal_mappers = [
+        {
+            "name": "aud-mcp-hub",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {
+                "included.custom.audience": hub_resource_url,
+                "access.token.claim": "true",
+            },
+        },
+        {
+            "name": "department",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-attribute-mapper",
+            "config": {
+                "user.attribute": "department",
+                "claim.name": "department",
+                "jsonType.label": "String",
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+                "userinfo.token.claim": "true",
+            },
+        },
+    ]
+    existing_portal = {
+        m["name"]: m
+        for m in _api(
+            f"{base_url}/admin/realms/{REALM}/clients/{portal_uuid}/protocol-mappers/models",
+            admin_token,
+        )
+    }
+    for mapper in portal_mappers:
+        if mapper["name"] in existing_portal:
+            _api(
+                f"{base_url}/admin/realms/{REALM}/clients/{portal_uuid}"
+                f"/protocol-mappers/models/{existing_portal[mapper['name']]['id']}",
+                admin_token, method="PUT",
+                payload={**existing_portal[mapper["name"]], **mapper},
+            )
+        else:
+            _api(
+                f"{base_url}/admin/realms/{REALM}/clients/{portal_uuid}/protocol-mappers/models",
+                admin_token, method="POST", payload=mapper,
+            )
+    # Keycloak 24+ declarative user profiles silently DROP any attribute the
+    # profile does not declare — the admin PUT succeeds, the value never
+    # lands. Declare ``department`` (admin-managed) before assigning it.
+    profile = _api(f"{base_url}/admin/realms/{REALM}/users/profile", admin_token)
+    if not any(a.get("name") == "department" for a in profile.get("attributes", [])):
+        profile.setdefault("attributes", []).append({
+            "name": "department",
+            "displayName": "Department",
+            "multivalued": False,
+            "permissions": {"view": ["admin"], "edit": ["admin"]},
+        })
+        _api(f"{base_url}/admin/realms/{REALM}/users/profile",
+             admin_token, method="PUT", payload=profile)
+
+    # alice gets hr so the workbench shows a *different* tool set per user;
+    # everyone else matches the calling application (sales).
+    for username in users_cfg["users"]:
+        dept = "hr" if username == "alice" else "sales"
+        found = _api(
+            f"{base_url}/admin/realms/{REALM}/users?username={username}&exact=true",
+            admin_token,
+        )
+        if not found:
+            continue
+        user_rep = found[0]
+        attrs = {**(user_rep.get("attributes") or {}), "department": [dept]}
+        _api(f"{base_url}/admin/realms/{REALM}/users/{user_rep['id']}",
+             admin_token, method="PUT", payload={**user_rep, "attributes": attrs})
+    print(f"portal client mapped for hub access: {portal_client_id} "
+          f"(aud+department; alice=hr, others=sales)")
+
+    # ------------------------ platform objects --------------------------
     portal_token = _post_form(
         f"{issuer}/protocol/openid-connect/token",
         {"grant_type": "password", "client_id": users_cfg["client_id"],
@@ -304,11 +400,29 @@ def main() -> int:
     print(f"channel ready: {channel['id']} (allowlist: {app_role_arn})")
 
     # -------------------------- hub actor sync --------------------------
+    # The shared dev-workbench Actor (workbench sessions + Debug console).
+    # The backend lazy-mints this same pair on first use; creating it here —
+    # same name, same shape — just guarantees the hub learns it in this sync
+    # instead of failing until the next one.
+    workbench_secret = f"{actor_secret.rsplit('/', 1)[0]}/dev-workbench"
+    try:
+        sm.create_secret(
+            Name=workbench_secret,
+            Description="MCP hub HMAC credentials (Actor) for dev-workbench",
+            SecretString=json.dumps({"access_key": "dev-workbench",
+                                     "secret_key": secrets.token_urlsafe(32)}),
+        )
+        print(f"workbench actor minted: dev-workbench ({workbench_secret})")
+    except sm.exceptions.ResourceExistsException:
+        print(f"workbench actor exists: dev-workbench ({workbench_secret})")
+
     ssm = boto3.client("ssm")
     command_id = ssm.send_command(
         InstanceIds=[hub_instance_id],
         DocumentName="AWS-RunShellScript",
-        Parameters={"commands": [f"/usr/local/bin/mcp-hub-refresh-actors {actor_secret}"]},
+        Parameters={"commands": [
+            f"/usr/local/bin/mcp-hub-refresh-actors {actor_secret} {workbench_secret}"
+        ]},
     )["Command"]["CommandId"]
     for _ in range(30):
         time.sleep(2)
@@ -331,6 +445,17 @@ def main() -> int:
     print(f"app login OK: department={claims.get('department')} "
           f"aud={claims.get('aud')} "
           f"lifespan={(claims['exp'] - claims['iat']) // 3600}h")
+
+    # the same checks for a portal user — this is the token a workbench
+    # session forwards to the hub
+    user_claims = _claims(_post_form(
+        f"{issuer}/protocol/openid-connect/token",
+        {"grant_type": "password", "client_id": portal_client_id,
+         "username": "admin", "password": users_cfg["users"]["admin"],
+         "scope": "openid"},
+    )["access_token"])
+    print(f"portal user (admin) OK: department={user_claims.get('department')} "
+          f"aud={user_claims.get('aud')}")
 
     print(
         "\nSeeded. Try it from the demo-app instance:\n"

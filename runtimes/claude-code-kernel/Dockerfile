@@ -38,6 +38,13 @@ RUN pip install --no-cache-dir awscli boto3 mcp mcp-proxy-for-aws bedrock-agentc
 
 COPY scripts/builtin_tools_mcp.py /opt/platform/builtin_tools_mcp.py
 
+# stdio → MCPHUB-HMAC-SHA256 signing proxy for mcp-hub attachments (workbench
+# sessions sign as the shared dev-workbench Actor). Copies must stay identical
+# to runtimes/agent-sdk-kernel/src/ — the signature algorithm is shared with
+# the hub and must not drift per kernel.
+COPY scripts/mcp_hub_proxy.py /opt/platform/mcp_hub_proxy.py
+COPY scripts/mcphub_hmac.py /opt/platform/mcphub_hmac.py
+
 COPY contract-server/ /opt/contract-server/
 WORKDIR /opt/contract-server
 RUN npm install --production

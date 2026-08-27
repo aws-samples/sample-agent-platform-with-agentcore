@@ -28,6 +28,8 @@ from mcphub_hmac import McpHubHmacSignature  # noqa: E402
 
 AK, SK = "test-agent", "test-secret-key"
 SSO = "service.account.token"
+SSO_ROTATED = "service.account.token.rotated"  # for the token-file hot-swap case
+VALID_SSO = {SSO, SSO_ROTATED}
 
 failures: list[str] = []
 
@@ -47,7 +49,7 @@ def verify(handler: BaseHTTPRequestHandler, body: bytes) -> str | None:
     if abs(int(time.time()) - timestamp) > 300:
         return "stale timestamp"
     sso = handler.headers.get("X-MCPHUB-SSO-TOKEN", "")
-    if sso != SSO:
+    if sso not in VALID_SSO:
         return "sso token missing or wrong"
     canonical = McpHubHmacSignature.build_canonical_request(
         method="POST",
@@ -85,7 +87,8 @@ class Hub(BaseHTTPRequestHandler):
                 return
             payload = json.dumps({
                 "jsonrpc": "2.0", "id": message["id"],
-                "result": {"echo": message.get("method", ""), "verified": True},
+                "result": {"echo": message.get("method", ""), "verified": True,
+                           "sso": self.headers.get("X-MCPHUB-SSO-TOKEN", "")},
             }).encode()
             self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -172,6 +175,43 @@ def main() -> int:
         check("missing SSO token refuses to start",
               missing.returncode == 2 and "MCPHUB_SSO_TOKEN" in missing.stderr,
               missing.stderr.strip().splitlines()[-1] if missing.stderr else "")
+
+        # token file (the interactive kernel's form): read per request, so a
+        # rewrite mid-flight — a workbench reconnect refreshing an expired
+        # token — takes effect without a proxy restart
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".token", delete=False) as tf:
+            tf.write(SSO + "\n")
+            token_path = tf.name
+        env_file = {k: v for k, v in env.items() if k != "MCPHUB_SSO_TOKEN"}
+        env_file["MCPHUB_SSO_TOKEN_FILE"] = token_path
+        fproc = subprocess.Popen(
+            [sys.executable, str(SRC / "mcp_hub_proxy.py")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env_file,
+        )
+        try:
+            fproc.stdin.write(json.dumps(
+                {"jsonrpc": "2.0", "id": 11, "method": "tools/list"}) + "\n")
+            fproc.stdin.flush()
+            r1 = json.loads(fproc.stdout.readline())
+            check("token file: request signed with file content",
+                  r1.get("result", {}).get("verified") is True
+                  and r1.get("result", {}).get("sso") == SSO)
+            with open(token_path, "w") as fh:
+                fh.write(SSO_ROTATED + "\n")
+            fproc.stdin.write(json.dumps(
+                {"jsonrpc": "2.0", "id": 12, "method": "tools/list"}) + "\n")
+            fproc.stdin.flush()
+            r2 = json.loads(fproc.stdout.readline())
+            check("token file: rewrite picked up without restart",
+                  r2.get("result", {}).get("verified") is True
+                  and r2.get("result", {}).get("sso") == SSO_ROTATED,
+                  json.dumps(r2.get("result")))
+        finally:
+            fproc.kill()
+            os.unlink(token_path)
     finally:
         if proc.poll() is None:
             proc.kill()
