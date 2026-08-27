@@ -447,7 +447,17 @@ class PipelineService:
                         entry["error"] = f"schema mismatch: missing {[k for k in required if k not in value]}"
                         value = None
                     elif value is None:
-                        entry["error"] = "no JSON object in output"
+                        # Separate "there was no JSON" from "there was JSON and
+                        # it was broken". One message covered both, so an
+                        # unescaped quote wrecking a payload read as the model
+                        # not emitting JSON at all, and the search went the
+                        # wrong way for a while.
+                        entry["error"] = (
+                            "invalid JSON in output (found a {...} block but json.loads failed"
+                            " — typically unescaped quotes inside a string value)"
+                            if re.search(r"\{.*\}", text, re.DOTALL)
+                            else "no JSON object in output"
+                        )
                 else:
                     value = text
         except (QuotaExceeded, SourceDisabled) as e:
