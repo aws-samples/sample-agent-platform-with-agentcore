@@ -93,13 +93,16 @@ class WorkflowEngine:
             return []
 
     def run(self, *, script: str, args=None, call_agent, on_phase, tb=None,
-            run_workflow=None) -> dict:
+            run_workflow=None, timeout_s: int | None = None) -> dict:
         """Execute one script to completion (blocking; call from a thread).
 
-        ``call_agent(prompt, opts, phase, parent_span)`` is the injected bridge
+        ``call_agent(prompt, opts, phase, parent_span)`` returns
+        ``(value, error)`` and is the injected bridge
         to the governed invocation pipeline. ``run_workflow(name, args)``,
         when provided, serves the script's ``workflow()`` calls (one level of
         nesting — pipeline_service passes it for top-level runs only).
+        ``timeout_s`` overrides ``RUN_TIMEOUT_S`` — pipeline_service uses it to
+        cap a nested run inside its caller's remaining budget.
         Returns ``{ok, result, error, logs}``.
         """
         node = shutil.which("node")
@@ -130,7 +133,24 @@ class WorkflowEngine:
                     proc.stdin.write(json.dumps({"id": msg_id, "value": value}, ensure_ascii=False) + "\n")
                     proc.stdin.flush()
                 except Exception:  # script exited mid-flight
-                    pass
+                    # Not silent: a dropped reply leaves the script awaiting a
+                    # promise nothing can resolve, so it sits there until the
+                    # kill timer. 2026-08-18 that made a timed-out run read as
+                    # "the agent succeeded, then the script froze" — the agent
+                    # record gets written by this worker thread, which outlives
+                    # the killed Node process, and then this write finds a dead
+                    # pipe. One log line is the difference between that and an
+                    # hour of guessing.
+                    logger.warning("workflow reply dropped, script is gone: msg %s", msg_id)
+
+        log_lock = threading.Lock()
+
+        def add_log(text: str) -> None:
+            # called from both the reader loop (script log()) and the worker
+            # pool (agent failures), so the cap check needs the lock
+            with log_lock:
+                if len(logs) < LOG_CAP:
+                    logs.append(str(text)[:500])
 
         def touch_phase(now: float) -> dict | None:
             entry = phases.get(state["phase"])
@@ -142,12 +162,24 @@ class WorkflowEngine:
             t = msg.get("type")
             if t == "agent":
                 entry = phases.get(state["phase"])
-                value = call_agent(
-                    msg.get("prompt", ""), msg.get("opts") or {},
+                opts = msg.get("opts") or {}
+                value, err = call_agent(
+                    msg.get("prompt", ""), opts,
                     phase=state["phase"], parent_span=entry["id"] if entry else None,
                 )
                 touch_phase(time.time())
-                reply(msg["id"], value)
+                # Every failure states its own reason in the run log, next to
+                # the script's own lines. Before this the reason lived only in
+                # the run's agents[] array while the script logged whatever it
+                # assumed had happened: a gateway slowdown once had every one of
+                # seventeen read-timeout victims logging "no valid JSON", and
+                # finding the truth meant querying DynamoDB by hand.
+                if err:
+                    label = str(opts.get("label") or msg.get("prompt", "")[:30]).replace("\n", " ")
+                    add_log(f"agent failed · {label[:60]} · {state['phase'] or '-'}: {err}")
+                # wrapped so the shim can hand the script both, while keeping
+                # agent() itself returning value-or-null as the contract says
+                reply(msg["id"], {"__agent_reply": True, "value": value, "error": err or ""})
             elif t == "s3read":
                 reply(msg["id"], self._s3read(msg.get("key", "")))
             elif t == "s3write":
@@ -172,7 +204,19 @@ class WorkflowEngine:
             target=lambda: stderr_tail.extend(proc.stderr.read().splitlines()[-5:]), daemon=True
         ).start()
 
-        killer = threading.Timer(RUN_TIMEOUT_S, proc.kill)
+        budget_s = int(timeout_s or RUN_TIMEOUT_S)
+        # An explicit flag, not `killer.finished.is_set()`: Timer.cancel() sets
+        # that same Event, and cancel() runs unconditionally in the finally
+        # block below — so the old check was always true and every incomplete
+        # run got labelled "(timed out)", crashes included. 2026-08-18 that
+        # cost a chunk of a triage before the wall clock settled it.
+        timed_out = threading.Event()
+
+        def on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        killer = threading.Timer(budget_s, on_timeout)
         killer.start()
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_FANOUT) as pool:
@@ -192,8 +236,7 @@ class WorkflowEngine:
                             phases[title] = {"id": TraceBuilder.new_id(), "start": time.time(), "end": None}
                         on_phase(title)
                     elif t == "log":
-                        if len(logs) < LOG_CAP:
-                            logs.append(str(msg.get("msg", ""))[:500])
+                        add_log(msg.get("msg", ""))
                     elif t == "done":
                         state["result"], state["done"] = msg.get("result"), True
                     elif t == "fatal":
@@ -214,7 +257,10 @@ class WorkflowEngine:
             state["error"] = state["error"] or (
                 "script exited without completing"
                 + (f" — stderr: {' | '.join(stderr_tail)}" if stderr_tail else "")
-                + (" (timed out)" if killer.finished.is_set() else "")
+                # the budget is in the message on purpose: a nested run is
+                # capped below RUN_TIMEOUT_S, so "which ceiling did we hit"
+                # is not inferable from the constant
+                + (f" (timed out after {budget_s}s)" if timed_out.is_set() else "")
             )
         if tb is not None:
             for title, p in phases.items():

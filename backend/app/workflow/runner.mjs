@@ -11,10 +11,12 @@
 //                   {type:"phase", title} / {type:"log", msg}   (one-way)
 //                   {type:"done", result} / {type:"fatal", error}
 //   engine → shim : {id, value}
+//                   {id, value:{__agent_reply, value, error}}   (agent replies)
 //
 // Compatibility with the Claude Code Workflow tool: `export const meta`,
 // agent()/parallel()/pipeline()/phase()/log()/args/budget/workflow() all work
-// with the same shapes. Platform-specific: `opts.agent` targets a published
+// with the same shapes. Platform-specific: `agentDetailed()` returns
+// {value, error} instead of just the value, `opts.agent` targets a published
 // agent by name (otherwise the raw sdk kernel), `opts.async = {key, timeout_s}`
 // runs the agent as an AgentCore async task (long feeds), and
 // s3read()/s3write()/s3list() replace local filesystem access. workflow()
@@ -49,7 +51,19 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
 })
 
-const hostAgent = (prompt, opts = {}) => rpc('agent', { prompt: String(prompt), opts })
+// The engine replies {__agent_reply, value, error}. agent() keeps the Workflow
+// tool's contract (the value, or null on failure); agentDetailed() also hands
+// back the reason, which is what retry logic needs to tell a model flake from
+// a read timeout — from a bare null the two are indistinguishable, and guessing
+// between them by elapsed time is what amplified the 2026-08-19 outage.
+// The unwrap tolerates a bare value so a stale engine still works.
+const hostAgentDetailed = async (prompt, opts = {}) => {
+  const r = await rpc('agent', { prompt: String(prompt), opts })
+  return (r && typeof r === 'object' && r.__agent_reply)
+    ? { value: r.value ?? null, error: String(r.error || '') }
+    : { value: r ?? null, error: '' }
+}
+const hostAgent = async (prompt, opts = {}) => (await hostAgentDetailed(prompt, opts)).value
 const hostS3read = (key) => rpc('s3read', { key: String(key) })
 const hostS3write = (key, body) => rpc('s3write', { key: String(key), body: String(body) })
 const hostS3list = (prefix) => rpc('s3list', { prefix: String(prefix) })
@@ -100,13 +114,14 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 // nosemgrep: javascript.lang.security.audit.detect-eval-with-expression
 const fn = new AsyncFunction(
   'agent', 'parallel', 'pipeline', 'phase', 'log', 's3read', 's3write', 's3list', 'args', 'budget', 'workflow',
+  'agentDetailed',
   source,
 )
 
 try {
   const result = await fn(
     hostAgent, hostParallel, hostPipeline, hostPhase, hostLog, hostS3read, hostS3write, hostS3list,
-    args, hostBudget, hostWorkflow,
+    args, hostBudget, hostWorkflow, hostAgentDetailed,
   )
   send({ type: 'done', result: result === undefined ? null : result })
 } catch (e) {
