@@ -93,13 +93,15 @@ class WorkflowEngine:
             return []
 
     def run(self, *, script: str, args=None, call_agent, on_phase, tb=None,
-            run_workflow=None) -> dict:
+            run_workflow=None, timeout_s: int | None = None) -> dict:
         """Execute one script to completion (blocking; call from a thread).
 
         ``call_agent(prompt, opts, phase, parent_span)`` is the injected bridge
         to the governed invocation pipeline. ``run_workflow(name, args)``,
         when provided, serves the script's ``workflow()`` calls (one level of
         nesting — pipeline_service passes it for top-level runs only).
+        ``timeout_s`` overrides ``RUN_TIMEOUT_S`` — pipeline_service uses it to
+        cap a nested run inside its caller's remaining budget.
         Returns ``{ok, result, error, logs}``.
         """
         node = shutil.which("node")
@@ -130,7 +132,15 @@ class WorkflowEngine:
                     proc.stdin.write(json.dumps({"id": msg_id, "value": value}, ensure_ascii=False) + "\n")
                     proc.stdin.flush()
                 except Exception:  # script exited mid-flight
-                    pass
+                    # Not silent: a dropped reply leaves the script awaiting a
+                    # promise nothing can resolve, so it sits there until the
+                    # kill timer. 2026-08-18 that made a timed-out run read as
+                    # "the agent succeeded, then the script froze" — the agent
+                    # record gets written by this worker thread, which outlives
+                    # the killed Node process, and then this write finds a dead
+                    # pipe. One log line is the difference between that and an
+                    # hour of guessing.
+                    logger.warning("workflow reply dropped, script is gone: msg %s", msg_id)
 
         def touch_phase(now: float) -> dict | None:
             entry = phases.get(state["phase"])
@@ -172,7 +182,19 @@ class WorkflowEngine:
             target=lambda: stderr_tail.extend(proc.stderr.read().splitlines()[-5:]), daemon=True
         ).start()
 
-        killer = threading.Timer(RUN_TIMEOUT_S, proc.kill)
+        budget_s = int(timeout_s or RUN_TIMEOUT_S)
+        # An explicit flag, not `killer.finished.is_set()`: Timer.cancel() sets
+        # that same Event, and cancel() runs unconditionally in the finally
+        # block below — so the old check was always true and every incomplete
+        # run got labelled "(timed out)", crashes included. 2026-08-18 that
+        # cost a chunk of a triage before the wall clock settled it.
+        timed_out = threading.Event()
+
+        def on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        killer = threading.Timer(budget_s, on_timeout)
         killer.start()
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_FANOUT) as pool:
@@ -214,7 +236,10 @@ class WorkflowEngine:
             state["error"] = state["error"] or (
                 "script exited without completing"
                 + (f" — stderr: {' | '.join(stderr_tail)}" if stderr_tail else "")
-                + (" (timed out)" if killer.finished.is_set() else "")
+                # the budget is in the message on purpose: a nested run is
+                # capped below RUN_TIMEOUT_S, so "which ceiling did we hit"
+                # is not inferable from the constant
+                + (f" (timed out after {budget_s}s)" if timed_out.is_set() else "")
             )
         if tb is not None:
             for title, p in phases.items():

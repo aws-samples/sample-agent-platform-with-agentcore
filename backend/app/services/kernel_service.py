@@ -25,10 +25,31 @@ class KernelService:
     def __init__(self) -> None:
         # Long read timeout: a single invocation can legitimately run for
         # minutes (agent loop + built-in tool sessions like browser startup).
+        #
+        # Two things here are easy to get wrong.
+        #
+        # 1) `retries={"max_attempts": 1}` does not mean "do not retry". In
+        #    botocore's legacy retry mode that key counts *retries*, not total
+        #    attempts, so it resolves to {'total_max_attempts': 2} and one read
+        #    timeout costs two full timeouts back to back — visible as a single
+        #    span of twice the configured value. `total_max_attempts: 1` is what
+        #    actually expresses one attempt.
+        #
+        # 2) Timeouts are deliberately not retried (see _invoke() below). A
+        #    retry re-sends a call that already ran for minutes: it doubles the
+        #    spend and, when the cause is upstream slowness rather than a flake,
+        #    times out again anyway.
+        #
+        # The value itself is tuned against observed slowest *successes* with
+        # roughly a third of headroom on top. It is intentionally not generous:
+        # a larger ceiling turns every genuine hang into a longer stall. If you
+        # start seeing clusters of read timeouts all landing near this number,
+        # the fix is to raise it — upstream latency has moved — rather than to
+        # go looking for a fault on the model side.
         self.agentcore = boto3.client(
             "bedrock-agentcore",
             region_name=settings.aws_region,
-            config=Config(read_timeout=300, retries={"max_attempts": 1}),
+            config=Config(read_timeout=450, retries={"total_max_attempts": 1}),
         )
         self.control = boto3.client(
             "bedrock-agentcore-control", region_name=settings.aws_region

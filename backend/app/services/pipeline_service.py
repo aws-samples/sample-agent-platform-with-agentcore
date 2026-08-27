@@ -37,6 +37,26 @@ MAX_SCRIPT = 100_000
 MAX_HISTORY = 10
 RESULT_CAP = 24_000
 
+# A nested pipeline (a script's workflow() call) runs inside its caller's wall
+# clock: the parent's kill timer keeps running while the child works, and the
+# child used to get its own full RUN_TIMEOUT_S on top. Unbounded, the child can
+# spend the entire parent budget — a parent has been killed at its 75-minute
+# ceiling with nothing to show because one child took 72 of those minutes.
+#
+# So a child is capped at "parent's remaining budget minus a reserve". Size the
+# reserve from what the parent still has to do after the call returns; the
+# default here covers a parent whose own remaining phases measured under 20
+# minutes, with room for that work to grow.
+#
+# Killing the child is much cheaper than killing the parent: workflow() throws,
+# so a script that can degrade — reusing the previous result and recording why
+# it is stale — still finishes and still produces its output.
+CHILD_RESERVE_S = 25 * 60
+# ...but never hand a child a budget so small it cannot finish anything; below
+# this, let it run and accept that the parent may die instead. Hitting this
+# floor means the parent was already almost out of time when it called out.
+CHILD_MIN_S = 10 * 60
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -249,27 +269,33 @@ class PipelineService:
 
     def run_sync(self, name: str, user: str = "scheduler", *, args=None,
                  source: str = "schedule", nested: bool = False,
-                 parent_run: str | None = None) -> dict:
+                 parent_run: str | None = None,
+                 timeout_s: int | None = None) -> dict:
         """Scheduler / nested-workflow path (in-backend): run to completion,
         return a summary. Nested runs (a script's ``workflow()`` call) cannot
-        nest further — one level, same as the platform contract."""
+        nest further — one level, same as the platform contract. ``timeout_s``
+        caps this run's wall clock below the engine default (see
+        CHILD_RESERVE_S)."""
         pipe = self.get_pipeline(name)
         if not pipe:
             raise ValueError(f"pipeline {name} not found")
         sk = self._create_run(name, user, source, parent_run=parent_run)
-        self._execute(sk, pipe, user, args, allow_nested=not nested)
+        self._execute(sk, pipe, user, args, allow_nested=not nested,
+                      timeout_s=timeout_s)
         run = self.get_run(sk.partition("#")[2]) or {}
         return {"ok": run.get("status") == "completed", "run_id": run.get("id"),
                 "result": _plain(run.get("result"))}
 
     # --------------------------------------------------------------- execute
 
-    def _execute(self, sk: str, pipe: dict, user: str, args, allow_nested: bool = True) -> None:
+    def _execute(self, sk: str, pipe: dict, user: str, args, allow_nested: bool = True,
+                 timeout_s: int | None = None) -> None:
         from app.services.trace_service import TraceBuilder
-        from app.services.workflow_engine import workflow_engine
+        from app.services.workflow_engine import RUN_TIMEOUT_S, workflow_engine
 
         run_id = sk.partition("#")[2]
         ref = f"piperun:{run_id}"
+        started = time.time()
         tb = TraceBuilder(pipe["name"])
         self._update_run(sk, trace_id=tb.trace_id)
 
@@ -288,13 +314,22 @@ class PipelineService:
             # script receives its {ok, run_id, result} summary. parent_run
             # lets the run list show the child under its caller instead of
             # as a sibling that looks independently scheduled.
+            #
+            # The child runs inside the parent's wall clock (the parent's kill
+            # timer keeps ticking while this blocks), so it gets what is left
+            # minus a reserve for the parent's own remaining work. Uncapped,
+            # a slow child takes the parent down mid-phase and the whole run
+            # produces nothing — see CHILD_RESERVE_S.
+            left = int((timeout_s or RUN_TIMEOUT_S) - (time.time() - started) - CHILD_RESERVE_S)
             return self.run_sync(child, user=user, args=child_args,
-                                 source=SOURCE, nested=True, parent_run=run_id)
+                                 source=SOURCE, nested=True, parent_run=run_id,
+                                 timeout_s=max(CHILD_MIN_S, left))
 
         try:
             out = workflow_engine.run(
                 script=pipe["script"], args=args, call_agent=call_agent, on_phase=on_phase, tb=tb,
                 run_workflow=run_workflow if allow_nested else None,
+                timeout_s=timeout_s,
             )
             result = out.get("result")
             if isinstance(result, (dict, list)):
