@@ -24,4 +24,5 @@ build() {
 build keycloak "$ROOT/services/keycloak"
 build team-api "$ROOT/services/team-api"
 
-echo "Images pushed. Next: cdk deploy AgentPlatformTeamAuth"
+echo "Images pushed. Next: set keycloak_image_tag / team_auth_image_tag in"
+echo "terraform/terraform.tfvars to '${TAG}', then terraform apply."

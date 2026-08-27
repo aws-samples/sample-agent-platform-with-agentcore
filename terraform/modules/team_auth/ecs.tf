@@ -1,4 +1,5 @@
-# Team-auth ECS workloads: Keycloak (dev mode, H2 in-memory) + 3 team APIs.
+# Team-auth ECS workloads: Keycloak (production mode on RDS PostgreSQL, see
+# rds.tf) + 3 team APIs.
 
 resource "aws_ecs_cluster" "team_auth" {
   name = "agent-platform-team-auth${var.name_suffix}"
@@ -54,6 +55,7 @@ data "aws_iam_policy_document" "execution" {
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
       aws_secretsmanager_secret.keycloak_admin.arn,
+      aws_secretsmanager_secret.keycloak_db.arn,
       aws_secretsmanager_secret.team_c_key.arn,
     ]
   }
@@ -88,7 +90,7 @@ resource "aws_ecs_task_definition" "keycloak" {
   container_definitions = jsonencode([
     {
       name      = "keycloak"
-      image     = "${var.team_auth_repos["keycloak"].url}:${var.team_auth_image_tag}"
+      image     = "${var.team_auth_repos["keycloak"].url}:${var.keycloak_image_tag}"
       essential = true
       portMappings = [
         { containerPort = 8080, protocol = "tcp" }
@@ -96,15 +98,33 @@ resource "aws_ecs_task_definition" "keycloak" {
       environment = [
         { name = "KC_BOOTSTRAP_ADMIN_USERNAME", value = "admin" },
         { name = "KC_HOSTNAME", value = local.base_url },
+        # TLS terminates at CloudFront, so the container speaks plain HTTP and
+        # reconstructs the external URL from the forwarded headers. Production
+        # mode disables HTTP by default, hence the explicit opt-in.
         { name = "KC_HTTP_ENABLED", value = "true" },
         { name = "KC_PROXY_HEADERS", value = "xforwarded" },
         { name = "KC_HEALTH_ENABLED", value = "true" },
+        # The vendor is also baked into the image at build time (kc.sh build);
+        # repeating it here keeps `start --optimized` from rejecting a mismatch.
+        { name = "KC_DB", value = "postgres" },
+        { name = "KC_DB_URL_HOST", value = aws_db_instance.keycloak.address },
+        { name = "KC_DB_URL_PORT", value = tostring(aws_db_instance.keycloak.port) },
+        { name = "KC_DB_URL_DATABASE", value = local.db_name },
+        { name = "KC_DB_URL_PROPERTIES", value = local.db_url_properties },
       ]
       secrets = [
         {
           name      = "KC_BOOTSTRAP_ADMIN_PASSWORD"
           valueFrom = "${aws_secretsmanager_secret.keycloak_admin.arn}:password::"
-        }
+        },
+        {
+          name      = "KC_DB_USERNAME"
+          valueFrom = "${aws_secretsmanager_secret.keycloak_db.arn}:username::"
+        },
+        {
+          name      = "KC_DB_PASSWORD"
+          valueFrom = "${aws_secretsmanager_secret.keycloak_db.arn}:password::"
+        },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -127,8 +147,11 @@ resource "aws_ecs_service" "keycloak" {
   health_check_grace_period_seconds = 180
 
   network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.service.id]
+    subnets = var.private_subnet_ids
+    security_groups = [
+      aws_security_group.service.id,
+      aws_security_group.keycloak_db_client.id,
+    ]
     assign_public_ip = false
   }
 

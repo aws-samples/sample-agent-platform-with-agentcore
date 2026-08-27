@@ -113,11 +113,11 @@ Design decisions:
 
 | Piece | What it is |
 |---|---|
-| `AgentPlatformTeamAuth` stack | Keycloak (Fargate, dev mode) + `team-a-api`/`team-b-api`/`team-c-api` containers behind one ALB + CloudFront (HTTPS for the OIDC discovery URL); generates the team-c static key (`agent-platform/team-c-api-key`) |
+| `AgentPlatformTeamAuth` stack | Keycloak (Fargate, production mode on RDS PostgreSQL) + `team-a-api`/`team-b-api`/`team-c-api` containers behind one ALB + CloudFront (HTTPS for the OIDC discovery URL); generates the team-c static key (`agent-platform/team-c-api-key`) |
 | `AgentPlatformTeamDemo` stack | The JWT-inbound runtime (`team_demo_kernel`) |
 | `services/keycloak/` | Keycloak image with the realm baked in: groups, users (alice/bob/carol), `portal-web` (public, PKCE) and `gateway-delegate` (confidential, standard token exchange) clients, `team`/audience mappers |
 | `services/team-api/` | One image; `TEAM` selects the team, `TEAM_API_AUTH` the authz depth: `oidc` (JWKS-validating middleware, `tools/call` team-gated, catalog stays listable) or `api-key` (static `X-Api-Key` check only — the no-SSO backend) |
-| `scripts/seed_team_idp.py` | Sets user passwords + pins the delegate client secret (Secrets Manager ⇄ Keycloak) — re-run after any Keycloak restart (dev mode is in-memory) |
+| `scripts/seed_team_idp.py` | Sets user passwords, pins the delegate + robot client secrets (Secrets Manager ⇄ Keycloak) and registers the portal's redirect URI. A one-time bootstrap after the first deploy, and idempotent if run again |
 | `scripts/deploy_team_gateway.py` | Gateway + OAuth2 credential provider (token exchange) + API-key credential provider + the Lambda REQUEST interceptor (inline zip) + three MCP-server targets + the gateway service-role policy; wiring goes to SSM `/agent-platform/team-gateway` |
 | `scripts/e2e_team_auth.py` | The acceptance suite for the auth chain (20 checks, below) |
 | `scripts/seed_team_gateway_registry.py` | Registers the gateway as one **MCP server** in the platform registry (headers carry the `{{user_token}}` placeholder) and publishes the `team-access-tester` agent with it attached |
@@ -137,7 +137,8 @@ cdk deploy AgentPlatformPlatform
 # 2. IdP + team APIs + CloudFront
 cdk deploy AgentPlatformTeamAuth
 
-# 3. seed users + pin the delegate secret (re-run after any Keycloak restart)
+# 3. seed users, pin the client secrets, register the portal redirect URI
+#    (one-time bootstrap; safe to re-run)
 python3 scripts/seed_team_idp.py
 
 # 4. gateway + OBO credential provider + targets (idempotent)
@@ -256,10 +257,22 @@ exercises the whole chain from a pod.
    invocation fails in about a second with
    `Claude Code returned an error result`. `cdk.json` sets
    `anthropic_model` explicitly for all runtimes.
-5. **Keycloak dev mode is in-memory.** Every task restart re-imports the
-   realm from the image and loses passwords — re-run `seed_team_idp.py`.
-   The delegate client secret survives restarts because the seed script
-   pins the Secrets Manager value back into Keycloak.
+5. **Keycloak needs a real database, not dev mode.** It ran `start-dev` on an
+   in-memory H2 database until 2026-08-19, which made every task replacement a
+   silent SSO outage: Fargate retired the task on its own after nine days, the
+   fresh one re-imported the realm from the image, and everything applied
+   *after* that import was gone — the portal's redirect URI, the confidential
+   clients' secrets, the user passwords. Sign-in failed with
+   `invalid_redirect_uri` and the robot client with
+   `invalid_client_credentials` for four hours, until someone noticed and
+   re-ran the seed by hand. It now runs `start --optimized` against RDS
+   PostgreSQL, so that state is durable. Sessions are too: Keycloak 26 keeps
+   `persistent-user-session` enabled by default, storing them in the database
+   rather than only in the local cache, which is what makes the realm's 7-day
+   SSO session mean anything. Note that the realm import runs with the default
+   `IGNORE_EXISTING` strategy, so against a persistent database it applies
+   once — later edits to the realm file do not reach an existing realm, and
+   have to go through the admin API or a partial import.
 6. **Kernel images should pin `claude-agent-sdk`.** A rebuild that silently
    picks up a newer SDK can change CLI bundling behavior; the deployed tags
    (`v14`/`v15`) are pinned builds.
@@ -299,10 +312,12 @@ exercises the whole chain from a pod.
    Keycloak shows a "do you want to log out" confirmation screen instead of
    logging out straight away.
 11. **`seed_team_idp.py` re-applies the stored passwords, it does not rotate
-   them.** Keycloak dev mode loses passwords on restart so they must be set
-   again on every run, but re-applying the value already in Secrets Manager
-   keeps distributed credentials working. Use `--rotate-passwords` to force
-   new ones.
+   them.** Re-applying the value already in Secrets Manager is what makes the
+   script safe to run again: distributed credentials and live browser sessions
+   keep working. Use `--rotate-passwords` to force new ones. Its two URL
+   lookups are deliberately fatal — the portal one used to fail into a warning
+   and skip registering the redirect URI, so a re-seed could report success
+   while leaving browser sign-in rejecting every attempt.
 12. **API-key outbound mirrors the OAuth IAM lesson.** The gateway service
    role needs `bedrock-agentcore:GetResourceApiKey` on the credential
    provider **and** the workload-identity/token-vault resources, plus

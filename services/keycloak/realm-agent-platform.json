@@ -6,8 +6,8 @@
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
   "accessTokenLifespan": 3600,
-  "ssoSessionIdleTimeout": 43200,
-  "ssoSessionMaxLifespan": 43200,
+  "ssoSessionIdleTimeout": 604800,
+  "ssoSessionMaxLifespan": 604800,
   "groups": [
     {
       "name": "team-a",
@@ -67,6 +67,17 @@
       "firstName": "Platform",
       "lastName": "Admin",
       "email": "admin@example.com",
+      "groups": [
+        "/platform-admin"
+      ]
+    },
+    {
+      "username": "jim",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Jim",
+      "lastName": "Admin",
+      "email": "jim@example.com",
       "groups": [
         "/platform-admin"
       ]

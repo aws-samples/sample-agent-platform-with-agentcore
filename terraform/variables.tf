@@ -122,6 +122,15 @@ variable "team_auth_image_tag" {
   default = ""
 }
 
+# Keycloak and the team APIs are built from separate Dockerfiles but shared one
+# tag until 2026-08-19, so rebuilding only Keycloak left the three team-API
+# services pulling a tag that was never pushed — they then failed to start in a
+# loop. Override this to move Keycloak on its own.
+variable "keycloak_image_tag" {
+  type    = string
+  default = ""
+}
+
 variable "team_demo_image_tag" {
   type    = string
   default = ""
