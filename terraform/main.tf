@@ -111,7 +111,9 @@ module "portal" {
   oidc_issuer               = var.oidc_issuer
   oidc_client_id            = var.oidc_client_id
   oidc_audience             = var.oidc_audience
-  service_api_allowed_vpces = var.service_api_allowed_vpces
+  # external caller VPCs' endpoints, plus the platform VPC's own when the
+  # mcp-hub demo is on (the demo app calls the private API from in-VPC)
+  service_api_allowed_vpces = concat(var.service_api_allowed_vpces, aws_vpc_endpoint.service_entry[*].id)
   llm_edge_url              = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].edge_url : ""
   name_suffix               = var.name_suffix
 }
@@ -134,17 +136,71 @@ module "team_auth" {
 # Optional: a customer-owned MCP hub as the tool backend (in place of
 # AgentCore Gateway) plus an EC2 playing the calling application. Verifies
 # tokens against the team_auth Keycloak, so that module is a prerequisite.
+locals {
+  mcp_hub_demo_on = var.enable_mcp_hub_demo && var.enable_portal && var.enable_team_auth && var.enable_runtime
+}
+
+# The service-entry API is PRIVATE: reachable only through execute-api
+# interface endpoints that are both policy-allowed and associated with the
+# API. External caller VPCs bring their own (service_api_allowed_vpces); the
+# demo app lives in the platform VPC, which needs one too. Private DNS stays
+# OFF — enabling it would capture every execute-api resolution in this VPC —
+# so the demo app uses the endpoint-specific URL ({api-id}-{vpce-id}.…),
+# which the API↔VPCE association publishes.
+#
+# Lives at the root, not in the demo module, to keep the graph acyclic:
+# portal needs this endpoint's id (policy + association) while the demo
+# module needs portal's API id.
+resource "aws_security_group" "service_entry_vpce" {
+  count = local.mcp_hub_demo_on ? 1 : 0
+
+  name        = "agent-platform-svc-entry-vpce${var.name_suffix}"
+  description = "execute-api interface endpoint - HTTPS from inside the VPC"
+  vpc_id      = module.network.vpc_id
+
+  ingress {
+    description = "HTTPS from the platform VPC"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_vpc_endpoint" "service_entry" {
+  count = local.mcp_hub_demo_on ? 1 : 0
+
+  vpc_id              = module.network.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.execute-api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.network.private_subnet_ids
+  security_group_ids  = [aws_security_group.service_entry_vpce[0].id]
+  private_dns_enabled = false
+
+  tags = {
+    Name = "agent-platform-service-entry${var.name_suffix}"
+  }
+}
+
 module "mcp_hub_demo" {
   source = "./modules/mcp_hub_demo"
-  count  = var.enable_mcp_hub_demo && var.enable_portal && var.enable_team_auth && var.enable_runtime ? 1 : 0
+  count  = local.mcp_hub_demo_on ? 1 : 0
 
-  vpc_id                    = module.network.vpc_id
-  private_subnet_ids        = module.network.private_subnet_ids
-  runtime_sg_id             = module.network.runtime_sg_id
-  workspace_bucket          = module.platform.workspace_bucket
-  hub_source_s3_key         = var.mcp_hub_source_s3_key
-  keycloak_issuer_url       = module.team_auth[0].issuer_url
-  service_api_url           = module.portal[0].service_entry_api_url
+  vpc_id              = module.network.vpc_id
+  private_subnet_ids  = module.network.private_subnet_ids
+  runtime_sg_id       = module.network.runtime_sg_id
+  workspace_bucket    = module.platform.workspace_bucket
+  hub_source_s3_key   = var.mcp_hub_source_s3_key
+  keycloak_issuer_url = module.team_auth[0].issuer_url
+  # endpoint-specific URL: resolvable without private DNS on the endpoint
+  service_api_url           = "https://${module.portal[0].service_entry_api_id}-${aws_vpc_endpoint.service_entry[0].id}.execute-api.${var.aws_region}.amazonaws.com/svc/"
   service_api_execution_arn = module.portal[0].service_entry_api_execution_arn
   name_suffix               = var.name_suffix
 }
