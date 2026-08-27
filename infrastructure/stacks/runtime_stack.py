@@ -43,6 +43,16 @@ class RuntimeStack(Stack):
         }
         llm_gateway_url = ctx("llm_gateway_url") or ""
         use_bedrock = str(ctx("use_bedrock") or ("" if llm_gateway_url else "1"))
+        # Workspace-bucket prefixes the headless kernel may write async task
+        # outputs to. Your pipelines' output prefixes go here, not into the
+        # stack — a deploy should not be what decides where a workload writes.
+        # Accepts a JSON list or a comma-separated string in cdk.json.
+        _prefixes = ctx("async_artifact_prefixes") or ["feeds"]
+        async_artifact_prefixes = (
+            [p.strip() for p in _prefixes.split(",") if p.strip()]
+            if isinstance(_prefixes, str)
+            else list(_prefixes)
+        ) or ["feeds"]
         anthropic_model = ctx("anthropic_model") or ""
         anthropic_small_model = ctx("anthropic_small_fast_model") or ""
         # In-terminal `/model opus|sonnet|haiku` aliases resolve to Anthropic
@@ -65,9 +75,10 @@ class RuntimeStack(Stack):
         #     scoped to workspaces/{sessionId}/* (see WorkspaceAccessRole
         #     below), so code inside one session cannot read another
         #     session's prefix even with the container's own credentials.
-        #   - sdk (headless): skills/* read + the async-artifact prefix
-        #     (feeds/*) — no workspace access at all. Add your own pipelines'
-        #     output prefixes to the AsyncArtifacts grant below.
+        #   - sdk (headless): skills/* read + the async-artifact prefixes
+        #     (feeds/* by default) — no workspace access at all. Add your own
+        #     pipelines' output prefixes with the async_artifact_prefixes
+        #     context key rather than by editing this stack.
         #   - mcp-tools: no S3.
         bucket = platform.workspace_bucket
 
@@ -173,7 +184,7 @@ class RuntimeStack(Stack):
         # (Keys come from the platform's pipeline layer; see
         # invocation_service.invoke_async_and_wait and pipelines/*.mjs.)
         for r in (sdk_role, legacy_role):
-            grant_prefix(r, "AsyncArtifacts", ["feeds"], write=True)
+            grant_prefix(r, "AsyncArtifacts", async_artifact_prefixes, write=True)
 
         # LLM gateway key — read at container start by both agent kernels.
         platform.llm_gateway_secret.grant_read(interactive_role)
