@@ -17,6 +17,7 @@
     "team_demo_image_tag": "",
     "oidc_issuer": "",
     "service_api_allowed_vpces": "",
+    "async_artifact_prefixes": "",
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:checkSecretUsage": true
   }

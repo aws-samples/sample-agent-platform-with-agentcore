@@ -312,6 +312,12 @@ artifact — with the dialect's full surface documented in its header comments.
 Copy it and replace the prompts; the pipelines that carry a real workload are
 not part of this sample.
 
+A pipeline that writes outside `feeds/` needs its own prefix in the headless
+kernel's S3 grant. Add it with the `async_artifact_prefixes` context key
+(`"feeds,my-pipeline-output"` in `cdk.json`, or the Terraform variable of the
+same name) rather than by editing `RuntimeStack` — the grant is deployment
+configuration, not something the workload should have to fork the stack for.
+
 1. **Register the example pipeline** (writes the agent and the pipeline
    definition to DynamoDB — no new infra):
 
