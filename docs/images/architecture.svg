@@ -7,7 +7,7 @@
 </defs>
 <rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
 <text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">Agent Platform on Amazon Bedrock AgentCore</text>
-<text x="40" y="68" font-size="12" fill="#5A6B7B">Interactive cloud workspaces (Claude Code web terminal) + headless kernels behind one portal · schedules, channels, memory, evals in one governed pipeline · machine callers via a private SigV4 entry · gateway key never in a session container · existing APIs via AgentCore Gateway</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">Cloud Claude Code workspaces + headless kernels behind one portal · schedules, channels, memory, evals in one governed pipeline · machine callers via a private SigV4 data-plane entry · tools via AgentCore Gateway or your own MCP hub</text>
 <rect x="200" y="88" width="1265" height="652" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
 <text x="218" y="728" font-size="11" font-weight="700" fill="#0B7E7F">AWS Cloud</text>
 <rect x="740" y="122" width="565" height="386" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
@@ -46,8 +46,8 @@
 <text x="1290" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">single EIP · allow-listed</text>
 <rect x="131" y="537" width="150" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="206" y="547" text-anchor="middle" font-size="9.5" fill="#48586a">SigV4 · x-robot-token</text>
-<rect x="428" y="465" width="118" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
-<text x="487" y="475" text-anchor="middle" font-size="9.5" fill="#48586a">async submit · poll</text>
+<rect x="412" y="465" width="150" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="487" y="475" text-anchor="middle" font-size="9.5" fill="#48586a">entry service · submit / poll</text>
 <rect x="281" y="87" width="279" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
 <text x="420" y="97" text-anchor="middle" font-size="9.5" fill="#48586a">WSS /ws · SigV4 pre-signed · web terminal</text>
 <rect x="658" y="240" width="153" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
@@ -127,7 +127,7 @@
         </g>
         <path d="M64,48.2340095 L56,43.4330117 L56,32.0000169 C56,31.6440171 55.812,31.3150172 55.504,31.1360173 L44,24.4260204 L44,14.7520248 L64,26.5710194 L64,48.2340095 Z M65.509,25.13902 L43.509,12.139026 C43.199,11.9560261 42.818,11.9540261 42.504,12.131026 C42.193,12.3090259 42,12.6410257 42,13.0000256 L42,25.0000201 C42,25.3550199 42.189,25.6840198 42.496,25.8640197 L54,32.5740166 L54,44.0000114 C54,44.3510113 54.185,44.6770111 54.486,44.857011 L64.486,50.8570083 C64.644,50.9520082 64.822,51 65,51 C65.17,51 65.34,50.9570082 65.493,50.8700083 C65.807,50.6930084 66,50.3600085 66,50 L66,26.0000196 C66,25.6460198 65.814,25.31902 65.509,25.13902 L65.509,25.13902 Z M40.445,66.863001 L17,54.3990067 L17,26.5710194 L37,14.7520248 L37,24.4510204 L26.463,31.1560173 C26.175,31.3400172 26,31.6580171 26,32.0000169 L26,49.0000091 C26,49.373009 26.208,49.7150088 26.538,49.8870087 L39.991,56.8870055 C40.28,57.0370055 40.624,57.0380055 40.912,56.8880055 L53.964,50.1440086 L61.996,54.9640064 L40.445,66.863001 Z M64.515,54.1420068 L54.515,48.1420095 C54.217,47.9640096 53.849,47.9520096 53.541,48.1120095 L40.455,54.8730065 L28,48.3930094 L28,32.5490167 L38.537,25.8440197 C38.825,25.6600198 39,25.3420199 39,25.0000201 L39,13.0000256 C39,12.6410257 38.808,12.3090259 38.496,12.131026 C38.184,11.9540261 37.802,11.9560261 37.491,12.139026 L15.491,25.13902 C15.187,25.31902 15,25.6460198 15,26.0000196 L15,55 C15,55.3690062 15.204,55.7090061 15.53,55.883006 L39.984,68.8830001 C40.131,68.961 40.292,69 40.453,69 C40.62,69 40.786,68.958 40.937,68.8750001 L64.484,55.875006 C64.797,55.7020061 64.993,55.3750062 65.0001416,55.0180064 C65.006,54.6600066 64.821,54.3260067 64.515,54.1420068 L64.515,54.1420068 Z" id="ecs__Amazon-Elastic-Container-Service_Icon_64_Squid" fill="#FFFFFF"></path>
     </g>
-</g><text x="570" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Backend (FastAPI)</text><text x="570" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">ECS Fargate · control plane</text>
+</g><text x="570" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Backend (FastAPI)</text><text x="570" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">ECS ×2 · management + data-plane entry</text>
 <g transform="translate(807.00,385.00) scale(0.7188)">
 <g clip-path="url(#agentcore__clip0_211_72)">
 <rect width="64" height="64" fill="#01A88D"/>
@@ -330,5 +330,18 @@
 <circle cx="264" cy="806" r="5" fill="#0369A1"/><text x="274" y="810" font-size="10.5" fill="#5A6B7B">tools/memory</text>
 <circle cx="378" cy="806" r="5" fill="#15803D"/><text x="388" y="810" font-size="10.5" fill="#5A6B7B">scheduling</text>
 <text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ per-session grant → llm-edge → ⑤ NAT egress → LLM gateway · EventBridge Scheduler → Lambda fires schedules (retries + DLQ) · workspace + conversation resume from S3</text>
-<text x="40" y="850" font-size="10" fill="#5A6B7B">machine callers enter via a private SigV4 API Gateway (per-channel caller allowlist · optional robot SSO token) into the same governed pipeline · AgentCore Memory = last-10-turn replay + cross-session recall</text>
+<text x="40" y="850" font-size="10" fill="#5A6B7B">machine callers enter via a private SigV4 API Gateway (per-channel caller allowlist · optional robot SSO token) into a data-plane twin of the backend (management routes not mounted) · AgentCore Memory = last-10-turn replay + cross-session recall · detail: data-plane-split.svg + mcp-hub-chains.svg</text>
+
+<path class="flow" d="M 1240.0 300.0 L 1240.0 540.0 L 1367.0 540.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="1144" y="473" width="196" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1242" y="483" text-anchor="middle" font-size="9.5" fill="#48586a">alt: MCPHUB-HMAC + user token</text>
+<circle r="4" fill="#0369A1"><animateMotion dur="2.6s" begin="0.40s" repeatCount="indefinite" path="M 1240.0 300.0 L 1240.0 540.0 L 1367.0 540.0"/></circle>
+<rect x="1367" y="517" width="46" height="46" rx="8" fill="#B45309"/>
+<line x1="1390" y1="540" x2="1381" y2="531" stroke="#fff" stroke-width="2"/><circle cx="1381" cy="531" r="3" fill="#fff"/>
+<line x1="1390" y1="540" x2="1399" y2="531" stroke="#fff" stroke-width="2"/><circle cx="1399" cy="531" r="3" fill="#fff"/>
+<line x1="1390" y1="540" x2="1381" y2="549" stroke="#fff" stroke-width="2"/><circle cx="1381" cy="549" r="3" fill="#fff"/>
+<line x1="1390" y1="540" x2="1399" y2="549" stroke="#fff" stroke-width="2"/><circle cx="1399" cy="549" r="3" fill="#fff"/>
+<circle cx="1390" cy="540" r="4.5" fill="#fff"/>
+<text x="1390" y="578" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Your MCP Hub</text>
+<text x="1390" y="591" text-anchor="middle" font-size="9.5" fill="#5A6B7B">customer-owned · HMAC-signed · alt to Gateway</text>
 </svg>

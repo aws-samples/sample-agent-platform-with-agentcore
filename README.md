@@ -26,7 +26,16 @@ alternative.
 
 <!-- ?v= bumps the URL so GitHub's image cache serves the current diagram
      instead of a stale copy at the same path. Bump it whenever the SVG changes. -->
-![architecture](docs/images/architecture.svg?v=2)
+![architecture](docs/images/architecture.svg?v=3)
+
+The hero diagram above is the map; two focused diagrams zoom into the parts
+that carry the security story: the
+[management / data-plane split](docs/images/data-plane-split.svg)
+(one backend image, two deployments — the console cannot front production
+traffic) and the
+[customer-owned MCP hub chains](docs/images/mcp-hub-chains.svg)
+(how production applications and the Dev Workbench reach a self-hosted tool
+backend with per-application HMAC signatures and a forwarded user token).
 
 ## What's inside
 

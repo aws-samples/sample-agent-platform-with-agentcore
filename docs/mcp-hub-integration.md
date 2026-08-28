@@ -17,6 +17,9 @@ scripts.
 
 ## The shape of the chain
 
+<!-- ?v= bumps the URL so GitHub's image cache serves the current diagram -->
+![MCP hub chains — production and development paths into a customer-owned hub](images/mcp-hub-chains.svg?v=1)
+
 ```
 calling app ──SigV4 + robot token──► private service-entry API ──► entry ECS
     ──► published agent (AgentCore Runtime, VPC mode)
@@ -37,6 +40,8 @@ console, the shared **dev-workbench** Actor (see "The development path"
 below).
 
 ## The data-plane split
+
+![Management / data-plane split — one image, two deployments](images/data-plane-split.svg?v=1)
 
 Production agent traffic and the management console used to share one
 backend deployment. They no longer do:
