@@ -17,6 +17,10 @@ Payload contract::
              "target": "https://<id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"},
             {"name": "ext", "kind": "url", "target": "https://...",
              "headers": {"Authorization": "Bearer ..."}},  // optional (e.g. user JWT for a gateway)
+            {"name": "corp-hub", "kind": "mcp-hub",  // customer MCP hub, HMAC-signed
+             "target": "http://hub.internal:8000/mcp",
+             "credentials_secret": "agent-platform/mcp-hub/<agent-id>",
+             "headers": {"X-MCPHUB-SSO-TOKEN": "<caller's SSO token>"}},
             {"name": "browser", "kind": "builtin", "target": "browser"}
         ],
         "memory": {                 // optional AgentCore Memory binding
@@ -289,6 +293,38 @@ def build_mcp_config(servers: list[dict]) -> dict:
                 cfg[name] = entry
             except Exception:
                 logger.exception("secret resolution failed for MCP %s — skipping it", name)
+        elif kind == "mcp-hub":
+            # A customer-owned MCP hub whose inbound auth is
+            # MCPHUB-HMAC-SHA256: the *application* signs every request with
+            # an access/secret key pair while the acting user's SSO token
+            # rides in X-MCPHUB-SSO-TOKEN. A static-header `url` attachment
+            # cannot express that (timestamp, nonce and the body hash are all
+            # signed per request), so the hub goes through a local signing
+            # proxy — the same stdio shape as mcp-proxy-for-aws, with the
+            # customer's scheme in place of SigV4.
+            #
+            # The SSO token arrives in the attachment headers (the backend
+            # fills {{user_token}} with the caller's — or a service
+            # account's — token per invocation). The signing credentials name
+            # the published agent as the hub's Actor: only the Secrets
+            # Manager secret *name* travels in the payload, and the proxy
+            # fetches the pair under this container's role.
+            headers = {
+                str(k).lower(): str(v) for k, v in (s.get("headers") or {}).items()
+            }
+            env = {
+                "MCPHUB_URL": target,
+                "MCPHUB_SSO_TOKEN": headers.get("x-mcphub-sso-token", ""),
+                "AWS_REGION": region,
+            }
+            if s.get("credentials_secret"):
+                env["MCPHUB_CREDENTIALS_SECRET"] = str(s["credentials_secret"])
+            cfg[name] = {
+                "type": "stdio",
+                "command": "python3",
+                "args": ["/opt/platform/mcp_hub_proxy.py"],
+                "env": env,
+            }
         elif kind == "builtin":
             # AgentCore built-in tools (code-interpreter / browser) wrapped as
             # a local stdio MCP server; sessions use this container's role.

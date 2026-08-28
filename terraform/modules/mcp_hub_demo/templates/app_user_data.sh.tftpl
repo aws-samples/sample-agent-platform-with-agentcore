@@ -1,0 +1,118 @@
+#!/bin/bash
+# Demo calling application. Nothing listens here — the box exists so the
+# "internal application" in the architecture is a real principal: its
+# instance role is what the platform channel allowlists, its SigV4 signature
+# is what the private service-entry API authenticates, and its IdP service
+# account is the user identity the MCP hub authorizes.
+set -euxo pipefail
+
+dnf install -y python3.11 python3.11-pip
+python3.11 -m pip install --no-cache-dir -q boto3 requests
+
+mkdir -p /opt/demo-app
+
+cat > /opt/demo-app/env <<EOF
+SERVICE_API_URL=${service_api_url}
+TOKEN_URL=${issuer}/protocol/openid-connect/token
+APP_CLIENT_SECRET_NAME=${app_client_secret}
+AWS_REGION=${region}
+EOF
+
+cat > /opt/demo-app/invoke_agent.py <<'SCRIPT'
+"""Call a published agent through the platform's data plane, as an application.
+
+    python3.11 invoke_agent.py --channel <channel-id> --message "..."
+
+Flow: client-credentials token from the IdP (the app's service account — the
+user identity every hop downstream authorizes) -> SigV4-signed submit to the
+private service-entry API (the infrastructure identity the channel
+allowlists) -> poll until the agent answers.
+"""
+import argparse, json, os, sys, time, urllib.parse
+
+import boto3, requests
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+
+
+def env(name):
+    if name in os.environ:
+        return os.environ[name]
+    with open("/opt/demo-app/env") as fh:
+        for line in fh:
+            key, sep, value = line.strip().partition("=")
+            if sep and key == name:
+                return value
+    raise SystemExit(f"missing config: {name}")
+
+
+def robot_token(session):
+    sm = session.client("secretsmanager")
+    client = json.loads(
+        sm.get_secret_value(SecretId=env("APP_CLIENT_SECRET_NAME"))["SecretString"]
+    )
+    resp = requests.post(
+        env("TOKEN_URL"),
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def sigv4(session, method, url, body, extra_headers):
+    creds = session.get_credentials().get_frozen_credentials()
+    request = AWSRequest(method=method, url=url, data=body, headers={
+        "Content-Type": "application/json", **extra_headers,
+    })
+    SigV4Auth(creds, "execute-api", session.region_name).add_auth(request)
+    return requests.request(
+        method, url, data=body, headers=dict(request.headers), timeout=60
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--channel", required=True)
+    parser.add_argument("--message", required=True)
+    parser.add_argument("--timeout", type=int, default=600)
+    args = parser.parse_args()
+
+    session = boto3.session.Session(region_name=env("AWS_REGION"))
+    base = env("SERVICE_API_URL").rstrip("/")
+
+    token = robot_token(session)
+    print("robot token acquired", file=sys.stderr)
+
+    submit = sigv4(
+        session, "POST",
+        f"{base}/service/v1/channels/{urllib.parse.quote(args.channel)}/invocations",
+        json.dumps({"message": args.message}),
+        {"x-robot-token": token},
+    )
+    if submit.status_code != 202:
+        raise SystemExit(f"submit failed {submit.status_code}: {submit.text[:500]}")
+    inv = submit.json()["invocation_id"]
+    print(f"invocation {inv} submitted", file=sys.stderr)
+
+    deadline = time.time() + args.timeout
+    while time.time() < deadline:
+        time.sleep(5)
+        poll = sigv4(session, "GET", f"{base}/service/v1/invocations/{inv}", None, {})
+        record = poll.json()
+        if record.get("status") in ("succeeded", "failed"):
+            print(json.dumps(record, indent=2, ensure_ascii=False))
+            return 0 if record["status"] == "succeeded" else 1
+        print(f"  … {record.get('status')}", file=sys.stderr)
+    raise SystemExit("timed out waiting for the invocation")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+SCRIPT
+
+chmod 755 /opt/demo-app/invoke_agent.py

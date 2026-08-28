@@ -236,6 +236,29 @@ variable "enable_team_demo" {
   default     = false
 }
 
+variable "entry_desired_count" {
+  description = "Task count for the data-plane (ENTRY_ONLY) backend service behind the private service-entry API. Published-agent traffic lands here instead of on the management backend."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.entry_desired_count >= 1
+    error_message = "entry_desired_count must be at least 1."
+  }
+}
+
+variable "enable_mcp_hub_demo" {
+  description = "Optional self-hosted MCP hub demo (requires enable_team_auth): a hub EC2 replacing AgentCore Gateway as the tool backend (MCPHUB-HMAC-SHA256 inbound), plus an EC2 playing the calling application. Package the hub source first — scripts/package_mcp_hub.sh."
+  type        = bool
+  default     = false
+}
+
+variable "mcp_hub_source_s3_key" {
+  description = "Workspace-bucket key of the packaged MCP hub source zip (scripts/package_mcp_hub.sh uploads it)."
+  type        = string
+  default     = "mcp-hub/source.zip"
+}
+
 variable "async_artifact_prefixes" {
   description = "S3 key prefixes the headless (SDK) kernel may write async task outputs to. Add your own pipelines' output prefixes."
   type        = list(string)

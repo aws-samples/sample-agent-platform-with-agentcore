@@ -409,6 +409,38 @@ function applySessionConfig(config) {
           command: "mcp-proxy-for-aws",
           args: [s.target, "--service", "bedrock-agentcore", "--region", m ? m[1] : region],
         };
+      } else if (s.kind === "mcp-hub") {
+        // Customer-owned MCP hub with MCPHUB-HMAC-SHA256 inbound auth: every
+        // request needs a fresh signature (timestamp/nonce/body hash), which
+        // static headers cannot carry — so attach a local stdio signing proxy
+        // (same shape as mcp-proxy-for-aws). A workbench session signs as the
+        // shared dev-workbench Actor; the backend resolves the acting user's
+        // SSO token into the headers at warmup and names the credentials
+        // secret, which the proxy fetches under this container's role.
+        //
+        // The token goes into a file under /tmp, NOT into .mcp.json: the
+        // workspace (including .mcp.json) syncs to S3, and a bearer token
+        // must never land at rest there. The proxy re-reads the file per
+        // request, so a re-warmup (reconnect) refreshes an expired token
+        // without restarting anything.
+        const hdrs = {};
+        for (const [k, v] of Object.entries(s.headers || {})) hdrs[String(k).toLowerCase()] = String(v);
+        const safeName = s.name.replace(/[^a-zA-Z0-9_-]/g, "");
+        const tokenFile = `/tmp/.mcp-hub-token-${safeName}`;
+        // nosemgrep: detect-non-literal-fs-filename  (fixed /tmp prefix, name stripped to [a-zA-Z0-9_-])
+        fs.writeFileSync(tokenFile, hdrs["x-mcphub-sso-token"] || "", { mode: 0o600 });
+        const env = {
+          MCPHUB_URL: s.target,
+          MCPHUB_SSO_TOKEN_FILE: tokenFile,
+          AWS_REGION: region,
+        };
+        if (s.credentials_secret) env.MCPHUB_CREDENTIALS_SECRET = String(s.credentials_secret);
+        servers[s.name] = {
+          type: "stdio",
+          command: "python3",
+          args: ["/opt/platform/mcp_hub_proxy.py"],
+          env,
+        };
       } else if (s.kind === "url") {
         servers[s.name] = { type: "http", url: s.target };
       } else if (s.kind === "builtin") {

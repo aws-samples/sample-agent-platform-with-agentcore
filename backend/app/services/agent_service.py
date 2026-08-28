@@ -33,6 +33,7 @@ import yaml
 
 from app.config import settings
 from app.services.ecosystem_service import ecosystem_service
+from app.services.mcp_hub_credentials_service import mcp_hub_credentials_service
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,11 @@ class AgentService:
             "memory_id": item.get("memory_id", ""),
             "model_backend": item.get("model_backend", ""),
             "model": item.get("model", ""),
+            # MCP hub Actor identity (set when an mcp-hub server is attached).
+            # The access key is an identifier — safe to show; the secret key
+            # never leaves Secrets Manager, only its name is recorded here.
+            "mcp_hub_access_key": item.get("mcp_hub_access_key", ""),
+            "mcp_hub_secret_name": item.get("mcp_hub_secret_name", ""),
             "version": int(item.get("version", 1)),
             "source": item.get("source", "manual"),
             "created_by": item.get("created_by", ""),
@@ -148,7 +154,8 @@ class AgentService:
         if not name or not name.replace("-", "").replace("_", "").isalnum():
             raise ValueError("agent name must be alphanumeric with - or _")
         # validate attachments up front
-        self._resolve_names(mcp_server_names or [], skill_names or [])
+        resolved = self._resolve_names(mcp_server_names or [], skill_names or [])
+        uses_mcp_hub = any(s.get("kind") == "mcp-hub" for s in resolved["mcp_servers"])
         if model_backend or model:
             # fail the publish, not the future invocation, on a bad reference
             from app.services.model_config_service import model_config_service
@@ -166,6 +173,18 @@ class AgentService:
             agent_id = uuid.uuid4().hex[:12]
             version, history, created_at = 1, [], now
 
+        # An mcp-hub attachment makes this agent an application in the hub's
+        # eyes, so publish is where its Actor credentials come to exist —
+        # idempotently, a republish keeps the pair the hub already knows.
+        mcp_hub_access_key = mcp_hub_secret_name = ""
+        if uses_mcp_hub:
+            from app.services.mcp_hub_credentials_service import (
+                mcp_hub_credentials_service,
+            )
+
+            mcp_hub_access_key = mcp_hub_credentials_service.ensure(agent_id)
+            mcp_hub_secret_name = mcp_hub_credentials_service.secret_name(agent_id)
+
         item = {
             "PK": PK,
             "SK": f"AGENT#{agent_id}",
@@ -178,6 +197,8 @@ class AgentService:
             "memory_id": memory_id,
             "model_backend": model_backend,
             "model": model,
+            "mcp_hub_access_key": mcp_hub_access_key,
+            "mcp_hub_secret_name": mcp_hub_secret_name,
             "version": version,
             "source": source,
             "created_by": user,
@@ -229,9 +250,16 @@ class AgentService:
 
     def delete_agent(self, agent_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": PK, "SK": f"AGENT#{agent_id}"})
-        if not resp.get("Item"):
+        item = resp.get("Item")
+        if not item:
             return False
         self.table.delete_item(Key={"PK": PK, "SK": f"AGENT#{agent_id}"})
+        if item.get("mcp_hub_secret_name"):
+            from app.services.mcp_hub_credentials_service import (
+                mcp_hub_credentials_service,
+            )
+
+            mcp_hub_credentials_service.delete(agent_id)
         return True
 
     def resolve_invoke_config(self, agent_id: str) -> dict:
@@ -241,6 +269,16 @@ class AgentService:
         if not agent:
             raise KeyError(f"agent {agent_id} not found")
         cfg = self._resolve_names(agent["mcp_server_names"], agent["skill_names"])
+        for server in cfg["mcp_servers"]:
+            # mcp-hub servers sign as this agent: hand the kernel the *name*
+            # of the agent's credential secret (the runtime role fetches the
+            # pair; the keys themselves never ride in a payload). Workbench
+            # sessions and Debug console runs sign as the shared dev-workbench
+            # Actor instead (ecosystem_service.resolve_session_config).
+            if server.get("kind") == "mcp-hub":
+                server["credentials_secret"] = agent.get(
+                    "mcp_hub_secret_name"
+                ) or mcp_hub_credentials_service.secret_name(agent_id)
         return {
             "label": f"agent:{agent['name']}",
             "system_prompt": agent["system_prompt"],

@@ -87,7 +87,7 @@ class EcosystemService:
             "SK": f"MCP#{uuid.uuid4().hex[:12]}",
             "name": name,
             "description": description,
-            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | builtin
+            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | mcp-hub | builtin
             "target": target,  # runtime ARN | gateway MCP URL | http(s) URL
             # optional request headers for ``url`` servers. Values may contain
             # {{secret:name}} (resolved in the kernel) or {{user_token}}
@@ -151,6 +151,11 @@ class EcosystemService:
         )
 
     def create_mcp_server(self, name, description, kind, target, headers=None) -> dict:
+        if kind == "mcp-hub" and not headers:
+            # the hub resolves the acting user from this header; default the
+            # standard identity-forwarding placeholder so a console-registered
+            # hub works without hand-writing header JSON
+            headers = {"X-MCPHUB-SSO-TOKEN": "{{user_token}}"}
         return self._to_public(
             self._put_mcp(name, description, kind, target, headers=headers)
         )
@@ -176,16 +181,35 @@ class EcosystemService:
         self._ensure_seeded()
         mcp = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("MCP#")}
         skills = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("SKILL#")}
+
+        def _server(entry: dict) -> dict:
+            server = {
+                "name": entry["name"],
+                "kind": entry["kind"],
+                "target": entry["target"],
+                **({"headers": entry["headers"]} if entry.get("headers") else {}),
+            }
+            if entry.get("kind") == "mcp-hub":
+                # A hub attachment outside a published agent (workbench
+                # session, Debug console) signs as the shared dev-workbench
+                # Actor — one platform-owned pair, lazily minted here, that
+                # the hub operator registers once. The acting user still
+                # rides in the forwarded SSO token, so hub-side permissions
+                # stay per-user.
+                from app.services.mcp_hub_credentials_service import (
+                    WORKBENCH_ACTOR_ID,
+                    mcp_hub_credentials_service,
+                )
+
+                mcp_hub_credentials_service.ensure_workbench()
+                server["credentials_secret"] = mcp_hub_credentials_service.secret_name(
+                    WORKBENCH_ACTOR_ID
+                )
+            return server
+
         return {
             "mcp_servers": [
-                {
-                    "name": mcp[i]["name"],
-                    "kind": mcp[i]["kind"],
-                    "target": mcp[i]["target"],
-                    **({"headers": mcp[i]["headers"]} if mcp[i].get("headers") else {}),
-                }
-                for i in mcp_server_ids
-                if i in mcp
+                _server(mcp[i]) for i in mcp_server_ids if i in mcp
             ],
             "skills": [
                 {

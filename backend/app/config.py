@@ -81,6 +81,19 @@ class Settings(BaseSettings):
     service_api_url: str = ""
     service_api_arn_base: str = ""
 
+    # Data-plane deployment mode: when true this process serves ONLY the IAM
+    # service entry (submit/poll for published agents) plus /health — no
+    # portal APIs, no scheduler reconciliation. The same image runs twice:
+    # the management deployment behind CloudFront, and this slimmed one
+    # behind the private service-entry API, so production agent traffic
+    # never traverses the management console's surface.
+    entry_only: bool = False
+
+    # Secrets Manager prefix for per-agent MCP hub HMAC credentials
+    # (see mcp_hub_credentials_service). The runtime role is granted reads on
+    # exactly this prefix.
+    mcp_hub_secret_prefix: str = "agent-platform/mcp-hub"
+
     # Pipeline delegation: the schedule-runner Lambda cannot execute workflow
     # scripts (no Node in its runtime), so when this is set (Lambda env) a
     # pipeline schedule is delegated to the backend API instead, authenticated

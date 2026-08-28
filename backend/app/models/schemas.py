@@ -60,12 +60,15 @@ class InvokeRequest(BaseModel):
 class McpServerCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=400)
-    kind: str = Field(pattern="^(agentcore-runtime|agentcore-gateway|url)$")
+    kind: str = Field(pattern="^(agentcore-runtime|agentcore-gateway|url|mcp-hub)$")
     target: str = Field(min_length=1, max_length=500)  # runtime ARN or URL
-    # Optional request headers for ``url`` servers. Values may reference
-    # {{secret:<name>}} (resolved inside the kernel) or {{user_token}} (the
-    # calling user's own bearer token, substituted per invocation) — a literal
-    # credential must never be stored here.
+    # Optional request headers for ``url`` and ``mcp-hub`` servers. Values may
+    # reference {{secret:<name>}} (resolved inside the kernel) or
+    # {{user_token}} (the calling user's own bearer token, substituted per
+    # invocation) — a literal credential must never be stored here. An
+    # ``mcp-hub`` entry forwards the caller's identity with
+    # {"X-MCPHUB-SSO-TOKEN": "{{user_token}}"}; its HMAC signing credentials
+    # are per published agent and never appear in the registry at all.
     headers: dict[str, str] = Field(default_factory=dict)
 
 

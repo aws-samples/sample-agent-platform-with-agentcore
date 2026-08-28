@@ -116,6 +116,9 @@ export interface PublishedAgent {
   memory_id: string
   model_backend: string // '' = platform default
   model: string
+  // MCP hub Actor identity ('' unless an mcp-hub server is attached).
+  // The access key identifies this agent to the hub — register it there.
+  mcp_hub_access_key: string
   version: number
   source: string
   created_by: string

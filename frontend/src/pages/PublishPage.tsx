@@ -236,6 +236,14 @@ export default function PublishPage() {
                 </span>
               )}
               <span className="badge bg-slate-100 text-slate-500">{a.max_turns} turns</span>
+              {a.mcp_hub_access_key && (
+                <span
+                  className="badge bg-amber-50 font-mono text-amber-700"
+                  title="This agent signs its MCP hub requests as this Actor — register the access key (and its secret from Secrets Manager) with your hub"
+                >
+                  hub actor: {a.mcp_hub_access_key}
+                </span>
+              )}
             </div>
             <p className="mt-2 font-mono text-[10px] text-slate-400">
               POST /api/v1/agents/{a.id}/invoke · {a.source} · by {a.created_by}

@@ -132,3 +132,32 @@ output "team_api_mcp_urls" {
 output "team_demo_runtime_arn" {
   value = try(module.team_demo[0].runtime_arn, null)
 }
+
+# ------------------------------ mcp hub demo --------------------------------
+
+output "mcp_hub_endpoint" {
+  description = "The hub's real MCP endpoint — register this as the platform's mcp-hub target."
+  value       = try(module.mcp_hub_demo[0].hub_endpoint, null)
+}
+
+output "mcp_hub_resource_url" {
+  description = "Token audience the hub enforces (logical, instance-independent)."
+  value       = try(module.mcp_hub_demo[0].hub_resource_url, null)
+}
+
+output "mcp_hub_instance_id" {
+  value = try(module.mcp_hub_demo[0].hub_instance_id, null)
+}
+
+output "demo_app_instance_id" {
+  value = try(module.mcp_hub_demo[0].app_instance_id, null)
+}
+
+output "demo_app_role_arn" {
+  description = "Allowlist this role on the platform's iam channel."
+  value       = try(module.mcp_hub_demo[0].app_role_arn, null)
+}
+
+output "demo_app_client_secret_name" {
+  value = try(module.mcp_hub_demo[0].app_client_secret_name, null)
+}

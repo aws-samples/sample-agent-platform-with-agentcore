@@ -35,6 +35,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.entry_only:
+        # the management deployment owns schedule reconciliation; a second
+        # reconciler here would fight it over the EventBridge group
+        yield
+        return
     # eventbridge mode (PortalStack): reconcile the EventBridge schedule
     # group with DynamoDB; local mode (uvicorn dev): start the tick loop.
     schedule_service.start()
@@ -43,39 +48,57 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Agent Platform Control Plane",
-    description="Sessions, kernel catalog and debug invocation for the AgentCore-backed agent platform",
+    title="Agent Platform Data Plane" if settings.entry_only else "Agent Platform Control Plane",
+    description=(
+        "IAM service entry only (submit/poll for published agents)"
+        if settings.entry_only
+        else "Sessions, kernel catalog and debug invocation for the AgentCore-backed agent platform"
+    ),
     version="2.0.0",
     lifespan=lifespan,
 )
 
-# outermost: record the caller's bearer token in the request context so
-# identity-forwarding attachments can use it (see app/context.py)
-app.add_middleware(CallerTokenMiddleware)
+if settings.entry_only:
+    # Data-plane deployment: production traffic to *published* agents, and
+    # nothing else. The same image runs twice — the management deployment
+    # (portal APIs, behind CloudFront + user auth) and this one (behind the
+    # private service-entry API Gateway, SigV4 callers only) — so an exposure
+    # in a console route never fronts production agent traffic, and the
+    # management service can be locked down or even stopped without touching
+    # the serving path. No CORS, no token middleware: the only callers are
+    # API Gateway integrations carrying the gateway-injected entry secret.
+    app.include_router(service_entry.router)
+else:
+    # outermost: record the caller's bearer token in the request context so
+    # identity-forwarding attachments can use it (see app/context.py)
+    app.add_middleware(CallerTokenMiddleware)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-app.include_router(sessions.router)
-app.include_router(kernels.router)
-app.include_router(ecosystem.router)
-app.include_router(agents.router)
-app.include_router(schedules.router)
-app.include_router(channels.router)
-app.include_router(evals.router)
-app.include_router(memory.router)
-app.include_router(observability.router)
-app.include_router(governance.router)
-app.include_router(model_config.router)
-app.include_router(pipelines.router)
-app.include_router(gateways.router)
-app.include_router(team_demo.router)
-app.include_router(service_entry.router)
+    app.include_router(sessions.router)
+    app.include_router(kernels.router)
+    app.include_router(ecosystem.router)
+    app.include_router(agents.router)
+    app.include_router(schedules.router)
+    app.include_router(channels.router)
+    app.include_router(evals.router)
+    app.include_router(memory.router)
+    app.include_router(observability.router)
+    app.include_router(governance.router)
+    app.include_router(model_config.router)
+    app.include_router(pipelines.router)
+    app.include_router(gateways.router)
+    app.include_router(team_demo.router)
+    # kept on the management deployment for compatibility (existing callers
+    # may still point at it); the dedicated data-plane deployment is the
+    # production home for this traffic
+    app.include_router(service_entry.router)
 
 
 @app.get("/health")
@@ -83,48 +106,49 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/v1/me")
-def whoami(
-    user: str = Depends(get_current_user),
-    authorization: str = Header(default=""),
-):
-    """The caller's identity as the backend verified it.
+if not settings.entry_only:
 
-    In OIDC mode this includes the IdP-issued claims the platform passes on
-    to identity-aware attachments (group / team membership above all), so a
-    page can show *which* identity an invocation will carry.
-    """
-    claims: dict = {}
-    if settings.oidc_issuer and authorization.startswith("Bearer "):
-        try:
-            claims = verify_oidc_token(authorization.removeprefix("Bearer "))
-        except PyJWTError:
-            claims = {}  # Cognito-authenticated internal caller
-    team = claims.get("team") or claims.get("groups") or []
-    return {
-        "user": user,
-        "is_admin": getattr(user, "is_admin", False),
-        "groups": list(getattr(user, "groups", ())),
-        "teams": [team] if isinstance(team, str) else [str(t).strip("/") for t in team],
-        "issuer": claims.get("iss", ""),
-        "audience": claims.get("aud", ""),
-        "subject": claims.get("sub", ""),
-    }
+    @app.get("/api/v1/me")
+    def whoami(
+        user: str = Depends(get_current_user),
+        authorization: str = Header(default=""),
+    ):
+        """The caller's identity as the backend verified it.
 
+        In OIDC mode this includes the IdP-issued claims the platform passes on
+        to identity-aware attachments (group / team membership above all), so a
+        page can show *which* identity an invocation will carry.
+        """
+        claims: dict = {}
+        if settings.oidc_issuer and authorization.startswith("Bearer "):
+            try:
+                claims = verify_oidc_token(authorization.removeprefix("Bearer "))
+            except PyJWTError:
+                claims = {}  # Cognito-authenticated internal caller
+        team = claims.get("team") or claims.get("groups") or []
+        return {
+            "user": user,
+            "is_admin": getattr(user, "is_admin", False),
+            "groups": list(getattr(user, "groups", ())),
+            "teams": [team] if isinstance(team, str) else [str(t).strip("/") for t in team],
+            "issuer": claims.get("iss", ""),
+            "audience": claims.get("aud", ""),
+            "subject": claims.get("sub", ""),
+        }
 
-@app.get("/api/v1/config")
-def public_config():
-    """Public runtime config so the frontend needs no build-time secrets."""
-    if settings.oidc_issuer:
-        auth_mode = "oidc"
-    elif settings.cognito_pool_id and settings.cognito_client_id:
-        auth_mode = "cognito"
-    else:
-        auth_mode = "token" if settings.api_token else "open"
-    return {
-        "auth_mode": auth_mode,
-        "cognito_region": settings.aws_region,
-        "cognito_client_id": settings.cognito_client_id,
-        "oidc_issuer": settings.oidc_issuer,
-        "oidc_client_id": settings.oidc_client_id,
-    }
+    @app.get("/api/v1/config")
+    def public_config():
+        """Public runtime config so the frontend needs no build-time secrets."""
+        if settings.oidc_issuer:
+            auth_mode = "oidc"
+        elif settings.cognito_pool_id and settings.cognito_client_id:
+            auth_mode = "cognito"
+        else:
+            auth_mode = "token" if settings.api_token else "open"
+        return {
+            "auth_mode": auth_mode,
+            "cognito_region": settings.aws_region,
+            "cognito_client_id": settings.cognito_client_id,
+            "oidc_issuer": settings.oidc_issuer,
+            "oidc_client_id": settings.oidc_client_id,
+        }

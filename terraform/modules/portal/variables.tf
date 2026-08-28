@@ -55,6 +55,12 @@ variable "backend_desired_count" {
   default = 2
 }
 
+variable "entry_desired_count" {
+  description = "Task count for the data-plane (ENTRY_ONLY) service behind the private service-entry API."
+  type        = number
+  default     = 1
+}
+
 variable "interactive_runtime_arn" {
   type = string
 }

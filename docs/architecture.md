@@ -62,6 +62,12 @@ Memory, the data stores, and the AgentCore Gateway that turns existing
 enterprise APIs into MCP tools carrying the caller's own identity — is the
 animated diagram in the README (`docs/images/architecture.svg`).
 
+Two subsystems outgrew the hero diagram and have focused diagrams of their
+own, both in [docs/mcp-hub-integration.md](mcp-hub-integration.md):
+`docs/images/data-plane-split.svg` (the management / data-plane deployment
+split) and `docs/images/mcp-hub-chains.svg` (a customer-owned MCP hub as the
+tool backend, production and workbench paths).
+
 ## Components
 
 ### 1. Runtimes (`runtimes/`)

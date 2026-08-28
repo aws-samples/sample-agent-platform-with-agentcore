@@ -1,0 +1,121 @@
+#!/bin/bash
+# MCP hub host bootstrap: hub + two backend MCP servers (hr / order) as
+# systemd services, all verifying tokens against the platform's own IdP.
+set -euxo pipefail
+
+dnf install -y python3.11 python3.11-pip unzip
+
+mkdir -p /opt/mcp-hub /etc/mcp-hub
+aws s3 cp "s3://${bucket}/${source_key}" /tmp/mcp-hub-src.zip
+rm -rf /opt/mcp-hub/src && mkdir -p /opt/mcp-hub/src
+unzip -o -q /tmp/mcp-hub-src.zip -d /opt/mcp-hub/src
+
+python3.11 -m venv /opt/mcp-hub/venv
+/opt/mcp-hub/venv/bin/pip install --no-cache-dir -q \
+  -r /opt/mcp-hub/src/hub/requirements.txt \
+  -r /opt/mcp-hub/src/servers/requirements.txt
+
+cat > /opt/mcp-hub/config.yaml <<EOF
+# Rendered by Terraform. resource_url is a LOGICAL identifier (the token
+# audience) — deliberately not this instance's DNS name, so replacing the
+# instance never invalidates tokens; the platform registry entry's target is
+# what points at the real endpoint.
+resource_url: ${resource_url}
+issuer: ${issuer}
+servers:
+  - name: order
+    url: http://127.0.0.1:9001/mcp
+    allowed_departments: [sales, finance]
+  - name: hr
+    url: http://127.0.0.1:9002/mcp
+    allowed_departments: [hr]
+EOF
+
+touch /etc/mcp-hub/actors.env
+
+# Actor sync: invoked over SSM with secret NAMES as arguments (the values are
+# pulled here, under the instance role, so they never transit the SSM command
+# log). Each secret holds one {"access_key","secret_key"} pair minted at
+# agent publish.
+cat > /usr/local/bin/mcp-hub-refresh-actors <<'REFRESH'
+#!/bin/bash
+set -euo pipefail
+names="$*"
+export AWS_DEFAULT_REGION=__REGION__
+python3 - "$names" > /etc/mcp-hub/actors.env <<'PY'
+import json, subprocess, sys
+actors = []
+for name in sys.argv[1].split():
+    raw = subprocess.check_output([
+        "aws", "secretsmanager", "get-secret-value",
+        "--secret-id", name, "--query", "SecretString", "--output", "text",
+    ]).decode()
+    pair = json.loads(raw)
+    actors.append({"access_key": pair["access_key"], "secret_key": pair["secret_key"]})
+# compact (no spaces) so the systemd EnvironmentFile line needs no quoting
+print("HUB_ACTORS=" + json.dumps(actors, separators=(",", ":")))
+PY
+chmod 600 /etc/mcp-hub/actors.env
+systemctl restart mcp-hub
+echo "actors refreshed: $names"
+REFRESH
+sed -i "s/__REGION__/${region}/" /usr/local/bin/mcp-hub-refresh-actors
+chmod +x /usr/local/bin/mcp-hub-refresh-actors
+
+cat > /etc/systemd/system/mcp-hub.service <<EOF
+[Unit]
+Description=MCP Hub (SSO + HMAC inbound)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=HUB_CONFIG=/opt/mcp-hub/config.yaml
+Environment=PORT=8000
+EnvironmentFile=-/etc/mcp-hub/actors.env
+WorkingDirectory=/opt/mcp-hub/src/hub
+ExecStart=/opt/mcp-hub/venv/bin/python app.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/mcp-backend-order.service <<EOF
+[Unit]
+Description=Order MCP backend
+After=network-online.target
+
+[Service]
+Environment=ISSUER=${issuer}
+Environment=AUDIENCE=${resource_url}
+Environment=PORT=9001
+Environment=PYTHONPATH=/opt/mcp-hub/src/servers
+ExecStart=/opt/mcp-hub/venv/bin/python /opt/mcp-hub/src/servers/order/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/mcp-backend-hr.service <<EOF
+[Unit]
+Description=HR MCP backend
+After=network-online.target
+
+[Service]
+Environment=ISSUER=${issuer}
+Environment=AUDIENCE=${resource_url}
+Environment=PORT=9002
+Environment=PYTHONPATH=/opt/mcp-hub/src/servers
+ExecStart=/opt/mcp-hub/venv/bin/python /opt/mcp-hub/src/servers/hr/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now mcp-backend-order mcp-backend-hr mcp-hub

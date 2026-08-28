@@ -120,6 +120,18 @@ data "aws_iam_policy_document" "agent_common" {
     ]))
   }
 
+  # MCP hub HMAC credentials (mcp-hub attachments): the invocation payload
+  # carries only the secret *name*; the in-container signing proxy fetches
+  # the access/secret pair here, under this role, and signs each hub request
+  # as that Actor. Both agent kernels need it — published agents (per-agent
+  # pair, SDK kernel) and workbench sessions / Debug console runs (the shared
+  # dev-workbench pair, either kernel).
+  statement {
+    sid       = "McpHubActorCredentials"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/mcp-hub${var.name_suffix}/*"]
+  }
+
   # AgentCore built-in tools (Code Interpreter + Browser). Built-ins live in
   # the "aws" account namespace; account wildcards cover custom variants.
   statement {
