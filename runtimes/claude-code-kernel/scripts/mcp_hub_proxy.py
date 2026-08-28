@@ -197,7 +197,9 @@ def main() -> int:
     if missing:
         log(f"missing configuration: {', '.join(missing)} — refusing to start")
         return 2
-    log(f"forwarding to {url} as actor {access_key}")
+    # No credential-derived value in logs — the hub names the verified actor
+    # in its own log line, which is where per-application audit belongs.
+    log(f"forwarding to {url}")
     HubProxy(url, access_key, secret_key, sso_token, sso_token_file).run()
     return 0
 

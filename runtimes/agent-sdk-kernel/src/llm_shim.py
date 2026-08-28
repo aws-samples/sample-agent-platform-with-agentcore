@@ -153,7 +153,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(resp.status)
             for k, v in resp.getheaders():
                 if k.lower() not in _DROP_RESPONSE_HEADERS:
-                    self.send_header(k, v)
+                    # http.server does not validate outgoing headers, so strip
+                    # CR/LF before echoing the edge's headers back — a
+                    # misbehaving upstream must not be able to smuggle extra
+                    # header lines into our response.
+                    self.send_header(
+                        k.replace("\r", "").replace("\n", ""),
+                        v.replace("\r", "").replace("\n", ""),
+                    )
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             # read1 returns what has arrived rather than waiting for a full
