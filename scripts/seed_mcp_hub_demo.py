@@ -335,8 +335,8 @@ def main() -> int:
         attrs = {**(user_rep.get("attributes") or {}), "department": [dept]}
         _api(f"{base_url}/admin/realms/{REALM}/users/{user_rep['id']}",
              admin_token, method="PUT", payload={**user_rep, "attributes": attrs})
-    print(f"portal client mapped for hub access: {portal_client_id} "
-          f"(aud+department; alice=hr, others=sales)")
+    # the client id comes out of the users secret, so it stays out of stdout
+    print("portal client mapped for hub access (aud+department; alice=hr, others=sales)")
 
     # ------------------------ platform objects --------------------------
     portal_token = _post_form(
@@ -412,9 +412,9 @@ def main() -> int:
             SecretString=json.dumps({"access_key": "dev-workbench",
                                      "secret_key": secrets.token_urlsafe(32)}),
         )
-        print(f"workbench actor minted: dev-workbench ({workbench_secret})")
+        print("workbench actor minted: dev-workbench")
     except sm.exceptions.ResourceExistsException:
-        print(f"workbench actor exists: dev-workbench ({workbench_secret})")
+        print("workbench actor exists: dev-workbench")
 
     ssm = boto3.client("ssm")
     command_id = ssm.send_command(
