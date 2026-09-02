@@ -1,10 +1,10 @@
 #!/bin/bash
-# Phase 4b — ECS task/exec roles + service, CloudFront distribution (+OAC,
-# SPA function, origin-verify header), scheduler group/DLQ/Lambda, and the
-# private service-entry API. Mirrors the rest of terraform modules/portal.
+# Phase 4b — the backend's IRSA role, scheduler group/DLQ/Lambda and their
+# roles, the service-entry secret. Mirrors the rest of terraform modules/portal.
 . "$(dirname "$0")/../lib/common.sh"
 load
 : "${ALB_ARN:?run 40-portal-base.sh}"; : "${TABLE:?run 20-platform.sh}"
+: "${OIDC_PROVIDER_ARN:?run 25-eks.sh}"
 
 step "portal app ($NAME)"
 PRIV0="${PRIVATE_SUBNETS%%,*}"; PRIV1="${PRIVATE_SUBNETS##*,}"
@@ -12,7 +12,9 @@ TABLE_ARN="arn:aws:dynamodb:$AWS_REGION:$ACCOUNT_ID:table/$TABLE"
 WS_ARN="arn:aws:s3:::$WORKSPACE_BUCKET"
 
 # ------------------------------------------------------------------ logs
-LOG_GROUP="/ecs/agent-platform-backend${SUFFIX}"
+# Fluent Bit routes the backend pods' output here (<prefix>/<namespace>.<app>);
+# creating it first pins the retention.
+LOG_GROUP="$LOG_PREFIX/portal.backend"
 aws logs create-log-group --log-group-name "$LOG_GROUP" >/dev/null 2>&1 || true
 aws logs put-retention-policy --log-group-name "$LOG_GROUP" --retention-in-days 7 >/dev/null
 LAMBDA_LG="/aws/lambda/agent-platform-schedule-runner${SUFFIX}"
@@ -49,15 +51,19 @@ role_ensure() {  # name trust
   fi
   echo "$arn"
 }
-ECS_TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 LAMBDA_TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 SCHED_TRUST="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"scheduler.amazonaws.com\"},\"Action\":\"sts:AssumeRole\",\"Condition\":{\"StringEquals\":{\"aws:SourceAccount\":\"$ACCOUNT_ID\"}}}]}"
 
-TASK_ROLE="$(role_ensure "agent-platform-backend-task${SUFFIX}" "$ECS_TRUST")"
-EXEC_ROLE="$(role_ensure "agent-platform-backend-exec${SUFFIX}" "$ECS_TRUST")"
+# The backend role keeps its ECS-era "-task" name (it is what the permissions
+# doc and runbooks call it) but is assumed through IRSA by the `backend`
+# service account in the `portal` namespace. No execution role: image pulls
+# are the node's business and logs are Fluent Bit's.
+TASK_ROLE="$(role_ensure "agent-platform-backend-task${SUFFIX}" "$(irsa_trust portal backend)")"
+aws iam update-assume-role-policy --role-name "agent-platform-backend-task${SUFFIX}" \
+  --policy-document "$(irsa_trust portal backend)"
 RUNNER_ROLE="$(role_ensure "agent-platform-schedule-runner${SUFFIX}" "$LAMBDA_TRUST")"
 SCHED_ROLE="$(role_ensure "agent-platform-scheduler${SUFFIX}" "$SCHED_TRUST")"
-save TASK_ROLE "$TASK_ROLE"; save EXEC_ROLE "$EXEC_ROLE"
+save TASK_ROLE "$TASK_ROLE"
 save RUNNER_ROLE "$RUNNER_ROLE"; save SCHED_ROLE "$SCHED_ROLE"
 
 ENTRY_SECRET_ARN_GUESS="arn:aws:secretsmanager:$AWS_REGION:$ACCOUNT_ID:secret:${ENTRY_SECRET}*"
@@ -82,14 +88,6 @@ cat > /tmp/task-pol.json <<JSON
  {"Sid":"ServiceEntrySecret","Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],"Resource":"$ENTRY_SECRET_ARN_GUESS"}]}
 JSON
 put_json_policy "agent-platform-backend-task${SUFFIX}" backend /tmp/task-pol.json
-
-cat > /tmp/exec-pol.json <<JSON
-{"Version":"2012-10-17","Statement":[
- {"Sid":"EcrAuth","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
- {"Sid":"EcrPull","Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"arn:aws:ecr:$AWS_REGION:$ACCOUNT_ID:repository/agent-platform${SUFFIX}/backend"},
- {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogStream","logs:PutLogEvents"],"Resource":"arn:aws:logs:$AWS_REGION:$ACCOUNT_ID:log-group:$LOG_GROUP:*"}]}
-JSON
-put_json_policy "agent-platform-backend-exec${SUFFIX}" execution /tmp/exec-pol.json
 
 cat > /tmp/runner-pol.json <<JSON
 {"Version":"2012-10-17","Statement":[

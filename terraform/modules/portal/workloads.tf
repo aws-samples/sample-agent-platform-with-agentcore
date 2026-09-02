@@ -1,34 +1,61 @@
-# Port of PortalStack (part 2): backend on ECS Fargate behind ALB (public
-# path via CloudFront) and an internal NLB (private service-entry path).
+# Port of PortalStack (part 2): the backend on EKS behind the ALB (public path
+# via CloudFront) and an internal NLB (private service-entry path).
+#
+# Two Deployments of the same image: `backend` is the management console's API,
+# `entry` runs in ENTRY_ONLY mode and only mounts the IAM service entry
+# (submit/poll for published agents). The private service-entry API lands on
+# `entry`, so production agent traffic never traverses the console's rollout,
+# and the console can be locked down or scaled to zero without touching the
+# serving path.
+#
+# The load balancers, target groups and listeners are Terraform resources; the
+# AWS Load Balancer Controller registers pod IPs into the target groups through
+# a TargetGroupBinding that the workload chart ships. Pods carry
+# aws_security_group.service through a SecurityGroupPolicy, so the reachability
+# rules below read exactly as they did for the ECS tasks.
 
-resource "aws_ecs_cluster" "portal" {
-  name = "agent-platform${var.name_suffix}"
+locals {
+  namespace = "portal"
 }
 
-resource "aws_cloudwatch_log_group" "backend" {
-  name              = "/ecs/agent-platform-backend${var.name_suffix}"
-  retention_in_days = 7
-}
+# ------------------------------ workload role ------------------------------
+# One IAM role, two service accounts (backend and entry run the same code
+# against the same resources). Assumed through IRSA: the trust is the
+# cluster's OIDC provider, pinned to these two service accounts.
 
-# ------------------------------ task role ----------------------------------
-
-data "aws_iam_policy_document" "ecs_tasks_assume" {
+data "aws_iam_policy_document" "backend_assume" {
   statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRole"]
+    actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
+      type        = "Federated"
+      identifiers = [var.eks.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.eks.oidc_issuer_host}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.eks.oidc_issuer_host}:sub"
+      values = [
+        "system:serviceaccount:${local.namespace}:backend",
+        "system:serviceaccount:${local.namespace}:entry",
+      ]
     }
   }
 }
 
-resource "aws_iam_role" "task" {
+# The IAM name keeps its ECS-era "-task" suffix: it is what operators, the
+# permissions doc and the ops runbooks refer to, and renaming an IAM role is a
+# replacement.
+resource "aws_iam_role" "backend" {
   name               = "agent-platform-backend-task${var.name_suffix}"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+  assume_role_policy = data.aws_iam_policy_document.backend_assume.json
+  description        = "Platform backend (portal + service entry) on EKS, assumed via IRSA"
 }
 
-data "aws_iam_policy_document" "task" {
+data "aws_iam_policy_document" "backend" {
   statement {
     sid = "DynamoRw"
     actions = [
@@ -186,122 +213,21 @@ data "aws_iam_policy_document" "task" {
   }
 }
 
-resource "aws_iam_role_policy" "task" {
+resource "aws_iam_role_policy" "backend" {
   name   = "backend"
-  role   = aws_iam_role.task.id
-  policy = data.aws_iam_policy_document.task.json
+  role   = aws_iam_role.backend.id
+  policy = data.aws_iam_policy_document.backend.json
 }
 
-# --------------------------- execution role --------------------------------
-# CDK's FargateTaskDefinition synthesised this implicitly (ECR pull + logs).
+# --------------------------------- logs ------------------------------------
+# Fluent Bit routes each pod's output to <prefix>/<namespace>.<app>; creating
+# the groups here pins their retention.
 
-resource "aws_iam_role" "execution" {
-  name               = "agent-platform-backend-exec${var.name_suffix}"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
-}
+resource "aws_cloudwatch_log_group" "workloads" {
+  for_each = toset(["backend", "entry"])
 
-data "aws_iam_policy_document" "execution" {
-  statement {
-    sid       = "EcrAuth"
-    actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"]
-  }
-
-  statement {
-    sid = "EcrPull"
-    actions = [
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:BatchGetImage",
-    ]
-    resources = [var.kernel_repos["backend"].arn]
-  }
-
-  statement {
-    sid       = "Logs"
-    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-    resources = ["${aws_cloudwatch_log_group.backend.arn}:*"]
-  }
-}
-
-resource "aws_iam_role_policy" "execution" {
-  name   = "execution"
-  role   = aws_iam_role.execution.id
-  policy = data.aws_iam_policy_document.execution.json
-}
-
-# ---------------------------- task definition ------------------------------
-
-locals {
-  backend_env = merge(
-    {
-      PLATFORM_AWS_REGION                = local.region
-      PLATFORM_DYNAMO_TABLE              = var.platform_table.name
-      PLATFORM_WORKSPACE_BUCKET          = var.workspace_bucket.name
-      PLATFORM_INTERACTIVE_RUNTIME_ARN   = var.interactive_runtime_arn
-      PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
-      PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
-      PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
-      PLATFORM_LLM_EDGE_URL              = var.llm_edge_url
-      # Scoped to the portal's own origin. The API sits behind the same
-      # CloudFront domain as the SPA, so same-origin calls need no CORS at
-      # all — this only readmits the one legitimate cross-origin caller
-      # while ending the reflect-any-Origin + allow-credentials combination.
-      PLATFORM_CORS_ORIGINS              = "https://${aws_cloudfront_distribution.portal.domain_name}"
-      PLATFORM_COGNITO_POOL_ID           = aws_cognito_user_pool.portal.id
-      PLATFORM_COGNITO_CLIENT_ID         = aws_cognito_user_pool_client.portal.id
-      PLATFORM_SCHEDULER_GROUP           = aws_scheduler_schedule_group.portal.name
-      PLATFORM_SCHEDULER_LAMBDA_ARN      = aws_lambda_function.schedule_runner.arn
-      PLATFORM_SCHEDULER_ROLE_ARN        = aws_iam_role.scheduler.arn
-      PLATFORM_SCHEDULER_DLQ_ARN         = aws_sqs_queue.schedule_dlq.arn
-      PLATFORM_SERVICE_ENTRY_SECRET_NAME = aws_secretsmanager_secret.service_entry.name
-      PLATFORM_SERVICE_API_URL           = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
-      PLATFORM_SERVICE_API_ARN_BASE      = "arn:aws:execute-api:${local.region}:${local.account}:${aws_api_gateway_rest_api.service_entry.id}/svc"
-      PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
-    },
-    var.oidc_issuer != "" ? {
-      PLATFORM_OIDC_ISSUER    = var.oidc_issuer
-      PLATFORM_OIDC_CLIENT_ID = var.oidc_client_id
-      PLATFORM_OIDC_AUDIENCE  = var.oidc_audience
-    } : {},
-  )
-}
-
-resource "aws_ecs_task_definition" "backend" {
-  family                   = "agent-platform-backend${var.name_suffix}"
-  cpu                      = "512"
-  memory                   = "1024"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  task_role_arn            = aws_iam_role.task.arn
-  execution_role_arn       = aws_iam_role.execution.arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name      = "backend"
-      image     = "${var.kernel_repos["backend"].url}:${var.backend_image_tag}"
-      essential = true
-      portMappings = [
-        { containerPort = 8000, protocol = "tcp" }
-      ]
-      environment = [
-        for k in sort(keys(local.backend_env)) : { name = k, value = local.backend_env[k] }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.backend.name
-          awslogs-region        = local.region
-          awslogs-stream-prefix = "backend"
-        }
-      }
-    }
-  ])
+  name              = "${var.eks.log_group_prefix}/${local.namespace}.${each.key}"
+  retention_in_days = 7
 }
 
 # ------------------------------ networking ---------------------------------
@@ -332,6 +258,7 @@ resource "aws_security_group" "alb" {
   }
 }
 
+# Carried by the backend and entry pods (SecurityGroupPolicy).
 resource "aws_security_group" "service" {
   name   = "agent-platform-portal-service${var.name_suffix}"
   vpc_id = var.vpc_id
@@ -352,12 +279,36 @@ resource "aws_security_group" "service" {
     cidr_blocks = [var.vpc_cidr_block]
   }
 
+  # kubelet readiness/liveness probes arrive from the node, which carries the
+  # cluster security group. This is the one ingress the ECS shape did not
+  # have; it admits cluster nodes only, on the app port only.
+  ingress {
+    description     = "kubelet probes from cluster nodes"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [var.eks.cluster_security_group_id]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+# In strict enforcing mode a pod's traffic is judged by its own groups only,
+# so CoreDNS (running with the cluster security group) has to admit it.
+resource "aws_vpc_security_group_ingress_rule" "dns_from_service" {
+  for_each = { tcp = "tcp", udp = "udp" }
+
+  security_group_id            = var.eks.cluster_security_group_id
+  description                  = "DNS from portal pods (${each.key})"
+  referenced_security_group_id = aws_security_group.service.id
+  from_port                    = 53
+  to_port                      = 53
+  ip_protocol                  = each.value
 }
 
 resource "aws_lb" "portal" {
@@ -435,7 +386,7 @@ resource "aws_lb_listener_rule" "origin_verify" {
   }
 }
 
-# Internal NLB in front of the backend service — the VPC Link target.
+# Internal NLB in front of the entry pods — the VPC Link target.
 # Client IP preservation is off so the target security-group check sees
 # NLB-node sources; the service SG admits the VPC CIDR on the container port.
 resource "aws_lb" "service_entry" {
@@ -474,110 +425,121 @@ resource "aws_lb_listener" "service_entry" {
   }
 }
 
-# ------------------------------- service -----------------------------------
+# ------------------------------- workloads ---------------------------------
 
-resource "aws_ecs_service" "backend" {
-  name            = "agent-platform-backend${var.name_suffix}"
-  cluster         = aws_ecs_cluster.portal.id
-  task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = var.backend_desired_count
-  launch_type     = "FARGATE"
+locals {
+  backend_env = merge(
+    {
+      PLATFORM_AWS_REGION                = local.region
+      PLATFORM_DYNAMO_TABLE              = var.platform_table.name
+      PLATFORM_WORKSPACE_BUCKET          = var.workspace_bucket.name
+      PLATFORM_INTERACTIVE_RUNTIME_ARN   = var.interactive_runtime_arn
+      PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
+      PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
+      PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
+      PLATFORM_LLM_EDGE_URL              = var.llm_edge_url
+      # Scoped to the portal's own origin. The API sits behind the same
+      # CloudFront domain as the SPA, so same-origin calls need no CORS at
+      # all — this only readmits the one legitimate cross-origin caller
+      # while ending the reflect-any-Origin + allow-credentials combination.
+      PLATFORM_CORS_ORIGINS              = "https://${aws_cloudfront_distribution.portal.domain_name}"
+      PLATFORM_COGNITO_POOL_ID           = aws_cognito_user_pool.portal.id
+      PLATFORM_COGNITO_CLIENT_ID         = aws_cognito_user_pool_client.portal.id
+      PLATFORM_SCHEDULER_GROUP           = aws_scheduler_schedule_group.portal.name
+      PLATFORM_SCHEDULER_LAMBDA_ARN      = aws_lambda_function.schedule_runner.arn
+      PLATFORM_SCHEDULER_ROLE_ARN        = aws_iam_role.scheduler.arn
+      PLATFORM_SCHEDULER_DLQ_ARN         = aws_sqs_queue.schedule_dlq.arn
+      PLATFORM_SERVICE_ENTRY_SECRET_NAME = aws_secretsmanager_secret.service_entry.name
+      PLATFORM_SERVICE_API_URL           = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
+      PLATFORM_SERVICE_API_ARN_BASE      = "arn:aws:execute-api:${local.region}:${local.account}:${aws_api_gateway_rest_api.service_entry.id}/svc"
+      PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
+    },
+    var.oidc_issuer != "" ? {
+      PLATFORM_OIDC_ISSUER    = var.oidc_issuer
+      PLATFORM_OIDC_CLIENT_ID = var.oidc_client_id
+      PLATFORM_OIDC_AUDIENCE  = var.oidc_audience
+    } : {},
+  )
 
-  # A task that fails its health checks otherwise leaves ECS retrying the
-  # broken revision indefinitely — roll back to the last working one instead.
-  deployment_circuit_breaker {
-    enable   = true
-    rollback = true
+  backend_image = "${var.kernel_repos["backend"].url}:${var.backend_image_tag}"
+
+  # ECS ran the backend at 0.5 vCPU / 1 GiB.
+  backend_resources = {
+    requests = { cpu = "500m", memory = "1Gi" }
+    limits   = { memory = "1Gi" }
   }
 
-  network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.service.id]
-    assign_public_ip = false
+  workloads = {
+    backend = {
+      replicas      = var.backend_desired_count
+      env           = local.backend_env
+      target_groups = [{ arn = aws_lb_target_group.backend.arn, port = 8000 }]
+    }
+    entry = {
+      replicas      = var.entry_desired_count
+      env           = merge(local.backend_env, { PLATFORM_ENTRY_ONLY = "1" })
+      target_groups = [{ arn = aws_lb_target_group.service_entry.arn, port = 8000 }]
+    }
   }
+}
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.backend.arn
-    container_name   = "backend"
-    container_port   = 8000
-  }
+# Security groups first: a SecurityGroupPolicy only applies to pods created
+# after it exists, so it is its own release the workload depends on.
+resource "helm_release" "workload_sg" {
+  for_each = local.workloads
+
+  name             = "${each.key}-sg"
+  chart            = "${path.module}/../../charts/pod-security-group"
+  namespace        = local.namespace
+  create_namespace = true
+
+  values = [yamlencode({
+    name             = each.key
+    securityGroupIds = [aws_security_group.service.id]
+  })]
+}
+
+resource "helm_release" "workload" {
+  for_each = local.workloads
+
+  name      = each.key
+  chart     = "${path.module}/../../charts/platform-workload"
+  namespace = local.namespace
+
+  values = [yamlencode({
+    name     = each.key
+    image    = local.backend_image
+    replicas = each.value.replicas
+    port     = 8000
+    env      = each.value.env
+    serviceAccount = {
+      roleArn = aws_iam_role.backend.arn
+    }
+    probe = {
+      path      = "/health"
+      readiness = { initialDelaySeconds = 5, periodSeconds = 10, failureThreshold = 3 }
+      liveness  = { initialDelaySeconds = 30, periodSeconds = 20, failureThreshold = 3 }
+      startup   = { enabled = false, periodSeconds = 10, failureThreshold = 30 }
+    }
+    resources       = local.backend_resources
+    targetGroups    = each.value.target_groups
+    dependencyToken = var.eks.controllers_ready
+  })]
+
+  # Like the ECS deployment circuit breaker: a rollout whose pods never become
+  # ready is rolled back to the previous revision instead of left half-done.
+  wait            = true
+  timeout         = 600
+  atomic          = true
+  cleanup_on_fail = true
 
   depends_on = [
-    aws_lb_listener.http,
-    # the backend target group is only attached to the LB via this rule now
+    helm_release.workload_sg,
+    aws_iam_role_policy.backend,
+    aws_cloudwatch_log_group.workloads,
+    # the target groups must already hang off a listener rule before pods
+    # register into them
     aws_lb_listener_rule.origin_verify,
+    aws_lb_listener.service_entry,
   ]
-}
-
-# --------------------------- data-plane service -----------------------------
-# The same backend image in ENTRY_ONLY mode: only the IAM service entry
-# (submit/poll for published agents) is mounted. This is the service the
-# private service-entry API lands on, so production agent traffic never
-# traverses the management console's deployment — the console can be locked
-# down (or stopped outright) without touching the serving path, and a console
-# exposure never fronts data-plane traffic.
-
-resource "aws_ecs_task_definition" "entry" {
-  family                   = "agent-platform-entry${var.name_suffix}"
-  cpu                      = "512"
-  memory                   = "1024"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  task_role_arn            = aws_iam_role.task.arn
-  execution_role_arn       = aws_iam_role.execution.arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name      = "backend"
-      image     = "${var.kernel_repos["backend"].url}:${var.backend_image_tag}"
-      essential = true
-      portMappings = [
-        { containerPort = 8000, protocol = "tcp" }
-      ]
-      environment = [
-        for k in sort(keys(merge(local.backend_env, { PLATFORM_ENTRY_ONLY = "1" }))) :
-        { name = k, value = merge(local.backend_env, { PLATFORM_ENTRY_ONLY = "1" })[k] }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.backend.name
-          awslogs-region        = local.region
-          awslogs-stream-prefix = "entry"
-        }
-      }
-    }
-  ])
-}
-
-resource "aws_ecs_service" "entry" {
-  name            = "agent-platform-entry${var.name_suffix}"
-  cluster         = aws_ecs_cluster.portal.id
-  task_definition = aws_ecs_task_definition.entry.arn
-  desired_count   = var.entry_desired_count
-  launch_type     = "FARGATE"
-
-  deployment_circuit_breaker {
-    enable   = true
-    rollback = true
-  }
-
-  network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.service.id]
-    assign_public_ip = false
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.service_entry.arn
-    container_name   = "backend"
-    container_port   = 8000
-  }
-
-  depends_on = [aws_lb_listener.service_entry]
 }

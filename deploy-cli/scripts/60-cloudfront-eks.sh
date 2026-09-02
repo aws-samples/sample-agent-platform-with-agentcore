@@ -1,16 +1,15 @@
 #!/bin/bash
-# Phase 5 — CloudFront (OAC + SPA function + origin-verify header), then the ECS
-# cluster/task-definition/service. CloudFront comes first because the backend's
-# CORS origin is its domain, which does not exist until the distribution does —
+# Phase 5 — CloudFront (OAC + SPA function + origin-verify header), then the
+# backend Deployment on EKS. CloudFront comes first because the backend's CORS
+# origin is its domain, which does not exist until the distribution does —
 # terraform resolves that ordering from the graph; here it is script order.
 . "$(dirname "$0")/../lib/common.sh"
 load
 : "${ALB_DNS:?run 40-portal-base.sh}"; : "${TASK_ROLE:?run 50-portal-app.sh}"
-# Recompute rather than require it in state, so this phase is runnable standalone.
-LOG_GROUP="${LOG_GROUP:-/ecs/agent-platform-backend${SUFFIX}}"
+: "${SVC_SG:?run 40-portal-base.sh}"
+need_tools kubectl helm
 
-step "cloudfront + ecs ($NAME)"
-PRIV0="${PRIVATE_SUBNETS%%,*}"; PRIV1="${PRIVATE_SUBNETS##*,}"
+step "cloudfront + eks backend ($NAME)"
 
 # ------------------------------------------------------------------ OAC
 OAC_ID="$(aws cloudfront list-origin-access-controls \
@@ -139,28 +138,16 @@ JSON
 aws s3api put-bucket-policy --bucket "$FRONTEND_BUCKET" --policy file:///tmp/fe-pol.json
 log "frontend bucket policy pinned to $DIST_ID"
 
-# ------------------------------------------------------------------ ECS
-# AWSServiceRoleForECS is account-global and CloudFormation creates it implicitly,
-# so the CDK and terraform paths never have to name it. On an account that has
-# never run ECS in any region, create-service below fails with "Unable to assume
-# the service linked role" instead. Needs iam:CreateServiceLinkedRole (§1.3).
-if ! aws iam get-role --role-name AWSServiceRoleForECS >/dev/null 2>&1; then
-  log "creating the ECS service-linked role (first ECS use in this account)"
-  aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com >/dev/null 2>&1 || true
-  # Creation is asynchronous: create-service keeps failing until ECS can assume it.
-  retry_until "the ECS service-linked role to exist" 12 5 \
-    aws iam get-role --role-name AWSServiceRoleForECS \
-    || die "AWSServiceRoleForECS is missing. Have an admin run: aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com"
-fi
-
-CLUSTER="agent-platform${SUFFIX}"
-aws ecs create-cluster --cluster-name "$CLUSTER" >/dev/null 2>&1 || true
-save CLUSTER "$CLUSTER"
-
+# ------------------------------------------------------------------ EKS backend
+# One Deployment registered into both target groups (the ALB behind CloudFront
+# and the NLB behind the private service-entry API), the shape the CLI port
+# has always had; the terraform port splits the entry path into its own
+# ENTRY_ONLY Deployment. Pods carry SVC_SG through a SecurityGroupPolicy and
+# assume TASK_ROLE through IRSA.
 BACKEND_IMAGE="${REGISTRY}/agent-platform${SUFFIX}/backend:${IMAGE_TAG}"
-SVC_API_ID_PLACEHOLDER="${SERVICE_API_ID:-}"
-python3 - > /tmp/taskdef.json <<PY
-import json, os
+python3 - "$BACKEND_IMAGE" "$TASK_ROLE" "$TG_ALB" "$TG_NLB" > /tmp/backend-values.yaml <<PY
+import json, sys
+image, role, tg_alb, tg_nlb = sys.argv[1:5]
 env = {
   "PLATFORM_AWS_REGION": "$AWS_REGION",
   "PLATFORM_DYNAMO_TABLE": "$TABLE",
@@ -184,48 +171,21 @@ env = {
   "PLATFORM_SERVICE_ENTRY_SECRET_NAME": "$ENTRY_SECRET",
   "PLATFORM_PORTAL_API_URL": "https://$DIST_DOMAIN",
 }
-task = {
-  "family": "agent-platform-backend${SUFFIX}",
-  "cpu": "512", "memory": "1024",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "taskRoleArn": "$TASK_ROLE",
-  "executionRoleArn": "$EXEC_ROLE",
-  "runtimePlatform": {"operatingSystemFamily": "LINUX", "cpuArchitecture": "ARM64"},
-  "containerDefinitions": [{
-    "name": "backend",
-    "image": "$BACKEND_IMAGE",
-    "essential": True,
-    "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
-    "environment": [{"name": k, "value": v} for k, v in sorted(env.items())],
-    "logConfiguration": {"logDriver": "awslogs", "options": {
-      "awslogs-group": "$LOG_GROUP",
-      "awslogs-region": "$AWS_REGION",
-      "awslogs-stream-prefix": "backend"}},
-  }],
-}
-print(json.dumps(task))
+print(json.dumps({
+  "name": "backend", "image": image, "replicas": 2, "port": 8000,
+  "env": env,
+  "serviceAccount": {"roleArn": role},
+  "probe": {"path": "/health",
+            "readiness": {"initialDelaySeconds": 5, "periodSeconds": 10, "failureThreshold": 3},
+            "liveness": {"initialDelaySeconds": 30, "periodSeconds": 20, "failureThreshold": 3},
+            "startup": {"enabled": False, "periodSeconds": 10, "failureThreshold": 30}},
+  # ECS ran the backend at 0.5 vCPU / 1 GiB.
+  "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"memory": "1Gi"}},
+  "targetGroups": [{"arn": tg_alb, "port": 8000}, {"arn": tg_nlb, "port": 8000}],
+}))
 PY
-TD_ARN="$(aws ecs register-task-definition --cli-input-json file:///tmp/taskdef.json \
-  --query 'taskDefinition.taskDefinitionArn' --output text)"
-save TD_ARN "$TD_ARN"
-log "registered task definition"
+workload_install backend portal /tmp/backend-values.yaml "$SVC_SG"
+save BACKEND_NAMESPACE portal
+save BACKEND_DEPLOYMENT backend
 
-SVC="agent-platform-backend${SUFFIX}"
-EXISTING="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SVC" \
-  --query 'services[?status==`ACTIVE`].serviceName | [0]' --output text 2>/dev/null || echo None)"
-if [ "$EXISTING" = "None" ] || [ -z "$EXISTING" ]; then
-  aws ecs create-service --cluster "$CLUSTER" --service-name "$SVC" \
-    --task-definition "$TD_ARN" --desired-count 2 --launch-type FARGATE \
-    --network-configuration "awsvpcConfiguration={subnets=[$PRIV0,$PRIV1],securityGroups=[$SVC_SG],assignPublicIp=DISABLED}" \
-    --load-balancers "targetGroupArn=$TG_ALB,containerName=backend,containerPort=8000" \
-                     "targetGroupArn=$TG_NLB,containerName=backend,containerPort=8000" \
-    --deployment-configuration 'deploymentCircuitBreaker={enable=true,rollback=true}' >/dev/null
-  log "created ecs service (2 tasks, circuit breaker on)"
-else
-  aws ecs update-service --cluster "$CLUSTER" --service "$SVC" --task-definition "$TD_ARN" >/dev/null
-  log "updated ecs service to new task definition"
-fi
-save SERVICE "$SVC"
-
-log "cloudfront+ecs done — portal will be https://$DIST_DOMAIN"
+log "cloudfront+eks done — portal will be https://$DIST_DOMAIN"

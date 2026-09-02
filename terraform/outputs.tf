@@ -55,6 +55,26 @@ output "workspace_access_role_arn" {
   value = try(module.runtime[0].workspace_access_role_arn, null)
 }
 
+# --------------------------------- eks -------------------------------------
+
+output "eks_cluster_name" {
+  value = try(module.eks[0].cluster_name, null)
+}
+
+output "eks_cluster_endpoint" {
+  value = try(module.eks[0].cluster_endpoint, null)
+}
+
+output "eks_oidc_provider_arn" {
+  description = "IRSA identity provider — what every workload role's trust policy names."
+  value       = try(module.eks[0].oidc_provider_arn, null)
+}
+
+output "kubeconfig_command" {
+  description = "Run this to point kubectl at the platform cluster."
+  value       = try("aws eks update-kubeconfig --name ${module.eks[0].cluster_name} --region ${var.aws_region}", null)
+}
+
 # -------------------------------- portal -----------------------------------
 
 output "portal_url" {

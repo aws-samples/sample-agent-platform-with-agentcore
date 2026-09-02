@@ -174,7 +174,7 @@ variable "service_api_allowed_vpces" {
 #   phase 3: terraform apply
 
 variable "backend_desired_count" {
-  description = "Backend ECS task count. 2 (one per AZ) keeps the control plane serving through deployments and single-task failures; 1 halves the backend Fargate cost for evaluation setups that can tolerate a brief outage on every deploy."
+  description = "Backend replica count. 2 (spread across nodes/AZs) keeps the control plane serving through rollouts and single-pod failures; 1 is enough for evaluation setups that can tolerate a brief outage on every deploy."
   type        = number
   default     = 2
 
@@ -214,7 +214,7 @@ variable "llm_edge_certificate_arn" {
 }
 
 variable "llm_edge_desired_count" {
-  description = "llm-edge task count. Every gateway-mode model call goes through this service, so 2 keeps it serving through deployments."
+  description = "llm-edge replica count. Every gateway-mode model call goes through this service, so 2 keeps it serving through rollouts."
   type        = number
   default     = 2
 
@@ -237,7 +237,7 @@ variable "enable_team_demo" {
 }
 
 variable "entry_desired_count" {
-  description = "Task count for the data-plane (ENTRY_ONLY) backend service behind the private service-entry API. Published-agent traffic lands here instead of on the management backend."
+  description = "Replica count for the data-plane (ENTRY_ONLY) backend Deployment behind the private service-entry API. Published-agent traffic lands here instead of on the management backend."
   type        = number
   default     = 1
 
@@ -263,6 +263,69 @@ variable "async_artifact_prefixes" {
   description = "S3 key prefixes the headless (SDK) kernel may write async task outputs to. Add your own pipelines' output prefixes."
   type        = list(string)
   default     = ["feeds"]
+}
+
+# --------------------------------- EKS -------------------------------------
+# The cluster the containers (backend, entry, llm-edge, Keycloak, team APIs)
+# run on. Pods authenticate to AWS with IRSA; the EKS Pod Identity agent is
+# not installed.
+
+variable "eks_kubernetes_version" {
+  description = "Kubernetes minor version for the cluster and its add-ons."
+  type        = string
+  default     = "1.36"
+}
+
+variable "eks_node_instance_type" {
+  description = "Graviton instance type for the managed node group. Must support ENI trunking (security groups for Pods): m/c/r families from 6g on; no `t` family. Every platform image is arm64."
+  type        = string
+  default     = "m7g.large"
+
+  validation {
+    condition     = can(regex("^[a-z]+[0-9]+g[a-z]*\\.", var.eks_node_instance_type))
+    error_message = "eks_node_instance_type must be a Graviton (arm64) type such as m7g.large — the platform images are linux/arm64 only."
+  }
+}
+
+variable "eks_node_count" {
+  description = "Desired (and minimum) node count. One per private subnet spreads each Deployment's replicas across AZs; three m7g.large carry the full platform with headroom."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.eks_node_count >= 2
+    error_message = "eks_node_count must be at least 2 so a two-replica Deployment can spread across AZs."
+  }
+}
+
+variable "eks_node_max_count" {
+  description = "Upper bound the node group may scale to."
+  type        = number
+  default     = 4
+}
+
+variable "eks_public_access_cidrs" {
+  description = "CIDRs allowed to reach the cluster's public Kubernetes API endpoint (Terraform, kubectl and helm run from outside the VPC). The API is IAM-authenticated regardless; narrow this to the operators' egress addresses in production."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "eks_admin_principal_arns" {
+  description = "IAM principals granted cluster-admin through EKS access entries, besides the one running the apply (which is bootstrapped automatically)."
+  type        = list(string)
+  default     = []
+}
+
+variable "eks_lb_controller_chart_version" {
+  description = "aws-load-balancer-controller Helm chart version (its TargetGroupBinding registers pods into the Terraform-owned target groups)."
+  type        = string
+  default     = "3.5.0"
+}
+
+variable "eks_fluent_bit_chart_version" {
+  description = "aws-for-fluent-bit Helm chart version (container logs to CloudWatch)."
+  type        = string
+  default     = "0.2.0"
 }
 
 # ------------------------------ test isolation -----------------------------

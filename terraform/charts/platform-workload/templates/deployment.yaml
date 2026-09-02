@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "workload.name" . }}
+  labels:
+    {{- include "workload.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "workload.name" . }}
+  # Never below the desired count during a rollout — the target group only
+  # ever sees ready pods, so a surge-then-drain roll keeps the service up.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "workload.labels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.secretEnv }}
+        checksum/secret: {{ toJson .Values.secretEnv | sha256sum }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "workload.name" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      # Replicas prefer different nodes (and therefore, with one node per
+      # subnet, different AZs) but still schedule if that is impossible.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: {{ include "workload.name" . }}
+      containers:
+        - name: {{ include "workload.name" . }}
+          image: {{ required "image is required" .Values.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+              protocol: TCP
+          {{- if .Values.env }}
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          {{- if .Values.secretEnv }}
+          envFrom:
+            - secretRef:
+                name: {{ include "workload.name" . }}
+          {{- end }}
+          {{- if .Values.probe.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probe.path }}
+              port: http
+            periodSeconds: {{ .Values.probe.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probe.startup.failureThreshold }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probe.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probe.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probe.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probe.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probe.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probe.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

@@ -11,22 +11,26 @@
 #
 # Only needed for the "litellm" model backend. A Bedrock-direct deployment has
 # no gateway key to protect and can skip this phase entirely (see the note at
-# the end of 00-deploy-all.sh).
+# the end of 00-deploy-all.sh). The edge runs as a two-replica Deployment on
+# the platform's EKS cluster; its pods carry the edge security group through a
+# SecurityGroupPolicy, so the 443-only egress below is the pods' real egress.
 #
-# Ordering: after 30-runtime (needs the VPC + runtime SG) and before
-# 60-cloudfront-ecs, which bakes PLATFORM_LLM_EDGE_URL into the backend task
-# definition.
+# Ordering: after 25-eks (the pods run there) and 30-runtime (needs the runtime
+# SG), and before 60-cloudfront-eks, which passes PLATFORM_LLM_EDGE_URL to the
+# backend pods.
 . "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
 load
+need_tools kubectl helm
 
 step "llm-edge ($NAME)"
 
 [ -n "${VPC_ID:-}" ]     || die "VPC_ID missing from state — run 10-network.sh first"
 [ -n "${RUNTIME_SG:-}" ] || die "RUNTIME_SG missing from state — run 10-network.sh first"
+[ -n "${CLUSTER_SG:-}" ] || die "CLUSTER_SG missing from state — run 25-eks.sh first"
 
 TABLE_ARN="arn:aws:dynamodb:$AWS_REGION:$ACCOUNT_ID:table/$TABLE"
 LLM_ARN="$(aws secretsmanager describe-secret --secret-id "$LLM_SECRET" --query ARN --output text)"
-EDGE_LOG_GROUP="/ecs/agent-platform-llm-edge${SUFFIX}"
+EDGE_LOG_GROUP="$LOG_PREFIX/llm-edge.edge"
 
 # ------------------------------------------------------------------ SGs
 sg_ensure() {  # name description
@@ -43,7 +47,7 @@ sg_ensure() {  # name description
   echo "$id"
 }
 EDGE_ALB_SG="$(sg_ensure "${NAME}-llm-edge-alb" "llm-edge listener: reachable only from runtime ENIs")"
-EDGE_SVC_SG="$(sg_ensure "${NAME}-llm-edge-task" "llm-edge tasks: from its listener only")"
+EDGE_SVC_SG="$(sg_ensure "${NAME}-llm-edge-task" "llm-edge pods: from its listener only")"
 save EDGE_ALB_SG "$EDGE_ALB_SG"; save EDGE_SVC_SG "$EDGE_SVC_SG"
 
 # Ingress is granted to the runtime security group, not to a CIDR. A CIDR rule
@@ -55,6 +59,10 @@ aws ec2 authorize-security-group-ingress --group-id "$EDGE_ALB_SG" \
 aws ec2 authorize-security-group-ingress --group-id "$EDGE_SVC_SG" \
   --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,UserIdGroupPairs=[{GroupId=$EDGE_ALB_SG,Description=from llm-edge listener}]" \
   >/dev/null 2>&1 || log "task ingress from alb sg already present"
+# kubelet probes arrive from the node, which carries the cluster security group.
+aws ec2 authorize-security-group-ingress --group-id "$EDGE_SVC_SG" \
+  --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,UserIdGroupPairs=[{GroupId=$CLUSTER_SG,Description=kubelet probes from cluster nodes}]" \
+  >/dev/null 2>&1 || log "task ingress from cluster sg already present"
 
 # Egress: the upstream gateway is a public endpoint reached over the shared NAT,
 # so this cannot be narrowed to an address the deployment owns. Restricted to
@@ -66,6 +74,16 @@ aws ec2 authorize-security-group-egress --group-id "$EDGE_SVC_SG" \
 aws ec2 revoke-security-group-egress --group-id "$EDGE_SVC_SG" \
   --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]" \
   >/dev/null 2>&1 || true
+# Name resolution: CoreDNS runs with the cluster security group. In strict
+# enforcing mode both sides are needed — the pod's egress and CoreDNS's ingress.
+for proto in tcp udp; do
+  aws ec2 authorize-security-group-egress --group-id "$EDGE_SVC_SG" \
+    --ip-permissions "IpProtocol=$proto,FromPort=53,ToPort=53,UserIdGroupPairs=[{GroupId=$CLUSTER_SG,Description=DNS to CoreDNS}]" \
+    >/dev/null 2>&1 || log "task egress dns/$proto already present"
+  aws ec2 authorize-security-group-ingress --group-id "$CLUSTER_SG" \
+    --ip-permissions "IpProtocol=$proto,FromPort=53,ToPort=53,UserIdGroupPairs=[{GroupId=$EDGE_SVC_SG,Description=DNS from llm-edge pods}]" \
+    >/dev/null 2>&1 || log "cluster sg dns/$proto from edge already present"
+done
 
 # ------------------------------------------------------------------ ALB
 EDGE_ALB="$(aws elbv2 describe-load-balancers --names "${NAME}-llm-edge" \
@@ -137,26 +155,18 @@ role_ensure() {  # name trust
   fi
   echo "$arn"
 }
-ECS_TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-EDGE_TASK_ROLE="$(role_ensure "agent-platform-llm-edge${SUFFIX}" "$ECS_TRUST")"
-EDGE_EXEC_ROLE="$(role_ensure "agent-platform-llm-edge-exec${SUFFIX}" "$ECS_TRUST")"
-save EDGE_TASK_ROLE "$EDGE_TASK_ROLE"; save EDGE_EXEC_ROLE "$EDGE_EXEC_ROLE"
+# Assumed through IRSA by the `edge` service account in the `llm-edge`
+# namespace and nothing else. Image pulls are the node's business, so there is
+# no execution role.
+EDGE_TASK_ROLE="$(role_ensure "agent-platform-llm-edge${SUFFIX}" "$(irsa_trust llm-edge edge)")"
+aws iam update-assume-role-policy --role-name "agent-platform-llm-edge${SUFFIX}" \
+  --policy-document "$(irsa_trust llm-edge edge)"
+save EDGE_TASK_ROLE "$EDGE_TASK_ROLE"
 
 put_json_policy() {  # role name file
   aws iam put-role-policy --role-name "$1" --policy-name "$2" --policy-document "file://$3"
   log "policy $2 -> $1"
 }
-
-# Inline and repo-scoped rather than the AWS managed execution policy: tighter,
-# and 99-destroy.sh only removes inline policies, so an attached managed policy
-# would leave the role undeletable.
-cat > /tmp/llm-edge-exec-pol.json <<JSON
-{"Version":"2012-10-17","Statement":[
- {"Sid":"EcrAuth","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
- {"Sid":"EcrPull","Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"arn:aws:ecr:$AWS_REGION:$ACCOUNT_ID:repository/agent-platform${SUFFIX}/llm-edge"},
- {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogStream","logs:PutLogEvents"],"Resource":"arn:aws:logs:$AWS_REGION:$ACCOUNT_ID:log-group:$EDGE_LOG_GROUP:*"}]}
-JSON
-put_json_policy "agent-platform-llm-edge-exec${SUFFIX}" execution /tmp/llm-edge-exec-pol.json
 
 # The whole point of the phase: this is the only principal in the model data
 # path that can read the gateway key. GetItem (not Query, not Scan) is enough to
@@ -169,77 +179,40 @@ cat > /tmp/llm-edge-pol.json <<JSON
 JSON
 put_json_policy "agent-platform-llm-edge${SUFFIX}" llm-edge /tmp/llm-edge-pol.json
 
-# ------------------------------------------------------------------ ECS
+# ------------------------------------------------------------------ EKS
 aws logs create-log-group --log-group-name "$EDGE_LOG_GROUP" >/dev/null 2>&1 || true
 aws logs put-retention-policy --log-group-name "$EDGE_LOG_GROUP" --retention-in-days 30 >/dev/null 2>&1 || true
 save EDGE_LOG_GROUP "$EDGE_LOG_GROUP"
 
-# Its own cluster, matching the terraform port: the edge has a different blast
+# Its own namespace, matching the terraform port: the edge has a different blast
 # radius from the control plane and is easier to reason about kept separate.
-EDGE_CLUSTER="agent-platform-llm-edge${SUFFIX}"
-aws ecs create-cluster --cluster-name "$EDGE_CLUSTER" >/dev/null 2>&1 || true
-save EDGE_CLUSTER "$EDGE_CLUSTER"
-
 EDGE_IMAGE="${REGISTRY}/agent-platform${SUFFIX}/llm-edge:${IMAGE_TAG}"
-python3 - > /tmp/llm-edge-taskdef.json <<PY
-import json
-task = {
-  "family": "agent-platform-llm-edge${SUFFIX}",
-  "cpu": "512", "memory": "1024",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "taskRoleArn": "$EDGE_TASK_ROLE",
-  "executionRoleArn": "$EDGE_EXEC_ROLE",
-  "runtimePlatform": {"operatingSystemFamily": "LINUX", "cpuArchitecture": "ARM64"},
-  "containerDefinitions": [{
-    "name": "edge",
-    "image": "$EDGE_IMAGE",
-    "essential": True,
-    "portMappings": [{"containerPort": 8080, "protocol": "tcp"}],
-    # The key is deliberately NOT injected here. The task role fetches it at
-    # request time from the secret named on the session's grant, so a per-backend
-    # secret override in the model control plane keeps working and the key never
-    # becomes part of the task definition.
-    "environment": [
-      {"name": "PLATFORM_TABLE", "value": "$TABLE"},
-      {"name": "AWS_REGION", "value": "$AWS_REGION"},
-    ],
-    "logConfiguration": {"logDriver": "awslogs", "options": {
-      "awslogs-group": "$EDGE_LOG_GROUP",
-      "awslogs-region": "$AWS_REGION",
-      "awslogs-stream-prefix": "edge"}},
-  }],
-}
-print(json.dumps(task))
+python3 - "$EDGE_IMAGE" "$EDGE_TASK_ROLE" "$TABLE" "$AWS_REGION" "$EDGE_TG" > /tmp/llm-edge-values.yaml <<'PY'
+import json, sys
+image, role, table, region, tg = sys.argv[1:6]
+# The key is deliberately NOT injected here. The workload role fetches it at
+# request time from the secret named on the session's grant, so a per-backend
+# secret override in the model control plane keeps working and the key never
+# becomes part of the pod spec.
+print(json.dumps({
+  "name": "edge", "image": image, "replicas": 2, "port": 8080,
+  "env": {"PLATFORM_TABLE": table, "AWS_REGION": region},
+  "serviceAccount": {"roleArn": role},
+  "probe": {"path": "/healthz",
+            "readiness": {"initialDelaySeconds": 5, "periodSeconds": 10, "failureThreshold": 3},
+            "liveness": {"initialDelaySeconds": 30, "periodSeconds": 20, "failureThreshold": 3},
+            "startup": {"enabled": False, "periodSeconds": 10, "failureThreshold": 30}},
+  "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"memory": "1Gi"}},
+  "targetGroups": [{"arn": tg, "port": 8080}],
+}))
 PY
-EDGE_TD="$(aws ecs register-task-definition --cli-input-json file:///tmp/llm-edge-taskdef.json \
-  --query 'taskDefinition.taskDefinitionArn' --output text)"
-save EDGE_TD "$EDGE_TD"
-log "registered task definition"
+workload_install edge llm-edge /tmp/llm-edge-values.yaml "$EDGE_SVC_SG"
+save EDGE_NAMESPACE llm-edge
 
-EDGE_SVC="agent-platform-llm-edge${SUFFIX}"
-EXISTING="$(aws ecs describe-services --cluster "$EDGE_CLUSTER" --services "$EDGE_SVC" \
-  --query 'services[?status==`ACTIVE`].serviceName | [0]' --output text 2>/dev/null || echo None)"
-if [ "$EXISTING" = "None" ] || [ -z "$EXISTING" ]; then
-  # enableExecuteCommand is left off: ECS Exec would put a shell in the one
-  # container that can read the gateway key. Debugging goes through logs.
-  aws ecs create-service --cluster "$EDGE_CLUSTER" --service-name "$EDGE_SVC" \
-    --task-definition "$EDGE_TD" --desired-count 2 --launch-type FARGATE \
-    --network-configuration "awsvpcConfiguration={subnets=[$PRIV0,$PRIV1],securityGroups=[$EDGE_SVC_SG],assignPublicIp=DISABLED}" \
-    --load-balancers "targetGroupArn=$EDGE_TG,containerName=edge,containerPort=8080" \
-    --deployment-configuration 'deploymentCircuitBreaker={enable=true,rollback=true}' >/dev/null
-  log "created ecs service (2 tasks, circuit breaker on)"
-else
-  aws ecs update-service --cluster "$EDGE_CLUSTER" --service "$EDGE_SVC" \
-    --task-definition "$EDGE_TD" >/dev/null
-  log "updated ecs service to new task definition"
-fi
-save EDGE_SERVICE "$EDGE_SVC"
-
-# Consumed by 60-cloudfront-ecs.sh as PLATFORM_LLM_EDGE_URL. Plain http on an
+# Consumed by 60-cloudfront-eks.sh as PLATFORM_LLM_EDGE_URL. Plain http on an
 # internal listener: set up TLS with a certificate for a name you own if the
 # prompt content on this leg needs it (see docs/deployment-aws-cli.md).
 save LLM_EDGE_URL "http://$EDGE_DNS"
 
 log "llm-edge done — $LLM_EDGE_URL"
-log "the gateway key is now readable only by agent-platform-llm-edge${SUFFIX}"
+log "the gateway key is now readable only by agent-platform-llm-edge${SUFFIX} (IRSA: llm-edge/edge)"

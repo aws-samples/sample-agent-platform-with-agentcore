@@ -37,6 +37,18 @@ variable "keycloak_image_tag" {
   type = string
 }
 
+variable "eks" {
+  description = "Cluster facts from the eks module (see modules/portal/variables.tf)."
+  type = object({
+    cluster_name              = string
+    cluster_security_group_id = string
+    oidc_provider_arn         = string
+    oidc_issuer_host          = string
+    log_group_prefix          = string
+    controllers_ready         = string
+  })
+}
+
 variable "name_suffix" {
   type    = string
   default = ""

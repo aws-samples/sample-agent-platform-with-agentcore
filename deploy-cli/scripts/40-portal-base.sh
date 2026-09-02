@@ -1,10 +1,11 @@
 #!/bin/bash
 # Phase 4a — portal foundations: Cognito, ALB (+origin-verify secret), target
-# groups, ECS cluster, task/exec roles, scheduler group + DLQ + runner Lambda.
+# groups and the security groups the backend pods will carry.
 # Mirrors terraform modules/portal parts 1-3.
 . "$(dirname "$0")/../lib/common.sh"
 load
 : "${VPC_ID:?run 10-network.sh}"; : "${SDK_RUNTIME_ARN:?run 30-runtime.sh}"
+: "${CLUSTER_SG:?run 25-eks.sh}"
 
 step "portal base ($NAME)"
 PUB0="${PUBLIC_SUBNETS%%,*}"; PUB1="${PUBLIC_SUBNETS##*,}"
@@ -72,6 +73,8 @@ sg_ensure() {  # name description
   echo "$id"
 }
 ALB_SG="$(sg_ensure "$NAME-portal-alb" "ALB - CloudFront origin-facing traffic only")"
+# Carried by the backend pods (SecurityGroupPolicy), so these rules read exactly
+# as they did for the ECS tasks.
 SVC_SG="$(sg_ensure "$NAME-portal-service" "backend service")"
 save ALB_SG "$ALB_SG"; save SVC_SG "$SVC_SG"
 
@@ -88,6 +91,18 @@ aws ec2 authorize-security-group-ingress --group-id "$SVC_SG" \
 aws ec2 authorize-security-group-ingress --group-id "$SVC_SG" \
   --ip-permissions "IpProtocol=tcp,FromPort=8000,ToPort=8000,IpRanges=[{CidrIp=$VPC_CIDR,Description=from service-entry NLB}]" \
   >/dev/null 2>&1 || log "service ingress from vpc already present"
+# kubelet probes arrive from the node, which carries the cluster security group
+# — the one ingress the ECS shape did not have: cluster nodes only, app port only.
+aws ec2 authorize-security-group-ingress --group-id "$SVC_SG" \
+  --ip-permissions "IpProtocol=tcp,FromPort=8000,ToPort=8000,UserIdGroupPairs=[{GroupId=$CLUSTER_SG,Description=kubelet probes from cluster nodes}]" \
+  >/dev/null 2>&1 || log "service ingress from cluster sg already present"
+# In strict enforcing mode a pod's traffic is judged by its own groups only, so
+# CoreDNS (running with the cluster security group) has to admit it.
+for proto in tcp udp; do
+  aws ec2 authorize-security-group-ingress --group-id "$CLUSTER_SG" \
+    --ip-permissions "IpProtocol=$proto,FromPort=53,ToPort=53,UserIdGroupPairs=[{GroupId=$SVC_SG,Description=DNS from portal pods}]" \
+    >/dev/null 2>&1 || log "cluster sg dns/$proto from portal already present"
+done
 
 # ------------------------------------------------------------------ ALBs
 alb_ensure() {  # name scheme subnets sg-or-empty type

@@ -5,7 +5,7 @@ Exercises the full production chain from the *calling application's* seat —
 nothing here talks to the platform directly, everything runs on the demo-app
 EC2 exactly as a customer application would:
 
-    app EC2 ──SigV4 + robot token──► private service-entry API ──► entry ECS
+    app EC2 ──SigV4 + robot token──► private service-entry API ──► entry pods (EKS)
       ──► published agent (AgentCore Runtime)
       ──MCPHUB-HMAC-SHA256 + forwarded SSO token──► hub EC2
       ──Bearer──► order / hr MCP backends

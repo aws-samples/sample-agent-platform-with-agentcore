@@ -1,8 +1,8 @@
 # Keycloak's database.
 #
 # Keycloak ran in dev mode on an in-memory H2 database until 2026-08-19. That
-# made every task replacement a silent SSO outage: Fargate retired the task on
-# its own after nine days, the fresh one re-imported the realm from the image,
+# made every container replacement a silent SSO outage: the ECS task was
+# retired after nine days, the fresh one re-imported the realm from the image,
 # and everything applied *after* the import was gone — the portal's redirect
 # URI, the confidential clients' secrets, the user passwords, all of it. Login
 # failed with `invalid_redirect_uri` and the robot client with
@@ -10,7 +10,7 @@
 #
 # With an external database that state is durable, and so are user sessions:
 # Keycloak 26 keeps `persistent-user-session` on by default, so sessions live in
-# the database rather than only in the local Infinispan cache. A task
+# the database rather than only in the local Infinispan cache. A pod
 # replacement no longer signs everyone out, which is what makes the realm's
 # 7-day SSO session mean anything.
 
@@ -21,7 +21,7 @@ resource "aws_db_subnet_group" "keycloak" {
 
 # A client SG of its own rather than reusing aws_security_group.service: that
 # one is shared with the three team APIs, and they have no business reaching
-# the database. The Keycloak service carries both SGs.
+# the database. The Keycloak pod carries both SGs (its SecurityGroupPolicy).
 resource "aws_security_group" "keycloak_db_client" {
   name        = "agent-platform-keycloak-db-client${var.name_suffix}"
   description = "Marks the Keycloak task as a client of its database"
@@ -76,7 +76,7 @@ resource "aws_secretsmanager_secret_version" "keycloak_db" {
 
 # RDS would create this itself on first log export, but without a retention
 # policy — i.e. it would keep Postgres logs forever. Creating it here pins the
-# same 7 days the ECS log groups use.
+# same 7 days the container log groups use.
 resource "aws_cloudwatch_log_group" "keycloak_db" {
   name              = "/aws/rds/instance/agent-platform-keycloak${var.name_suffix}/postgresql"
   retention_in_days = 7

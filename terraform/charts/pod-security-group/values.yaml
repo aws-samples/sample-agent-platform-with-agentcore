@@ -1,0 +1,5 @@
+# Workload name; must equal the `app` label the platform-workload chart sets.
+name: ""
+# EC2 security group IDs attached to every pod of the workload. In strict
+# enforcing mode these are the ONLY groups evaluated for the pod's traffic.
+securityGroupIds: []

@@ -111,8 +111,10 @@ and HMAC-authenticated application access — is covered in
 ## Prerequisites
 
 - AWS account with Amazon Bedrock AgentCore available in your target region
-- Docker with `linux/arm64` build support (AgentCore Runtime is ARM64)
-- Node.js ≥ 20, Python ≥ 3.11, AWS CDK v2
+- Docker with `linux/arm64` build support (AgentCore Runtime is ARM64; the
+  platform services run on Graviton EKS nodes and share the arm64 build)
+- Node.js ≥ 20, Python ≥ 3.11, Terraform ≥ 1.9, `kubectl` + `helm` to operate
+  the cluster
 - One of:
   - An Anthropic-compatible LLM gateway endpoint (e.g. LiteLLM) and an API key, or
   - Amazon Bedrock model access (Claude models via cross-region inference)
@@ -121,9 +123,10 @@ and HMAC-authenticated application access — is covered in
 
 ```bash
 # 1. Provision network + platform resources
-cd infrastructure
-pip install -r requirements.txt
-cdk deploy NetworkStack PlatformStack
+cd terraform
+cp terraform.tfvars.example terraform.tfvars   # then edit
+terraform init
+terraform apply -var enable_runtime=false -var enable_portal=false
 
 # 2. Store your LLM gateway key (skip if using Bedrock direct).
 #    Readable only by the llm-edge service; it never enters a kernel container.
@@ -132,15 +135,19 @@ aws secretsmanager put-secret-value \
   --secret-id agent-platform/llm-gateway-key \
   --secret-string '{"api_key":"sk-..."}'
 
-# 3. Build & push runtime images (ARM64)
-./scripts/build-and-push.sh
+# 3. Build & push the images (ARM64)
+../scripts/build-and-push.sh
 
-# 4. Create AgentCore runtimes (VPC mode, fixed egress IP)
-cdk deploy RuntimeStack
-
-# 5. Allow-list the NAT EIP on your LLM gateway, then run the portal
-cdk deploy PortalStack        # or: run backend + frontend locally, see docs/deployment.md
+# 4. Allow-list the NAT EIP on your LLM gateway, then create the AgentCore
+#    runtimes (VPC mode, fixed egress IP), the EKS cluster and the portal
+terraform apply               # or: run backend + frontend locally, see docs/deployment.md
+../scripts/deploy-frontend.sh
 ```
+
+The containers (backend, llm-edge, and the optional Keycloak + team APIs) run
+on a dedicated EKS cluster with Graviton nodes; every pod authenticates to AWS
+through IRSA and carries its own security group. The CDK stacks in
+`infrastructure/` are the legacy ECS Fargate variant, kept for reference.
 
 Full walkthrough: [docs/deployment.md](docs/deployment.md). Once deployed,
 hand users the [user guide](docs/user-guide.md); verify the deployment with
@@ -234,7 +241,7 @@ its reason; they are:
 | bandit `B106` (hardcoded password) | `infrastructure/stacks/platform_stack.py` | False positive — the string is a Secrets Manager secret *name*, not a credential. |
 | semgrep `using-http-server` | `claude-code-kernel/contract-server/main.js` | AgentCore terminates TLS at the edge; the container listens plaintext on its single routed port. |
 | semgrep `dockerfile-source-not-pinned` | all Dockerfiles | Pinning `FROM` to a digest would stop adopters from rebuilding with current base-image patches. |
-| checkov `CKV_DOCKER_2` (HEALTHCHECK) | all Dockerfiles | Health is managed by AgentCore's `/ping` contract (or the ECS/ALB target group for the backend), not Docker HEALTHCHECK. |
+| checkov `CKV_DOCKER_2` (HEALTHCHECK) | all Dockerfiles | Health is managed by AgentCore's `/ping` contract (or the Kubernetes probes and ALB target group for the services), not Docker HEALTHCHECK. |
 | checkov `CKV_DOCKER_3` (non-root user) | all Dockerfiles | Runtime kernels run as root inside per-session AgentCore microVMs (Claude Code needs root in-sandbox); hardening is left to adopters for the backend. |
 | semgrep JS/TS rules (i18n etc.) | `frontend/` (via `.semgrepignore`) | The reference portal is a single-language demo UI; internationalization is out of scope. Security logic lives in the backend and kernels, which are still scanned. |
 | semgrep `arbitrary-sleep` | `scripts/e2e_platform.py` | Intentional poll intervals in the E2E test harness (waiting for async server-side work: eval runs, memory extraction, scheduler ticks). |

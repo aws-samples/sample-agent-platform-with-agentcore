@@ -1,8 +1,9 @@
-# Resource inventory — the four default modules
+# Resource inventory — the five default modules
 
 Every AWS resource the default deployment creates (`terraform apply` with
-`enable_team_auth`/`enable_team_demo` off): 98 resources across the four
-modules, in dependency order. Use it to scope IAM for a deployment role, to
+`enable_team_auth`/`enable_team_demo`/`enable_llm_edge` off): 121 resources
+across the five modules (network, platform, runtime, eks, portal), in
+dependency order. Use it to scope IAM for a deployment role, to
 audit what a stack left behind, or to port the platform onto an in-house IaC
 standard without reverse-engineering `terraform/` — each row names the
 resource, what breaks without it, and what it depends on.
@@ -11,9 +12,9 @@ Names below omit the optional `name_suffix`. "Key configuration" lists only
 what is load-bearing — settings whose absence or difference breaks the
 platform or removes a security control, not every attribute.
 
-The optional `team_auth` (40 resources) and `team_demo` (3) modules are not
-tabulated here; their structure mirrors `portal`'s ECS/ALB/CloudFront shape
-and their source is the reference (`modules/team_auth`, `modules/team_demo`).
+The optional `team_auth`, `team_demo`, `llm_edge` and `mcp_hub_demo` modules
+are not tabulated here; the workload ones mirror `portal`'s
+Deployment/ALB/CloudFront shape and their source is the reference.
 
 ## network (11)
 
@@ -21,7 +22,7 @@ and their source is the reference (`modules/team_auth`, `modules/team_demo`).
 |---|---|---|---|---|
 | `aws_vpc` | 10.0.0.0/16 | Isolates the platform; runtimes and the backend run in private subnets | DNS support + DNS hostnames **enabled** (runtimes resolve AWS endpoints through it) | — |
 | `aws_subnet` ×2 (public) | two AZs | ALB + NAT placement | `map_public_ip_on_launch` on | VPC |
-| `aws_subnet` ×2 (private) | two AZs | ECS tasks + AgentCore runtime ENIs | no public IPs | VPC |
+| `aws_subnet` ×2 (private) | two AZs | EKS nodes, pod branch ENIs + AgentCore runtime ENIs | no public IPs | VPC |
 | `aws_internet_gateway` | | Public subnet egress | | VPC |
 | `aws_eip` | | Fixed NAT address — allowlist-able by external services (LLM gateway) | survives NAT replacement (`existing_nat_eip` reuse) | — |
 | `aws_nat_gateway` | | Private-subnet egress (image pulls, Bedrock, LLM gateway) | in a **public** subnet; single NAT is a deliberate cost/AZ trade-off | subnet, EIP, IGW |
@@ -82,24 +83,42 @@ subnet IDs from variables instead.
 | `aws_cloudwatch_log_delivery_source` + `aws_cloudwatch_log_delivery` | portal CF | Standard logging v2 to the logs bucket | both in **us-east-1**; suffix path partitions by distribution/date | distribution, platform destination |
 | `random_password` | `origin_verify` | The secret the distribution injects and the ALB listener requires | 48 chars; rotation = `terraform taint`, then apply | — |
 
-### Backend service (17)
+### EKS cluster — `modules/eks` (21)
 
 | Resource | Name / scope | Purpose | Key configuration | Depends on |
 |---|---|---|---|---|
-| `aws_ecs_cluster` | `agent-platform` | | | — |
-| `aws_cloudwatch_log_group` | `/ecs/agent-platform-backend` | | 7-day retention | — |
-| `aws_iam_role` + policy | `agent-platform-backend-task` | The control plane's permissions | DynamoDB on the table; S3 on workspace bucket; `sts:AssumeRole` on workspace-access only; AgentCore invoke/memory/gateway-read; scheduler CRUD scoped to the schedule group + `iam:PassRole` (condition: `scheduler.amazonaws.com`); service-entry secret read | table, bucket, roles |
-| `aws_iam_role` + policy | `agent-platform-backend-exec` | Pull + logs | scoped to the backend repo + log group | repo |
-| `aws_ecs_task_definition` | `agent-platform-backend` | | ARM64 Fargate 512/1024; env: table/bucket/runtime ARNs, **CORS pinned to the distribution domain** (not `*`), OIDC settings | roles, distribution (CORS env) |
-| `aws_ecs_service` | `agent-platform-backend` | | `desired_count` = `backend_desired_count` (default **2**, one per AZ); **circuit breaker + rollback on**; registered to both the ALB TG and the NLB TG | taskdef, listener rule, NLB listener |
+| `aws_cloudwatch_log_group` | `/aws/eks/agent-platform/cluster` | Control-plane logs (api, audit, authenticator) | created first so retention is **7 days**, not forever | — |
+| `aws_iam_role` + 2 attachments | `agent-platform-eks-cluster` | Cluster role | `AmazonEKSClusterPolicy` + **`AmazonEKSVPCResourceController`** (security groups for Pods: trunk/branch ENIs) | — |
+| `aws_iam_role` + 2 attachments | `agent-platform-eks-node` | Node role | `AmazonEKSWorkerNodePolicy` + `AmazonEC2ContainerRegistryPullOnly`. **No CNI policy** — aws-node uses IRSA, so a pod reaching instance metadata cannot manage ENIs | — |
+| `aws_eks_cluster` | `agent-platform` | The cluster | private subnets; endpoint public **+** private, public CIDRs = `eks_public_access_cidrs`; `authentication_mode = API` with the creator bootstrapped as admin; `bootstrap_self_managed_addons = false`; support type STANDARD | roles, log group |
+| `aws_eks_access_entry` + `_policy_association` ×N | `eks_admin_principal_arns` | Extra cluster-admins | cluster-scoped `AmazonEKSClusterAdminPolicy` | cluster |
+| `aws_iam_openid_connect_provider` | cluster issuer | **IRSA**: what every workload role's trust policy names | client id `sts.amazonaws.com`; thumbprint from the issuer's TLS cert (`tls_certificate`) | cluster |
+| `aws_iam_role` + attachment | `agent-platform-eks-cni` | aws-node (VPC CNI) via IRSA | `AmazonEKS_CNI_Policy`; trust pinned to `kube-system:aws-node` | OIDC provider |
+| `aws_iam_role` + policy | `agent-platform-eks-lb-controller` | AWS Load Balancer Controller via IRSA | the upstream `iam_policy.json` for the pinned release, vendored in `policies/`; trust pinned to `kube-system:aws-load-balancer-controller` | OIDC provider |
+| `aws_iam_role` + policy | `agent-platform-eks-fluent-bit` | Fluent Bit via IRSA | `logs:Create*/Put*` on `/eks/agent-platform*` only; trust pinned to `kube-system:aws-for-fluent-bit` | OIDC provider |
+| `aws_eks_addon` | `vpc-cni` | Pod networking | IRSA role; **`ENABLE_POD_ENI=true`, `POD_SECURITY_GROUP_ENFORCING_MODE=strict`, `DISABLE_TCP_EARLY_DEMUX=true`** (security groups for Pods with working kubelet probes); `WARM_IP_TARGET=2` / `MINIMUM_IP_TARGET=4` (small subnets). Created **before** the node group | OIDC provider, CNI role |
+| `aws_eks_node_group` | `agent-platform-workers` | Graviton nodes | `AL2023_ARM_64_STANDARD`, `eks_node_instance_type` (must support ENI trunking — no `t` family), `eks_node_count` desired = min, spread over the private subnets; joins with the EKS-created **cluster security group** | vpc-cni add-on, node role attachments |
+| `aws_eks_addon` ×2 | `coredns`, `kube-proxy` | | created **after** the node group (they report ACTIVE only once scheduled) | node group |
+| `helm_release` | `aws-load-balancer-controller` (kube-system) | **TargetGroupBinding** only — registers pod IPs into the Terraform-owned target groups | IRSA service account; `enableServiceMutatorWebhook = false`; never creates a load balancer or a security-group rule here | node group, coredns |
+| `helm_release` | `aws-for-fluent-bit` (kube-system) | Container logs → CloudWatch | IRSA service account; log group template `/eks/agent-platform/<namespace>.<app>`, stream `<pod>.<container>`, `log_key = log`, auto-create + 7-day retention | node group, coredns |
+
+### Backend workloads — `modules/portal` (19)
+
+| Resource | Name / scope | Purpose | Key configuration | Depends on |
+|---|---|---|---|---|
+| `aws_iam_role` + policy | `agent-platform-backend-task` | The control plane's permissions | **IRSA trust**: the cluster OIDC provider, `aud = sts.amazonaws.com`, `sub ∈ {portal:backend, portal:entry}`. DynamoDB on the table; S3 on workspace bucket; `sts:AssumeRole` on workspace-access only; AgentCore invoke/memory/gateway-read; scheduler CRUD scoped to the schedule group + `iam:PassRole` (condition: `scheduler.amazonaws.com`); service-entry secret read; mcp-hub credential mint | table, bucket, roles, OIDC provider |
+| `aws_cloudwatch_log_group` ×2 | `/eks/agent-platform/portal.{backend,entry}` | Where Fluent Bit routes each Deployment's output | 7-day retention | — |
 | `aws_security_group` | portal ALB | | ingress :80 **only from the CloudFront origin-facing managed prefix list** | VPC |
-| `aws_security_group` | portal service | | :8000 from the ALB SG + from the VPC CIDR (NLB health checks/VPC Link path) | ALB SG |
+| `aws_security_group` | portal service | **Carried by the pods** (SecurityGroupPolicy) | :8000 from the ALB SG + from the VPC CIDR (NLB health checks/VPC Link path) + from the **cluster SG** (kubelet probes — the one ingress the ECS shape lacked) | ALB SG, cluster SG |
+| `aws_vpc_security_group_ingress_rule` ×2 | on the cluster SG | CoreDNS reachability | tcp/udp 53 from the portal service SG (strict mode evaluates only the pod's own groups) | cluster SG, service SG |
 | `aws_lb` | `agent-platform-portal` (ALB) | Public entry behind CloudFront | access logs → logs bucket, prefix `portal-alb` | subnets, SG, logs bucket |
-| `aws_lb_target_group` | `agent-platform-backend` | | `/health`, deregistration 30s | VPC |
+| `aws_lb_target_group` | `agent-platform-backend` | | `ip` targets, `/health`, deregistration 30s — membership managed by the TargetGroupBinding | VPC |
 | `aws_lb_listener` | :80 | **Default-deny**: fixed 403 | the prefix list admits *every* CloudFront distribution — the header is the actual trust boundary. `depends_on` the distribution so the flip waits for header propagation | ALB, distribution |
 | `aws_lb_listener_rule` | priority 1 | Forwards only on `x-origin-verify` match | condition value = the `random_password` | listener |
 | `aws_lb` | `agent-platform-svc-entry` (internal NLB) | VPC Link target | `preserve_client_ip = false` (so the service SG check sees NLB-node sources) | private subnets |
-| `aws_lb_target_group` + `aws_lb_listener` | NLB :80 → :8000 | | HTTP health check on `/health` | NLB |
+| `aws_lb_target_group` + `aws_lb_listener` | NLB :80 → :8000 | | `ip` targets, HTTP health check on `/health` | NLB |
+| `helm_release` ×2 | `backend-sg`, `entry-sg` (namespace `portal`) | SecurityGroupPolicy per Deployment | chart `charts/pod-security-group`; installed **before** the workload — a policy only applies to pods created after it exists | service SG |
+| `helm_release` ×2 | `backend`, `entry` (namespace `portal`) | The Deployments | chart `charts/platform-workload`: image `backend:<tag>`, `backend_desired_count` / `entry_desired_count` replicas, env: table/bucket/runtime ARNs, **CORS pinned to the distribution domain** (not `*`), OIDC settings, `PLATFORM_ENTRY_ONLY=1` on entry; IRSA service account; `maxSurge 1 / maxUnavailable 0`; **`atomic`** (rollback on a failed rollout, like the ECS circuit breaker); TargetGroupBinding into the ALB TG (backend) / NLB TG (entry) | SG release, role policy, log groups, listener rule, distribution (CORS env), controllers |
 
 ### Scheduler (9)
 
@@ -141,10 +160,19 @@ a singleton.
 - **CloudFront logging v2 spans two regions**: the delivery destination
   (platform module) and each delivery source/delivery live in us-east-1
   even when everything else is elsewhere.
-- **The CORS env var ties ECS to CloudFront**: the backend task definition
-  embeds the distribution domain, so the distribution must exist before the
-  task definition — and changing it forces a new taskdef revision (rolling
-  replacement).
+- **The CORS env var ties the backend to CloudFront**: the Deployment embeds
+  the distribution domain, so the distribution must exist before the Helm
+  release — and changing it rolls the Deployment.
+- **Pods must exist after their SecurityGroupPolicy and before their
+  TargetGroupBinding's CRD**: the policy release precedes the workload
+  release, and every workload release is ordered after the cluster
+  controllers (`controllers_ready`). Get either wrong and the first pods come
+  up with the node's security group, unreachable from the ALB.
+- **IRSA is three things that must agree**: the OIDC provider ARN in the
+  role's trust, the `<issuer>:sub` condition naming `<namespace>:<service
+  account>`, and the `eks.amazonaws.com/role-arn` annotation on that service
+  account. A mismatch shows up as `AccessDenied` on the first STS call, not at
+  apply time.
 - **Runtime creation is the ordering chokepoint**: images pushed first, IAM
   role *policies* (not just roles) settled first, and IAM propagation delay
   on top. Every failure in that window masquerades as an image-URI problem.

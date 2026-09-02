@@ -21,7 +21,7 @@ scripts.
 ![MCP hub chains — production and development paths into a customer-owned hub](images/mcp-hub-chains.svg?v=1)
 
 ```
-calling app ──SigV4 + robot token──► private service-entry API ──► entry ECS
+calling app ──SigV4 + robot token──► private service-entry API ──► entry pods (EKS)
     ──► published agent (AgentCore Runtime, VPC mode)
     ──MCPHUB-HMAC-SHA256 (per-agent Actor) + forwarded SSO token──► MCP hub
     ──Bearer (same token)──► backend MCP servers

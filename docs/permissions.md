@@ -19,12 +19,12 @@ stacks template these automatically.
 
 1. [Principals at a glance](#1-principals-at-a-glance)
 2. [Runtime execution roles](#2-runtime-execution-roles)
-3. [Backend (ECS task) role](#3-backend-ecs-task-role)
+3. [Backend workload role (IRSA)](#3-backend-workload-role-irsa)
 4. [Wildcard resource statements](#4-wildcard-resource-statements)
 5. [Scheduler engine roles](#5-scheduler-engine-roles-lambda--eventbridge)
 6. [What is deliberately *not* granted](#6-what-is-deliberately-not-granted)
 7. [Authentication vs authorization](#7-authentication-vs-authorization)
-8. [Deployer / CDK permissions](#8-deployer--cdk-permissions)
+8. [Deployer / Terraform permissions](#8-deployer--terraform-permissions)
 9. [Data and network boundaries](#9-data-and-network-boundaries)
 10. [Tightening for a locked-down environment](#10-tightening-for-a-locked-down-environment)
 
@@ -34,8 +34,12 @@ stacks template these automatically.
 
 The platform runs under seven IAM principals: one execution role **per
 kernel** (so each container holds only what its code calls), a per-session
-workspace-access role the backend assumes, the backend/Lambda execution
-roles, and a service role EventBridge Scheduler assumes.
+workspace-access role the backend assumes, the backend workload role and the
+Lambda execution role, and a service role EventBridge Scheduler assumes. The
+EKS cluster the containers run on adds five infrastructure roles of its own
+(cluster, node, and IRSA roles for the VPC CNI, the load balancer controller
+and Fluent Bit); they hold no platform data access and are listed in
+`terraform/modules/eks/iam.tf`.
 
 | # | Principal | Created in | Assumed by | Purpose |
 |---|---|---|---|---|
@@ -43,7 +47,7 @@ roles, and a service role EventBridge Scheduler assumes.
 | 2 | **`agent-platform-sdk-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The identity inside the headless kernel — the one that executes published agents and externally supplied prompts. **No workspace access at all.** |
 | 3 | **`agent-platform-mcp-tools-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The demo MCP server. ECR pull + logs only — **no S3, no secrets, no data-plane actions**. |
 | 4 | **`agent-platform-workspace-access`** | `RuntimeStack` | The account (in practice: only the backend task role holds `sts:AssumeRole` on it) | The **only** principal that can touch `workspaces/*`. The backend assumes it per session with an inline session policy narrowing to `workspaces/{sessionId}/*` and hands the 1h credentials to that session's container. |
-| 5 | **Backend task role** (`PortalStack/TaskRole`) | `PortalStack` | `ecs-tasks.amazonaws.com` | The control-plane API on ECS Fargate: session routing, invoking runtimes, memory/scheduler/eval management, minting workspace credentials. |
+| 5 | **Backend workload role** (`agent-platform-backend-task`) | `portal` module | The EKS cluster's OIDC provider via **IRSA** — only the `backend` and `entry` service accounts in the `portal` namespace | The control-plane API on EKS: session routing, invoking runtimes, memory/scheduler/eval management, minting workspace credentials. |
 | 6 | **Schedule-runner Lambda role** (`PortalStack/ScheduleRunner`) | `PortalStack` | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
 | 7 | **Scheduler role** (`PortalStack/SchedulerRole`) | `PortalStack` | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
 
@@ -126,10 +130,15 @@ Notes for reviewers:
 
 ---
 
-## 3. Backend (ECS task) role
+## 3. Backend workload role (IRSA)
 
-`PortalStack/TaskRole` — the control-plane API. **Trust policy:** assumed only
-by `ecs-tasks.amazonaws.com`.
+`agent-platform-backend-task` — the control-plane API (the IAM name keeps its
+ECS-era suffix). **Trust policy:** `sts:AssumeRoleWithWebIdentity` from the
+EKS cluster's OIDC provider, conditioned on `aud = sts.amazonaws.com` and
+`sub ∈ {system:serviceaccount:portal:backend, system:serviceaccount:portal:entry}`.
+Nothing else in the cluster — no other namespace, no other service account,
+no node — can assume it, and the EKS Pod Identity agent is not installed, so
+the web-identity token is the only path to the role.
 
 | Sid | Actions | Resource scope | Why |
 |---|---|---|---|
@@ -251,7 +260,7 @@ Two separate concerns, easy to conflate in a review:
   permission** — it is an HTTPS fetch of public keys. Self-signup is disabled;
   an operator creates users with `admin-create-user`.
 - **What the backend may do in AWS** (authorization) is the task role in
-  [§3](#3-backend-ecs-task-role).
+  [§3](#3-backend-workload-role-irsa).
 - **Roles.** The verified token's group claims (`cognito:groups` / OIDC
   `groups`) decide the caller's surface: `platform-admin` members get the
   management APIs (channels, scheduler, governance, registry writes, memory
@@ -308,7 +317,7 @@ environment, keep Cognito on; never ship the open mode.
 
 ---
 
-## 8. Deployer / CDK permissions
+## 8. Deployer / Terraform permissions
 
 The roles above are what the platform runs *as*. Separately, whoever runs
 `cdk deploy` needs permission to **create** them. In a locked-down account the
@@ -327,15 +336,20 @@ Practical options, tightest first:
    EIP, security groups — NetworkStack), `s3:*` (create the two buckets),
    `dynamodb:*` (the table), `ecr:*` (the four repos), `secretsmanager:*` (the
    three secrets), `iam:CreateRole/PutRolePolicy/PassRole/...` (the four roles),
-   `bedrock-agentcore:*Runtime*` (RuntimeStack), `ecs:*`, `elasticloadbalancing:*`,
+   `bedrock-agentcore:*Runtime*` (runtime module), `eks:*` (cluster, node
+   group, add-ons, access entries — eks module), `elasticloadbalancing:*`,
    `cloudfront:*`, `cognito-idp:*`, `lambda:*`, `scheduler:*`, `sqs:*`, and
-   `logs:*` (PortalStack). Constrain with a permissions boundary.
+   `logs:*` (portal module). Constrain with a permissions boundary.
 
 Two hard requirements regardless of option:
 
-- **`iam:PassRole`** — CDK must pass the execution/task/Lambda roles to
-  Bedrock AgentCore, ECS, and Lambda respectively. Scope `PassRole` to the four
-  `agent-platform*` role ARNs if you write a custom deploy policy.
+- **`iam:PassRole`** — Terraform must pass the execution roles to Bedrock
+  AgentCore, the cluster and node roles to EKS, and the runner role to Lambda.
+  Scope `PassRole` to the `agent-platform*` role ARNs if you write a custom
+  deploy policy. It also needs `iam:CreateOpenIDConnectProvider` (the IRSA
+  identity provider) and, for the Kubernetes side, nothing beyond the EKS API:
+  the deploying principal is bootstrapped as cluster-admin through an access
+  entry and Terraform talks to the cluster with `aws eks get-token`.
 - **The image-push and code-deploy scripts run with your CLI identity, not a
   stack role.** `scripts/build-and-push.sh` needs `ecr:GetAuthorizationToken` +
   push actions on `agent-platform/*`; `scripts/deploy-schedule-lambda.sh` needs
@@ -377,9 +391,13 @@ Network boundary:
 - The runtime security group is **egress-only** — AgentCore delivers inbound
   traffic through its data plane, not the VPC, so no ingress rule exists.
 - The ALB accepts traffic **only from CloudFront** (ingress restricted to the
-  `com.amazonaws.global.cloudfront.origin-facing` managed prefix list); the ECS
-  service accepts traffic only from the ALB. CloudFront redirects all viewers to
-  HTTPS.
+  `com.amazonaws.global.cloudfront.origin-facing` managed prefix list); the
+  backend pods carry their own security group (**security groups for Pods**,
+  strict enforcing mode) and accept traffic only from the ALB, the internal
+  NLB path, and kubelet probes from the cluster nodes. Pods on the same nodes
+  do not share it: Keycloak alone carries the database-client group, and
+  llm-edge's group allows egress on 443 only. CloudFront redirects all viewers
+  to HTTPS.
 - ⚠️ If your LLM gateway is HTTP-only, NAT → gateway traffic crosses the network
   unencrypted. Put a TLS listener or PrivateLink in front for a real
   environment.
@@ -443,7 +461,8 @@ Lessons from deploying into zero-trust enterprise VPCs:
    | | `bedrock-runtime` (Bedrock mode) **or** the internal `llm-edge` listener (gateway mode) | Model calls. In gateway mode a kernel never reaches the gateway host itself and needs no `secretsmanager` access: the key lives in `llm-edge`, which is what egresses to the gateway |
    | | `bedrock-agentcore` | MCP tools runtime (SigV4 proxy) and built-in tool sessions |
    | | The portal domain (CloudFront) | The interactive kernel refreshes its per-session workspace credentials through the backend API |
-   | Backend SG (ECS task) | `dynamodb` + `s3` (prefix lists), `sts`, `bedrock-agentcore`, `bedrock-agentcore-control`, `logs` | Control plane, workspace-credential minting, and the warmup invoke |
+   | Backend SG (EKS pods) | `dynamodb` + `s3` (prefix lists), `sts`, `bedrock-agentcore`, `bedrock-agentcore-control` | Control plane, workspace-credential minting, and the warmup invoke. IRSA exchanges the pod's token at `sts`. Logs leave through Fluent Bit on the node (cluster SG), not the pod |
+   | Cluster SG (EKS nodes) | `ecr.api`, `ecr.dkr`, **S3 via prefix list**, `logs`, `sts`, `ec2`, `eks` (the API endpoint) | Image pulls (layers live in S3), Fluent Bit → CloudWatch, the VPC CNI attaching branch ENIs, kubelet → control plane |
 
 2. **Gateway endpoints match by prefix list — endpoint-SG-only egress
    silently blocks them.** A zero-trust security group whose outbound rules

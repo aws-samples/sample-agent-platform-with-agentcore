@@ -133,7 +133,12 @@ resource "aws_instance" "hub" {
     # Account-level patch-management automation (SSM Quick Setup and the
     # like) tags instances after launch; without this, every plan tries to
     # strip its tag and the zero-change baseline flaps forever.
-    ignore_changes = [tags["Patch Group"], tags_all["Patch Group"]]
+    #
+    # The AMI comes from the "latest AL2023" SSM parameter, which moves with
+    # every image release. A fresh deployment gets the current image; an
+    # existing instance is not replaced (and its user_data re-run) just
+    # because AWS published a newer one.
+    ignore_changes = [ami, tags["Patch Group"], tags_all["Patch Group"]]
   }
 }
 
@@ -221,7 +226,8 @@ resource "aws_instance" "app" {
   }
 
   lifecycle {
-    # same as the hub instance: external patch-management tagging
-    ignore_changes = [tags["Patch Group"], tags_all["Patch Group"]]
+    # same as the hub instance: external patch-management tagging and the
+    # moving "latest AMI" parameter
+    ignore_changes = [ami, tags["Patch Group"], tags_all["Patch Group"]]
   }
 }

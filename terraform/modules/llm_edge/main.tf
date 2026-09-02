@@ -9,6 +9,15 @@
 # The upstream gateway (LiteLLM) stays outside the VPC, reached over the
 # existing NAT egress with source-IP allowlisting on the gateway side, so no
 # private connectivity is introduced for it.
+#
+# The edge runs on the platform's EKS cluster. Its pods carry
+# aws_security_group.task through a SecurityGroupPolicy (strict enforcing
+# mode, so the 443-only egress below is the pod's real egress), and register
+# into the target group through a TargetGroupBinding.
+
+locals {
+  namespace = "llm-edge"
+}
 
 # ------------------------------ security groups -----------------------------
 
@@ -33,7 +42,7 @@ resource "aws_vpc_security_group_ingress_rule" "alb_from_runtime" {
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_task" {
   security_group_id            = aws_security_group.alb.id
-  description                  = "Forward to edge tasks"
+  description                  = "Forward to edge pods"
   referenced_security_group_id = aws_security_group.task.id
   from_port                    = 8080
   to_port                      = 8080
@@ -57,6 +66,17 @@ resource "aws_vpc_security_group_ingress_rule" "task_from_alb" {
   ip_protocol                  = "tcp"
 }
 
+# kubelet probes arrive from the node, which carries the cluster security
+# group: cluster nodes only, on the app port only.
+resource "aws_vpc_security_group_ingress_rule" "task_probes" {
+  security_group_id            = aws_security_group.task.id
+  description                  = "kubelet probes from cluster nodes"
+  referenced_security_group_id = var.eks.cluster_security_group_id
+  from_port                    = 8080
+  to_port                      = 8080
+  ip_protocol                  = "tcp"
+}
+
 # Egress covers the upstream gateway (public, via NAT) plus Secrets Manager
 # and DynamoDB. Restricted to 443; the destination gateway is not a fixed IP
 # the deployment controls, which is why this is not narrowed further. Inbound
@@ -68,6 +88,30 @@ resource "aws_vpc_security_group_egress_rule" "task_https" {
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
+}
+
+# Name resolution: CoreDNS runs with the cluster security group. Both sides
+# are needed in strict mode — the pod's egress and CoreDNS's ingress.
+resource "aws_vpc_security_group_egress_rule" "task_dns" {
+  for_each = { tcp = "tcp", udp = "udp" }
+
+  security_group_id            = aws_security_group.task.id
+  description                  = "DNS to CoreDNS (${each.key})"
+  referenced_security_group_id = var.eks.cluster_security_group_id
+  from_port                    = 53
+  to_port                      = 53
+  ip_protocol                  = each.value
+}
+
+resource "aws_vpc_security_group_ingress_rule" "dns_from_task" {
+  for_each = { tcp = "tcp", udp = "udp" }
+
+  security_group_id            = var.eks.cluster_security_group_id
+  description                  = "DNS from llm-edge pods (${each.key})"
+  referenced_security_group_id = aws_security_group.task.id
+  from_port                    = 53
+  to_port                      = 53
+  ip_protocol                  = each.value
 }
 
 # ------------------------------ load balancer -------------------------------
@@ -147,88 +191,70 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-# --------------------------------- service ----------------------------------
-
-resource "aws_ecs_cluster" "edge" {
-  name = "agent-platform-llm-edge${var.name_suffix}"
-
-  setting {
-    name  = "containerInsights"
-    value = "disabled"
-  }
-}
+# --------------------------------- workload ---------------------------------
 
 resource "aws_cloudwatch_log_group" "edge" {
-  name              = "/ecs/agent-platform-llm-edge${var.name_suffix}"
+  name              = "${var.eks.log_group_prefix}/${local.namespace}.edge"
   retention_in_days = 30
 }
 
-resource "aws_ecs_task_definition" "edge" {
-  family                   = "agent-platform-llm-edge${var.name_suffix}"
-  cpu                      = "512"
-  memory                   = "1024"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+resource "helm_release" "edge_sg" {
+  name             = "edge-sg"
+  chart            = "${path.module}/../../charts/pod-security-group"
+  namespace        = local.namespace
+  create_namespace = true
 
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name      = "edge"
-      image     = "${var.llm_edge_repo.url}:${var.image_tag}"
-      essential = true
-      portMappings = [
-        { containerPort = 8080, protocol = "tcp" }
-      ]
-      # The gateway key is NOT injected here. It is fetched by the task role at
-      # request time from the secret named on the session's token item, so a
-      # per-backend secret override in the model control plane keeps working
-      # and the key is never part of the task definition.
-      environment = [
-        { name = "PLATFORM_TABLE", value = var.platform_table.name },
-        { name = "AWS_REGION", value = local.region },
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.edge.name
-          awslogs-region        = local.region
-          awslogs-stream-prefix = "edge"
-        }
-      }
-    }
-  ])
+  values = [yamlencode({
+    name             = "edge"
+    securityGroupIds = [aws_security_group.task.id]
+  })]
 }
 
-resource "aws_ecs_service" "edge" {
-  name            = "agent-platform-llm-edge${var.name_suffix}"
-  cluster         = aws_ecs_cluster.edge.id
-  task_definition = aws_ecs_task_definition.edge.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+resource "helm_release" "edge" {
+  name      = "edge"
+  chart     = "${path.module}/../../charts/platform-workload"
+  namespace = local.namespace
 
-  # ECS Exec would put a shell in the one container that can read the gateway
-  # key. Keep it off; debugging goes through logs.
-  enable_execute_command = false
+  values = [yamlencode({
+    name     = "edge"
+    image    = "${var.llm_edge_repo.url}:${var.image_tag}"
+    replicas = var.desired_count
+    port     = 8080
+    # The gateway key is NOT injected here. It is fetched by the workload role
+    # at request time from the secret named on the session's token item, so a
+    # per-backend secret override in the model control plane keeps working
+    # and the key is never part of the pod spec.
+    env = {
+      PLATFORM_TABLE = var.platform_table.name
+      AWS_REGION     = local.region
+    }
+    serviceAccount = {
+      roleArn = aws_iam_role.edge.arn
+    }
+    probe = {
+      path      = "/healthz"
+      readiness = { initialDelaySeconds = 5, periodSeconds = 10, failureThreshold = 3 }
+      liveness  = { initialDelaySeconds = 30, periodSeconds = 20, failureThreshold = 3 }
+      startup   = { enabled = false, periodSeconds = 10, failureThreshold = 30 }
+    }
+    # ECS ran the edge at 0.5 vCPU / 1 GiB.
+    resources = {
+      requests = { cpu = "500m", memory = "1Gi" }
+      limits   = { memory = "1Gi" }
+    }
+    targetGroups    = [{ arn = aws_lb_target_group.edge.arn, port = 8080 }]
+    dependencyToken = var.eks.controllers_ready
+  })]
 
-  network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.task.id]
-    assign_public_ip = false
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.edge.arn
-    container_name   = "edge"
-    container_port   = 8080
-  }
+  wait            = true
+  timeout         = 600
+  atomic          = true
+  cleanup_on_fail = true
 
   depends_on = [
+    helm_release.edge_sg,
+    aws_iam_role_policy.edge,
+    aws_cloudwatch_log_group.edge,
     aws_lb_listener.http,
     aws_lb_listener.https,
   ]

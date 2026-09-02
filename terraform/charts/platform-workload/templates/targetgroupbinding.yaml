@@ -1,0 +1,18 @@
+{{- range $i, $tg := .Values.targetGroups }}
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ include "workload.name" $ }}-{{ $i }}
+  labels:
+    {{- include "workload.labels" $ | nindent 4 }}
+spec:
+  targetGroupARN: {{ required "targetGroups[].arn is required" $tg.arn | quote }}
+  targetType: ip
+  serviceRef:
+    name: {{ include "workload.name" $ }}
+    port: {{ $tg.port | default $.Values.port }}
+  # No `networking` block: the controller must not add or remove security
+  # group rules. Reachability is declared by the Terraform-owned groups the
+  # pods carry through their SecurityGroupPolicy.
+{{- end }}

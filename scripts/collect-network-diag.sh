@@ -14,7 +14,7 @@
 #
 # What it collects (see docs/permissions.md §10 for how to read it):
 #   runtime network config / subnet AZ IDs / route tables / VPC endpoints /
-#   NAT / SG rules / runtime ENIs / ECS backend network+roles / runtime and
+#   NAT / SG rules / runtime ENIs / EKS backend pods+SGs+IRSA roles / runtime and
 #   backend log groups / two warmup probes (cold + retry) / caller-side
 #   endpoint reachability baseline.
 set -u
@@ -57,17 +57,32 @@ fi
   --filters Name=group-id,Values=$RT_SGS \
   --query 'NetworkInterfaces[].{id:NetworkInterfaceId,subnet:SubnetId,ip:PrivateIpAddress,status:Status,desc:Description}' --output table
 
-# ---- 3. Backend ECS: subnets / SG / roles / whether ECS exec is available ----
-CLUSTER=$(aws ecs list-clusters --region "$REGION" --query 'clusterArns[?contains(@,`agent-platform`)]|[0]' --output text 2>/dev/null)
-if [ -n "$CLUSTER" ] && [ "$CLUSTER" != "None" ]; then
-  SVCS=$(aws ecs list-services --region "$REGION" --cluster "$CLUSTER" --query 'serviceArns' --output text 2>/dev/null)
-  if [ -n "$SVCS" ]; then
-    run "ecs-services-network" aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services $SVCS \
-      --query 'services[].{name:serviceName,taskdef:taskDefinition,execEnabled:enableExecuteCommand,net:networkConfiguration.awsvpcConfiguration}' --output json
-    for TD in $(aws ecs describe-services --region "$REGION" --cluster "$CLUSTER" --services $SVCS --query 'services[].taskDefinition' --output text); do
-      run "taskdef-roles $TD" aws ecs describe-task-definition --region "$REGION" --task-definition "$TD" \
-        --query 'taskDefinition.{taskRole:taskRoleArn,execRole:executionRoleArn,env:containerDefinitions[0].environment}' --output json
-    done
+# ---- 3. Backend on EKS: cluster / node group / pods, their security groups and IRSA roles ----
+EKS_CLUSTER=$(aws eks list-clusters --region "$REGION" --query 'clusters[?contains(@,`agent-platform`)]|[0]' --output text 2>/dev/null)
+if [ -n "$EKS_CLUSTER" ] && [ "$EKS_CLUSTER" != "None" ]; then
+  run "eks-cluster" aws eks describe-cluster --region "$REGION" --name "$EKS_CLUSTER" \
+    --query 'cluster.{status:status,version:version,endpointAccess:resourcesVpcConfig.{public:endpointPublicAccess,private:endpointPrivateAccess,cidrs:publicAccessCidrs},subnets:resourcesVpcConfig.subnetIds,clusterSg:resourcesVpcConfig.clusterSecurityGroupId,oidc:identity.oidc.issuer}' --output json
+  for NG in $(aws eks list-nodegroups --region "$REGION" --cluster-name "$EKS_CLUSTER" --query 'nodegroups[]' --output text 2>/dev/null); do
+    run "eks-nodegroup $NG" aws eks describe-nodegroup --region "$REGION" --cluster-name "$EKS_CLUSTER" --nodegroup-name "$NG" \
+      --query 'nodegroup.{status:status,types:instanceTypes,ami:amiType,scaling:scalingConfig,health:health}' --output json
+  done
+  run "eks-addons" aws eks describe-addon --region "$REGION" --cluster-name "$EKS_CLUSTER" --addon-name vpc-cni \
+    --query 'addon.{status:status,version:addonVersion,irsaRole:serviceAccountRoleArn,config:configurationValues}' --output json
+  # kubectl is optional: without it the AWS-side view above still tells most of the story.
+  if command -v kubectl >/dev/null 2>&1; then
+    KCFG=$(mktemp)
+    if aws eks update-kubeconfig --region "$REGION" --name "$EKS_CLUSTER" --kubeconfig "$KCFG" >/dev/null 2>&1; then
+      run "k8s-nodes" kubectl --kubeconfig "$KCFG" get nodes -o wide
+      run "k8s-pods" kubectl --kubeconfig "$KCFG" get pods -A -o wide
+      run "k8s-deployments" kubectl --kubeconfig "$KCFG" get deploy -A -o wide
+      # Which security groups each pod carries (branch ENI), and which role it assumes (IRSA).
+      run "k8s-securitygrouppolicies" kubectl --kubeconfig "$KCFG" get securitygrouppolicies -A -o yaml
+      run "k8s-pod-enis" kubectl --kubeconfig "$KCFG" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.metadata.annotations.vpc\.amazonaws\.com/pod-eni}{"\n"}{end}'
+      run "k8s-serviceaccounts-irsa" kubectl --kubeconfig "$KCFG" get sa -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}{end}'
+      run "k8s-targetgroupbindings" kubectl --kubeconfig "$KCFG" get targetgroupbindings -A -o wide
+      run "k8s-recent-events" kubectl --kubeconfig "$KCFG" get events -A --sort-by=.lastTimestamp
+    fi
+    rm -f "$KCFG"
   fi
 fi
 
@@ -80,8 +95,8 @@ run "runtime-log-streams" aws logs describe-log-streams --region "$REGION" --log
   --order-by LastEventTime --descending --max-items 10 --output json
 run "runtime-recent-logs" aws logs filter-log-events --region "$REGION" --log-group-name "$RLG" \
   --start-time "$SINCE" --max-items 300 --query 'events[].message' --output text
-BLG=$(aws logs describe-log-groups --region "$REGION" --log-group-name-prefix /ecs/agent-platform \
-  --query 'logGroups[0].logGroupName' --output text 2>/dev/null)
+BLG=$(aws logs describe-log-groups --region "$REGION" --log-group-name-prefix /eks/agent-platform \
+  --query 'logGroups[?contains(logGroupName,`portal.backend`)].logGroupName|[0]' --output text 2>/dev/null)
 if [ -n "$BLG" ] && [ "$BLG" != "None" ]; then
   run "backend-warmup-failures" aws logs filter-log-events --region "$REGION" --log-group-name "$BLG" \
     --filter-pattern '"warmup failed"' --start-time "$SINCE" --query 'events[].message' --output text

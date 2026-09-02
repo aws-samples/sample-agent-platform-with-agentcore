@@ -5,9 +5,11 @@
 # while something references them, and a few need a disable-then-wait step that
 # has no counterpart on the way up. Run with CONFIRM=yes.
 #
-# Order matters: ECS service (drain) -> ALB/NLB listeners+LBs -> target groups ->
+# Order matters: workloads (Helm) -> ALB/NLB listeners+LBs -> target groups ->
 # CloudFront (disable, wait, delete) -> API GW + VPC Link -> runtimes -> Lambda/
-# scheduler -> Cognito -> buckets -> table -> ECR -> IAM -> NAT -> subnets -> VPC.
+# scheduler -> Cognito -> buckets -> table -> ECR -> EKS node group + cluster ->
+# IAM -> NAT -> subnets -> VPC. The cluster goes late because its pods hold
+# branch ENIs in the subnets until they are gone.
 set -uo pipefail
 . "$(dirname "$0")/../lib/common.sh"
 load
@@ -17,22 +19,15 @@ step "DESTROY $NAME"
 
 t() { "$@" >/dev/null 2>&1 && log "ok: $*" || log "skip/failed: $*"; }
 
-# ---- ECS ----
-if [ -n "${CLUSTER:-}" ] && [ -n "${SERVICE:-}" ]; then
-  t aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --desired-count 0
-  log "waiting for tasks to drain…"
-  aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE" 2>/dev/null || true
-  t aws ecs delete-service --cluster "$CLUSTER" --service "$SERVICE" --force
-  t aws ecs delete-cluster --cluster "$CLUSTER"
-fi
-
-# ---- llm-edge ECS (its own cluster; absent on Bedrock-direct deployments) ----
-if [ -n "${EDGE_CLUSTER:-}" ] && [ -n "${EDGE_SERVICE:-}" ]; then
-  t aws ecs update-service --cluster "$EDGE_CLUSTER" --service "$EDGE_SERVICE" --desired-count 0
-  log "waiting for llm-edge tasks to drain…"
-  aws ecs wait services-stable --cluster "$EDGE_CLUSTER" --services "$EDGE_SERVICE" 2>/dev/null || true
-  t aws ecs delete-service --cluster "$EDGE_CLUSTER" --service "$EDGE_SERVICE" --force
-  t aws ecs delete-cluster --cluster "$EDGE_CLUSTER"
+# ---- workloads: uninstalling drops the TargetGroupBindings, which deregisters ----
+# ---- the pods, and releases the branch ENIs the pods held in the subnets.  ----
+if [ -n "${EKS_CLUSTER:-}" ] && aws eks describe-cluster --name "$EKS_CLUSTER" >/dev/null 2>&1; then
+  for rel in "portal:backend" "llm-edge:edge"; do
+    ns="${rel%%:*}"; name="${rel##*:}"
+    t helm_k uninstall "$name" --namespace "$ns" --wait
+    t helm_k uninstall "$name-sg" --namespace "$ns"
+    t kube delete namespace "$ns" --ignore-not-found --wait=false
+  done
 fi
 
 # ---- load balancers (listeners die with the LB; target groups must follow it) ----
@@ -116,14 +111,40 @@ for s in "${LLM_SECRET:-}" "${ENTRY_SECRET:-}"; do
   [ -n "$s" ] && t aws secretsmanager delete-secret --secret-id "$s" --force-delete-without-recovery
 done
 
-# ---- IAM (inline policies must go first) ----
+# ---- EKS: node group first (it owns the instances), then the add-ons go with ----
+# ---- the cluster, then the OIDC provider the IRSA roles trusted.            ----
+if [ -n "${EKS_CLUSTER:-}" ]; then
+  if [ -n "${EKS_NODEGROUP:-}" ]; then
+    t aws eks delete-nodegroup --cluster-name "$EKS_CLUSTER" --nodegroup-name "$EKS_NODEGROUP"
+    log "waiting for the node group to delete (several minutes)…"
+    aws eks wait nodegroup-deleted --cluster-name "$EKS_CLUSTER" --nodegroup-name "$EKS_NODEGROUP" 2>/dev/null || true
+  fi
+  t aws eks delete-cluster --name "$EKS_CLUSTER"
+  log "waiting for the cluster to delete…"
+  aws eks wait cluster-deleted --name "$EKS_CLUSTER" 2>/dev/null || true
+  t aws logs delete-log-group --log-group-name "/aws/eks/$EKS_CLUSTER/cluster"
+  rm -f "$KUBECONFIG_FILE"
+fi
+[ -n "${OIDC_PROVIDER_ARN:-}" ] && t aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "$OIDC_PROVIDER_ARN"
+# Fluent Bit auto-creates groups under the prefix; sweep them.
+for lg in $(aws logs describe-log-groups --log-group-name-prefix "$LOG_PREFIX" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+  t aws logs delete-log-group --log-group-name "$lg"
+done
+
+# ---- IAM (inline policies and managed-policy attachments must go first) ----
 for r in "agent-platform-interactive-role${SUFFIX}" "agent-platform-sdk-role${SUFFIX}" \
          "agent-platform-mcp-tools-role${SUFFIX}" "agent-platform-workspace-access${SUFFIX}" \
-         "agent-platform-backend-task${SUFFIX}" "agent-platform-backend-exec${SUFFIX}" \
+         "agent-platform-backend-task${SUFFIX}" \
          "agent-platform-schedule-runner${SUFFIX}" "agent-platform-scheduler${SUFFIX}" \
-         "agent-platform-llm-edge${SUFFIX}" "agent-platform-llm-edge-exec${SUFFIX}"; do
+         "agent-platform-llm-edge${SUFFIX}" \
+         "agent-platform-eks-cluster${SUFFIX}" "agent-platform-eks-node${SUFFIX}" \
+         "agent-platform-eks-cni${SUFFIX}" "agent-platform-eks-lb-controller${SUFFIX}" \
+         "agent-platform-eks-fluent-bit${SUFFIX}"; do
   for p in $(aws iam list-role-policies --role-name "$r" --query 'PolicyNames[]' --output text 2>/dev/null); do
     t aws iam delete-role-policy --role-name "$r" --policy-name "$p"
+  done
+  for p in $(aws iam list-attached-role-policies --role-name "$r" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+    t aws iam detach-role-policy --role-name "$r" --policy-arn "$p"
   done
   t aws iam delete-role --role-name "$r"
 done

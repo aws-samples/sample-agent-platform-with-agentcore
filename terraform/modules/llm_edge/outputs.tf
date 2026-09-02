@@ -3,8 +3,8 @@ output "edge_url" {
   value       = "${local.scheme}://${aws_lb.edge.dns_name}"
 }
 
-output "task_role_arn" {
-  value = aws_iam_role.task.arn
+output "role_arn" {
+  value = aws_iam_role.edge.arn
 }
 
 output "alb_sg_id" {

@@ -24,7 +24,7 @@ variable "image_tag" {
 }
 
 variable "llm_gateway_secret" {
-  description = "Secrets Manager secret holding the upstream gateway API key. This module's task role is the only kernel-path principal granted read on it."
+  description = "Secrets Manager secret holding the upstream gateway API key. This module's workload role is the only kernel-path principal granted read on it."
   type = object({
     name = string
     arn  = string
@@ -60,8 +60,21 @@ variable "certificate_arn" {
 }
 
 variable "desired_count" {
-  type    = number
-  default = 2
+  description = "Replicas of the edge Deployment."
+  type        = number
+  default     = 2
+}
+
+variable "eks" {
+  description = "Cluster facts from the eks module (see modules/portal/variables.tf)."
+  type = object({
+    cluster_name              = string
+    cluster_security_group_id = string
+    oidc_provider_arn         = string
+    oidc_issuer_host          = string
+    log_group_prefix          = string
+    controllers_ready         = string
+  })
 }
 
 variable "name_suffix" {

@@ -51,14 +51,27 @@ variable "backend_image_tag" {
 }
 
 variable "backend_desired_count" {
-  type    = number
-  default = 2
+  description = "Replicas of the management backend Deployment."
+  type        = number
+  default     = 2
 }
 
 variable "entry_desired_count" {
-  description = "Task count for the data-plane (ENTRY_ONLY) service behind the private service-entry API."
+  description = "Replicas of the data-plane (ENTRY_ONLY) Deployment behind the private service-entry API."
   type        = number
   default     = 1
+}
+
+variable "eks" {
+  description = "Cluster facts from the eks module: where the workloads run, the OIDC provider their role trusts, and the cluster security group used for probes/DNS."
+  type = object({
+    cluster_name              = string
+    cluster_security_group_id = string
+    oidc_provider_arn         = string
+    oidc_issuer_host          = string
+    log_group_prefix          = string
+    controllers_ready         = string
+  })
 }
 
 variable "interactive_runtime_arn" {
