@@ -1,0 +1,17 @@
+apiVersion: vpcresources.k8s.aws/v1beta1
+kind: SecurityGroupPolicy
+metadata:
+  name: {{ required "name is required" .Values.name }}
+  labels:
+    app: {{ .Values.name }}
+    app.kubernetes.io/name: {{ .Values.name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ .Values.name }}
+  securityGroups:
+    groupIds:
+{{- range required "securityGroupIds is required" .Values.securityGroupIds }}
+      - {{ . }}
+{{- end }}

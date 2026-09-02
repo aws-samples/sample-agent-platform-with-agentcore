@@ -87,8 +87,8 @@ token，此后每个 `/api` 请求都带这个 Bearer token。
 - **登出同时终止 IdP 会话。**门户的 Sign out 不只清本地 token，还会结束 IdP
   侧的 SSO 会话；否则下次登录 IdP 会静默返回同一身份，换人场景下会串号。
 - 门户全链路 HTTPS：CloudFront 强制跳转 HTTPS；ALB 只接受来自 CloudFront 托管
-  前缀列表的流量；ECS 后端只接受来自 ALB 的流量。VPC 内**没有任何 0.0.0.0/0
-  入站规则**。
+  前缀列表的流量；EKS 上的后端 Pod 带着自己的安全组(Security Groups for
+  Pods),只接受来自 ALB 的流量。VPC 内**没有任何 0.0.0.0/0 入站规则**。
 
 ---
 
@@ -308,7 +308,7 @@ POST https://{portal}/api/v1/agents/{id}/invoke      {"prompt": "..."}
 调用方
   │  HTTPS（TLS，CloudFront 强制）
   ▼
-CloudFront ──→ ALB（仅接受 CloudFront 前缀列表来源）──→ ECS 后端
+CloudFront ──→ ALB（仅接受 CloudFront 前缀列表来源）──→ 后端 Pod（EKS）
   │
   │  ① 鉴权：Cognito ID token 或 Channel token（见第 7 节）
   │  ② 治理管道：配额检查 → 来源开关 → 轮次上限

@@ -5,13 +5,17 @@ A step-by-step runbook for standing up
 using nothing but the AWS CLI, plus a verification suite to confirm the result
 actually works.
 
-The upstream sample ships CDK and Terraform. This runbook is for teams that
-cannot introduce either — a change-controlled account where every API call has to
-be auditable, an environment with no Terraform state backend, or a proof of
-concept that has to be readable end to end. It provisions the same four stacks
-(**network, platform, runtime, portal** — 98 resources, tabulated with purpose
-and dependencies in [`resource-inventory.md`](resource-inventory.md)) and
-reaches the same working portal.
+The upstream sample ships Terraform (and legacy CDK stacks). This runbook is for
+teams that cannot introduce either — a change-controlled account where every API
+call has to be auditable, an environment with no Terraform state backend, or a
+proof of concept that has to be readable end to end. It provisions the same five
+modules (**network, platform, eks, runtime, portal** — 121 resources, tabulated
+with purpose and dependencies in [`resource-inventory.md`](resource-inventory.md))
+and reaches the same working portal. "AWS CLI only" has one qualification since
+the containers moved to EKS: the Kubernetes side of the cluster (two
+controllers and the workloads themselves) is installed with `helm` and read
+with `kubectl`, from the same Helm charts the Terraform path uses
+(`terraform/charts/`). Everything AWS-side is still plain `aws` calls.
 
 **Scope: this is not the full possible footprint.** The optional
 `team_auth`/`team_demo` modules (enterprise-SSO demo, 43 more resources) and
@@ -22,11 +26,13 @@ The verification suite, on the other hand, is **not** CLI-only: pointed at the
 checks against a Terraform deployment, including one adapted to an in-house
 standard.
 
-**Time:** ~35 minutes of wall clock for a cold deployment, most of it waiting on
-NAT, VPC Link and CloudFront.
-**Standing cost:** roughly \$80–110/month at idle — the NAT Gateway (~\$32),
-the ALB and NLB (~\$16 each), two Fargate tasks (~\$25), plus per-request
-CloudFront and per-invocation model spend.
+**Time:** ~55 minutes of wall clock for a cold deployment, most of it waiting on
+the EKS control plane and node group, NAT, VPC Link and CloudFront.
+**Standing cost:** roughly \$300/month at idle — the EKS control plane (\$73),
+two `m7g.large` nodes (~\$150, region-dependent), the NAT Gateway (~\$32),
+the ALB and NLB (~\$16 each), plus per-request CloudFront and per-invocation
+model spend. The EKS cluster is the bulk of it; it replaces two Fargate tasks
+that cost ~\$25.
 
 ---
 
@@ -40,7 +46,10 @@ CloudFront and per-invocation model spend.
 | Python 3 | ≥ 3.9 | standard library only |
 | `bash` | 3.2 or newer | the scripts are 3.2-safe, so stock macOS works |
 | `zip` | any | packages the placeholder Lambda |
-| Docker with `buildx` | any recent | **must build `linux/arm64`** |
+| `kubectl` | within one minor of the cluster version | reads the cluster; the workload phases wait on Deployments through it |
+| `helm` | ≥ 3.12 | installs the two cluster controllers and the platform workloads from `terraform/charts/` |
+| `openssl` | any | fingerprints the cluster's OIDC issuer certificate (IRSA provider) |
+| Docker with `buildx` | any recent | **must build `linux/arm64`** — the EKS nodes are Graviton too |
 | Node.js + npm | ≥ 20 | builds the frontend bundle |
 
 > **The ARM64 requirement is not negotiable.** AgentCore Runtime executes arm64
@@ -54,7 +63,8 @@ CloudFront and per-invocation model spend.
 - Amazon Bedrock AgentCore available in your target region.
 - Bedrock model access enabled for the Claude models you intend to use.
 - Quota headroom for: 1 VPC, 1 Elastic IP, 1 NAT Gateway, 2 load balancers,
-  1 CloudFront distribution.
+  1 CloudFront distribution, 1 EKS cluster and two `m7g.large` On-Demand
+  instances (the Graviton vCPU quota).
 
 ### 1.3 Deployer permissions
 
@@ -63,15 +73,18 @@ create/read/update on:
 
 ```
 ec2  iam  s3  dynamodb  ecr  secretsmanager
-ecs  elbv2  cloudfront  cognito-idp  apigateway
+eks  elbv2  cloudfront  cognito-idp  apigateway
 lambda  scheduler  sqs  logs  bedrock-agentcore-control
 sts
 ```
 
-`iam:CreateRole`, `iam:PutRolePolicy` and `iam:PassRole` are required — the
-platform creates eight execution roles. `iam:CreateServiceLinkedRole` is also
-required on an account that has never used ECS; see §6.3. Review what they grant
-in the upstream
+`iam:CreateRole`, `iam:PutRolePolicy`, `iam:AttachRolePolicy` and
+`iam:PassRole` are required — the platform creates about a dozen roles (kernel and
+workload roles, plus the EKS cluster, node, CNI, load-balancer-controller and
+Fluent Bit roles). `iam:CreateOpenIDConnectProvider` registers the cluster's
+issuer for IRSA. The deploying principal becomes the cluster's first admin
+through an EKS access entry, so no Kubernetes RBAC has to be arranged out of
+band. Review what the roles grant in the upstream
 [`docs/permissions.md`](https://github.com/aws-samples/sample-agent-platform-with-agentcore/blob/main/docs/permissions.md)
 before approving.
 
@@ -126,7 +139,7 @@ Everything else is set in `lib/common.sh`. The knobs you may want to change:
 |---|---|---|
 | `SUFFIX` | *(empty)* | appended to every resource name; set it to run a second stack alongside a CDK/Terraform one in the same account |
 | `VPC_CIDR` | `10.20.0.0/16` | must not overlap anything you plan to peer with |
-| `IMAGE_TAG` | `latest` | the tag the runtimes and ECS pull |
+| `IMAGE_TAG` | `latest` | the tag the runtimes and the EKS pods pull |
 | `ANTHROPIC_MODEL` | Sonnet 4.5 profile | baked into the kernels as the default |
 | `ENABLE_LLM_EDGE` | `0` | `1` deploys `llm-edge`, required for the litellm model backend — it holds the gateway key so no kernel container receives one (phase 4b) |
 | `STATE_DIR` | `./.state` | where resource ids are recorded — **see §6** |
@@ -170,6 +183,44 @@ bash scripts/20-platform.sh
 Workspace bucket (versioned, encrypted, TLS-only), access-log bucket (90-day
 expiry), frontend bucket, DynamoDB table (PITR + SSE), four ECR repositories
 (scan-on-push), and the LLM-gateway secret placeholder.
+
+### Phase 2b — EKS cluster (~20 min)
+
+```bash
+bash scripts/25-eks.sh
+```
+
+The cluster every platform container runs on. In order: the cluster and node
+IAM roles; the cluster itself (API endpoint public + private, access entries
+mode, control-plane logs, `--no-bootstrap-self-managed-addons` so the add-ons
+below are the only copies); the **OIDC identity provider** that makes IRSA
+possible; IRSA roles for the VPC CNI, the AWS Load Balancer Controller and
+Fluent Bit; the `vpc-cni` add-on in **security-groups-for-Pods mode**
+(`ENABLE_POD_ENI`, strict enforcement, `DISABLE_TCP_EARLY_DEMUX`, small warm
+pools); a two-node Graviton managed node group; `kube-proxy` and `coredns`;
+then the two controllers with `helm`.
+
+Two waits dominate: `cluster-active` (~10 min) and `nodegroup-active` (~3 min).
+Nothing here needs an image, which is why it sits before the image push.
+
+What the phase decides for every later phase:
+
+- **IRSA is the only path to AWS.** Each workload role's trust names this
+  cluster's OIDC provider and exactly one `namespace:serviceaccount`; the Pod
+  Identity agent is never installed.
+- **Pods carry the same security groups the ECS tasks had.** The load balancer
+  and RDS rules in the later phases reference those groups unchanged; the one
+  addition is "cluster security group → app port" for kubelet probes, plus
+  "pod group → cluster group on 53" so CoreDNS answers them.
+- **Load balancers stay CLI-created.** The controller is used only for
+  `TargetGroupBinding`, which keeps a target group's membership equal to a
+  Service's ready pods.
+
+`EKS_PUBLIC_CIDRS` (default `0.0.0.0/0` — the API is IAM-authenticated
+regardless) should be narrowed to your operators' egress addresses.
+`EKS_NODE_TYPE` must be a Graviton type that supports ENI trunking (m/c/r from
+6g; never the `t` family). A private kubeconfig is written to
+`.state/agent-platform<suffix>.kubeconfig`; the scripts never touch your own.
 
 ### Phase 3 — build and push images (~10 min)
 
@@ -231,15 +282,16 @@ bash scripts/35-llm-edge.sh
 ```
 
 Creates an internal ALB, a target group on `/healthz`, two security groups, the
-edge task and execution roles, a log group, its own ECS cluster and a
-two-task Fargate service. Records `LLM_EDGE_URL` in the state file, which
-phase 6 reads into the backend's `PLATFORM_LLM_EDGE_URL`.
+edge IRSA role, a log group, and a two-replica Deployment in the `llm-edge`
+namespace (its pods carry the edge security group, so the 443-only egress is
+the pods' real egress). Records `LLM_EDGE_URL` in the state file, which phase 6
+reads into the backend's `PLATFORM_LLM_EDGE_URL`.
 
 What the phase buys:
 
 - The gateway key is readable by exactly one principal,
-  `agent-platform-llm-edge`, in a task no session can enter (ECS Exec is
-  deliberately not enabled on it).
+  `agent-platform-llm-edge`, assumable only by the `llm-edge/edge` service
+  account, in a pod no session can enter.
 - A kernel receives a short-lived grant scoped to that session's model allowance
   instead of a credential. The kernel's `ANTHROPIC_AUTH_TOKEN` is the literal
   string `unused`; the grant lives in the kernel process behind a loopback shim.
@@ -258,11 +310,11 @@ Two things worth knowing before you change it:
   validator in front: VPC Lattice caps a connection at 10 minutes and API Gateway
   buffers responses, either of which truncates a long completion.
 
-Order matters twice here. It must run after phase 4 (it needs the VPC and the
-runtime security group) and before phase 6 (which bakes the URL into the backend
-task definition). If you run it later, re-run `60-cloudfront-ecs.sh` afterwards
-or the backend keeps an empty `PLATFORM_LLM_EDGE_URL` and refuses gateway
-routing with a 503.
+Order matters twice here. It must run after phase 2b and phase 4 (it needs the
+cluster, the VPC and the runtime security group) and before phase 6 (which
+passes the URL to the backend pods). If you run it later, re-run
+`60-cloudfront-eks.sh` afterwards or the backend keeps an empty
+`PLATFORM_LLM_EDGE_URL` and refuses gateway routing with a 503.
 
 `00-deploy-all.sh` runs this phase only when `ENABLE_LLM_EDGE=1`:
 
@@ -270,17 +322,23 @@ routing with a 503.
 ENABLE_LLM_EDGE=1 bash scripts/00-deploy-all.sh
 ```
 
-### Phase 5 — portal (~8 min)
+### Phase 5 — portal (~10 min)
 
 ```bash
 bash scripts/40-portal-base.sh     # Cognito, SGs, ALB + internal NLB, listeners
-bash scripts/50-portal-app.sh      # ECS/Lambda/Scheduler IAM, DLQ, secrets, runner
-bash scripts/60-cloudfront-ecs.sh  # OAC, SPA function, distribution, ECS service
+bash scripts/50-portal-app.sh      # backend IRSA role, Lambda/Scheduler IAM, DLQ, secrets, runner
+bash scripts/60-cloudfront-eks.sh  # OAC, SPA function, distribution, backend Deployment
 bash scripts/70-service-entry.sh   # VPC Link, private REST API, stage
 ```
 
 `60-` must run after `40-`: the backend's CORS origin is the CloudFront domain,
-which does not exist until the distribution does.
+which does not exist until the distribution does. It installs the backend as
+two Helm releases from `terraform/charts/` — `backend-sg` (the
+`SecurityGroupPolicy`, first, because a policy only applies to pods created
+after it) and `backend` (Deployment, Service, IRSA service account, and one
+`TargetGroupBinding` into each of the ALB and NLB target groups). The release
+is `--atomic`: a rollout whose pods never become ready is rolled back, which
+is what the ECS deployment circuit breaker used to do.
 
 Or run everything at once (image push still has to happen between phases 2 and 4):
 
@@ -384,10 +442,15 @@ PORTAL_PASSWORD='ChangeMe-12+chars' bash tests/verify.sh
 TF_DIR=../../terraform LAYER=1 bash tests/verify.sh
 ```
 
-**L1 — infrastructure reconciliation.** Confirms the 98 resources exist *and are
+**L1 — infrastructure reconciliation.** Confirms the resources exist *and are
 configured as intended*: NAT egress route present, PITR on, bucket versioning
-on, ECR scan-on-push on, all three runtimes `READY`, ECS at desired count,
-circuit breaker enabled, service-entry API `PRIVATE`.
+on, ECR scan-on-push on, all three runtimes `READY`, the cluster `ACTIVE`, the
+VPC CNI under an IRSA role with pod security groups in strict mode and **no**
+Pod Identity agent, backend pods ready at the desired count with
+`maxUnavailable=0`, the service account annotated with the workload role and
+the role trusting only the cluster's OIDC provider (and no longer `ecs-tasks`),
+every backend pod on a branch ENI, healthy pod targets behind the ALB,
+service-entry API `PRIVATE`.
 
 **L2 — functional smoke.** Signs in against Cognito, reads the kernel catalog,
 **invokes the headless kernel with a unique marker and asserts the model echoed
@@ -428,14 +491,16 @@ backend image predating a feature, or a daily quota already exhausted).
 CONFIRM=yes bash scripts/99-destroy.sh
 ```
 
-Deliberately **not** a mirror of the deploy path. CloudFront must be disabled
-and fully deployed before it can be deleted (~5 minutes), target groups stay
-"in use" briefly after their load balancer goes, and a versioned bucket needs
-its object versions purged before the bucket will drop. Run it twice if anything
-reports `in use`.
+Deliberately **not** a mirror of the deploy path. The Helm releases go first
+(their `TargetGroupBinding`s deregister the pods and the pods release their
+branch ENIs), CloudFront must be disabled and fully deployed before it can be
+deleted (~5 minutes), target groups stay "in use" briefly after their load
+balancer goes, a versioned bucket needs its object versions purged before the
+bucket will drop, and the EKS node group has to be gone before the cluster
+(another ~10 minutes of waiting). Run it twice if anything reports `in use`.
 
-The NAT Gateway bills hourly whether or not anything is running — tear the stack
-down between evaluations.
+The NAT Gateway and the EKS control plane bill hourly whether or not anything is
+running — tear the stack down between evaluations.
 
 ---
 
@@ -462,8 +527,9 @@ against a pending link fails. Both are polled explicitly.
 
 **Order is hand-written and strictly serial.** Terraform derives a dependency
 graph and parallelises; here the order *is* the list in `00-deploy-all.sh`.
-CloudFront before ECS (the CORS origin is the distribution domain), NAT before
-routes, VPC Link before integrations.
+CloudFront before the backend Deployment (the CORS origin is the distribution
+domain), the cluster before every workload, a `SecurityGroupPolicy` before the
+pods it selects, NAT before routes, VPC Link before integrations.
 
 ### 6.2 State
 
@@ -509,15 +575,25 @@ already.
 be given a `LocationConstraint`; every other region must. Handled, but worth
 knowing if you extend the scripts.
 
-**The ECS service-linked role is nobody's resource.** CloudFormation creates
-`AWSServiceRoleForECS` implicitly, so neither the CDK nor the Terraform path ever
-names it. Only a pure-CLI run on an account that has never used ECS **in any
-region** — the role is account-global — reaches `create-service` without it, and
-fails with `Unable to assume the service linked role`. `60-cloudfront-ecs.sh`
-creates it and waits, which is why the deployer needs
-`iam:CreateServiceLinkedRole`. The reason this went unnoticed for so long is that
-it self-heals: the rejected call triggers the role's creation asynchronously, so
-re-running the phase succeeds and the requirement stays invisible.
+**A `SecurityGroupPolicy` is not retroactive.** It selects pods by label at
+admission; a pod that already exists keeps the node's security group and is
+unreachable from the ALB, with nothing in `kubectl get pods` to say so. That is
+why every workload is two Helm releases in a fixed order (`<name>-sg`, then
+`<name>`), and why a re-run that changes the security group list should roll the
+Deployment (`kubectl rollout restart`) rather than trust the policy to catch up.
+
+**The Fluent Bit log-group template joins fields with `.`, not `/`.** The
+record accessor grammar rejects a `/` between two `$kubernetes[...]` lookups
+(`bad input character '/'`), and the plugin also insists on a
+`log_stream_prefix` even when a stream template names every stream. Both
+surfaced as a `CrashLoopBackOff` with a one-line cause buried under the
+banner; hence `/eks/agent-platform/<namespace>.<app>` and the `pod.`
+fallback prefix.
+
+**`aws eks create-cluster` can be rejected for a few seconds after the cluster
+role is created** (IAM propagation), the same way the runtime creation in
+phase 4 can. The script retries; a one-off `InvalidParameterException` about the
+role is not a misconfiguration.
 
 ### 6.4 Shell portability
 

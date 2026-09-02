@@ -268,7 +268,8 @@ AgentCore Runtime ENIs → private subnets → NAT Gateway (Elastic IP) → inte
 
 ### 4. Backend control plane (`backend/`)
 
-FastAPI service, deployable on ECS Fargate (CDK `PortalStack`) or runnable
+FastAPI service, deployable on the platform's EKS cluster (Terraform
+`portal` module: two Deployments, IRSA, security groups for Pods) or runnable
 locally. Responsibilities:
 
 | Area | Endpoints | Notes |
@@ -432,7 +433,7 @@ React + Vite + Tailwind. Information architecture:
 | `NetworkStack` | VPC, private/public subnets, NAT GW + EIP, egress SG |
 | `PlatformStack` | S3 workspace bucket, ECR repos, DynamoDB table, Secrets Manager placeholders |
 | `RuntimeStack` | `AWS::BedrockAgentCore::Runtime` (L1) × 3 kernels (interactive, headless, MCP server), execution role, VPC network config. Image tags can be pinned per kernel (`claude_code_image_tag` / `sdk_image_tag` / `mcp_tools_image_tag`, falling back to `image_tag`) |
-| `PortalStack` | ECS Fargate backend + ALB + CloudFront + frontend S3 + Cognito user pool + scheduler engine (EventBridge Scheduler group, schedule-runner Lambda, SQS DLQ) — optional; backend can also run locally |
+| `PortalStack` | Backend containers + ALB + CloudFront + frontend S3 + Cognito user pool + scheduler engine (EventBridge Scheduler group, schedule-runner Lambda, SQS DLQ) — optional; backend can also run locally. The CDK stack runs the backend on ECS Fargate; the maintained Terraform configuration runs it (and every other container) on an EKS cluster with IRSA — `terraform/modules/eks` |
 | `TeamAuthStack` | **Optional** ([enterprise SSO](enterprise-sso.md)): Keycloak (OIDC IdP) + the team-scoped backend APIs behind one ALB + CloudFront |
 | `TeamDemoStack` | **Optional**: a second headless runtime with a **CUSTOM_JWT** inbound authorizer, so the user's own IdP token — not SigV4 — reaches the agent. The AgentCore Gateway, its credential providers and its interceptor are provisioned by `scripts/deploy_team_gateway.py` (API-only resources) |
 

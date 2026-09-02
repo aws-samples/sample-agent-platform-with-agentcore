@@ -1,8 +1,9 @@
 # Port of TeamAuthStack: the external IdP (Keycloak) and three team-scoped
-# backend APIs, all behind one ALB + CloudFront.
+# backend APIs, all behind one ALB + CloudFront. The containers run on the
+# platform's EKS cluster (workloads.tf).
 #
 # Keycloak runs in production mode against RDS PostgreSQL (rds.tf), so realm
-# state, seeded credentials and user sessions all survive a task replacement.
+# state, seeded credentials and user sessions all survive a pod replacement.
 # scripts/seed_team_idp.py is a one-time bootstrap now, not a post-restart
 # repair step.
 #
@@ -14,9 +15,10 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  region = data.aws_region.current.region
-  realm  = "agent-platform"
-  teams  = ["team-a", "team-b", "team-c"]
+  region     = data.aws_region.current.region
+  realm      = "agent-platform"
+  teams      = ["team-a", "team-b", "team-c"]
+  log_prefix = var.eks.log_group_prefix
 }
 
 # ------------------------------- secrets -----------------------------------
@@ -100,6 +102,7 @@ resource "aws_security_group" "alb" {
   }
 }
 
+# Carried by the Keycloak and team-API pods (SecurityGroupPolicy).
 resource "aws_security_group" "service" {
   name   = "agent-platform-team-auth-service${var.name_suffix}"
   vpc_id = var.vpc_id
@@ -118,6 +121,24 @@ resource "aws_security_group" "service" {
     to_port         = 8000
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
+  }
+
+  # kubelet probes arrive from the node, which carries the cluster security
+  # group: cluster nodes only, on the two app ports only.
+  ingress {
+    description     = "kubelet probes from cluster nodes (keycloak)"
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [var.eks.cluster_security_group_id]
+  }
+
+  ingress {
+    description     = "kubelet probes from cluster nodes (team APIs)"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [var.eks.cluster_security_group_id]
   }
 
   egress {

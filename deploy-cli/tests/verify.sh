@@ -57,14 +57,17 @@ print(v if isinstance(v,str) else json.dumps(v))"; }
   SERVICE_API_ID="$(tfo service_entry_api_id)"
   ALB_DNS="$(tfo alb_dns_name)"
   # Fixed names (suffix-aware), then describe for the ARNs the checks need.
-  CLUSTER="agent-platform${SUFFIX}"
-  SERVICE="agent-platform-backend${SUFFIX}"
+  EKS_CLUSTER="$(tfo eks_cluster_name)"
+  BACKEND_NAMESPACE=portal
+  BACKEND_DEPLOYMENT=backend
+  TASK_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/agent-platform-backend-task${SUFFIX}"
+  OIDC_PROVIDER_ARN="$(tfo eks_oidc_provider_arn)"
   ALB_ARN="$(aws elbv2 describe-load-balancers --names "agent-platform-portal${SUFFIX}" \
     --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)"
   L_ALB="$(aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" \
     --query 'Listeners[0].ListenerArn' --output text 2>/dev/null)"
-  TD_ARN="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
-    --query 'services[0].taskDefinition' --output text 2>/dev/null)"
+  TG_ALB="$(aws elbv2 describe-target-groups --names "agent-platform-backend${SUFFIX}" \
+    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)"
   # Network ids aren't outputs in reuse-mode deployments; resolve from the VPC.
   NAT_ID="$(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
     --query 'NatGateways[0].NatGatewayId' --output text 2>/dev/null)"
@@ -181,24 +184,74 @@ else
 fi
 
 ##############################################################################
+printf '\n=== L1 · backend on EKS ===\n'
+##############################################################################
+EKS_STATUS="$(aws eks describe-cluster --name "$EKS_CLUSTER" --query 'cluster.status' --output text 2>/dev/null)"
+check "eks cluster ACTIVE" ACTIVE "$EKS_STATUS"
+
+# IRSA, not Pod Identity: the CNI runs under its own role and the Pod Identity
+# agent add-on is absent.
+CNI_ROLE="$(aws eks describe-addon --cluster-name "$EKS_CLUSTER" --addon-name vpc-cni \
+  --query 'addon.serviceAccountRoleArn' --output text 2>/dev/null)"
+case "$CNI_ROLE" in arn:aws:iam::*) ok "vpc-cni add-on runs under an IRSA role" ;;
+  *) bad "vpc-cni add-on runs under an IRSA role" "serviceAccountRoleArn is '$CNI_ROLE'" ;; esac
+PIA="$(aws eks describe-addon --cluster-name "$EKS_CLUSTER" --addon-name eks-pod-identity-agent \
+  --query 'addon.status' --output text 2>/dev/null || true)"
+check "pod identity agent is NOT installed" "" "${PIA:-}"
+
+# Security groups for Pods, strict mode: the pod's own groups are the only
+# ones evaluated, so the 443-only / ALB-only rules mean what they say.
+CNI_CFG="$(aws eks describe-addon --cluster-name "$EKS_CLUSTER" --addon-name vpc-cni \
+  --query 'addon.configurationValues' --output text 2>/dev/null)"
+check_contains "vpc-cni has pod ENIs enabled" '"ENABLE_POD_ENI":"true"' "$CNI_CFG"
+check_contains "vpc-cni enforces pod security groups strictly" '"POD_SECURITY_GROUP_ENFORCING_MODE":"strict"' "$CNI_CFG"
+
+if command -v kubectl >/dev/null 2>&1 && kube version >/dev/null 2>&1; then
+  READY="$(kube -n "$BACKEND_NAMESPACE" get deploy "$BACKEND_DEPLOYMENT" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+  WANT="$(kube -n "$BACKEND_NAMESPACE" get deploy "$BACKEND_DEPLOYMENT" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+  check "backend pods ready == desired" "${WANT:-?}" "${READY:-0}"
+
+  # The rollout never dips below the desired count (the ECS circuit breaker's
+  # job is now maxUnavailable=0 plus helm --atomic).
+  MAXU="$(kube -n "$BACKEND_NAMESPACE" get deploy "$BACKEND_DEPLOYMENT" -o jsonpath='{.spec.strategy.rollingUpdate.maxUnavailable}' 2>/dev/null)"
+  check "backend rollout keeps maxUnavailable=0" 0 "$MAXU"
+
+  # IRSA wiring: annotation on the service account, trust on the role.
+  SA_ROLE="$(kube -n "$BACKEND_NAMESPACE" get sa "$BACKEND_DEPLOYMENT" -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null)"
+  check "backend service account is annotated with the workload role" "$TASK_ROLE" "$SA_ROLE"
+  TRUST="$(aws iam get-role --role-name "${TASK_ROLE##*/}" --query 'Role.AssumeRolePolicyDocument' --output json 2>/dev/null)"
+  check_contains "workload role trusts the cluster OIDC provider" "${OIDC_PROVIDER_ARN##*/}" "$TRUST"
+  check_contains "workload role is pinned to the backend service account" "system:serviceaccount:${BACKEND_NAMESPACE}:${BACKEND_DEPLOYMENT}" "$TRUST"
+  if printf '%s' "$TRUST" | grep -q 'ecs-tasks.amazonaws.com'; then
+    bad "workload role no longer trusts ecs-tasks" "ECS trust still present"
+  else ok "workload role no longer trusts ecs-tasks"; fi
+
+  # Every backend pod got a branch ENI, i.e. its own security group.
+  NO_ENI="$(kube -n "$BACKEND_NAMESPACE" get pods -l app="$BACKEND_DEPLOYMENT" \
+    -o jsonpath='{range .items[*]}{.metadata.name}:{.metadata.annotations.vpc\.amazonaws\.com/pod-eni}{"\n"}{end}' 2>/dev/null \
+    | awk -F: '$2==""{print $1}' | tr '\n' ' ')"
+  check "every backend pod carries a pod security group (branch ENI)" "" "$NO_ENI"
+
+  # CORS must be scoped, never "*": with allow_credentials the wildcard is
+  # reflected back and defeats browser origin isolation.
+  CORS_ENV="$(kube -n "$BACKEND_NAMESPACE" get deploy "$BACKEND_DEPLOYMENT" \
+    -o jsonpath="{.spec.template.spec.containers[0].env[?(@.name=='PLATFORM_CORS_ORIGINS')].value}" 2>/dev/null)"
+  check_not "backend CORS origin is not a wildcard" "*" "$CORS_ENV"
+  check "backend CORS origin is the distribution" "$PORTAL" "$CORS_ENV"
+else
+  skip "backend pods ready == desired" "kubectl unavailable or cluster unreachable"
+  skip "backend CORS origin is the distribution" "kubectl unavailable or cluster unreachable"
+fi
+
+# The controller's TargetGroupBinding is what puts pods behind the ALB.
+HEALTHY="$(aws elbv2 describe-target-health --target-group-arn "$TG_ALB" \
+  --query "length(TargetHealthDescriptions[?TargetHealth.State=='healthy'])" --output text 2>/dev/null)"
+if [ "${HEALTHY:-0}" -ge 1 ] 2>/dev/null; then ok "alb target group has healthy pod targets ($HEALTHY)"
+else bad "alb target group has healthy pod targets" "healthy count '$HEALTHY'"; fi
+
+##############################################################################
 printf '\n=== L1 · portal edge (negative assertions) ===\n'
 ##############################################################################
-ECS_RUN="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
-  --query 'services[0].runningCount' --output text 2>/dev/null)"
-ECS_WANT="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
-  --query 'services[0].desiredCount' --output text 2>/dev/null)"
-check "ecs tasks running == desired" "$ECS_WANT" "$ECS_RUN"
-
-CB="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
-  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.enable' --output text 2>/dev/null)"
-check "ecs deployment circuit breaker on" True "$CB"
-
-# CORS must be scoped, never "*": with allow_credentials the wildcard is
-# reflected back and defeats browser origin isolation.
-CORS_ENV="$(aws ecs describe-task-definition --task-definition "$TD_ARN" \
-  --query "taskDefinition.containerDefinitions[0].environment[?name=='PLATFORM_CORS_ORIGINS'].value | [0]" --output text 2>/dev/null)"
-check_not "backend CORS origin is not a wildcard" "*" "$CORS_ENV"
-check "backend CORS origin is the distribution" "$PORTAL" "$CORS_ENV"
 
 # The ALB must default-deny: its security group admits every CloudFront
 # distribution, so the origin-verify header is the only thing making the edge a

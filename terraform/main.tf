@@ -2,6 +2,8 @@
 #   network   <- NetworkStack          platform <- PlatformStack
 #   runtime   <- RuntimeStack          portal   <- PortalStack
 #   team_auth <- TeamAuthStack         team_demo <- TeamDemoStack
+# plus `eks`, which has no CDK counterpart: the CDK stacks ran the containers
+# on ECS Fargate, this configuration runs them on an EKS cluster with IRSA.
 #
 # NOT covered here (stays on scripts, same as under CDK):
 #   - scripts/deploy_websearch_gateway.py — the Web Search managed-connector
@@ -65,6 +67,41 @@ module "runtime" {
   runtime_name_suffix     = local.runtime_suffix
 }
 
+# The cluster every platform container runs on. Created whenever a module
+# that ships containers is enabled; the AgentCore runtimes do not need it.
+locals {
+  enable_eks = (var.enable_runtime && (var.enable_portal || var.enable_llm_edge)) || var.enable_team_auth
+}
+
+module "eks" {
+  source = "./modules/eks"
+  count  = local.enable_eks ? 1 : 0
+
+  vpc_id                   = module.network.vpc_id
+  private_subnet_ids       = module.network.private_subnet_ids
+  kubernetes_version       = var.eks_kubernetes_version
+  node_instance_type       = var.eks_node_instance_type
+  node_count               = var.eks_node_count
+  node_max_count           = var.eks_node_max_count
+  public_access_cidrs      = var.eks_public_access_cidrs
+  admin_principal_arns     = var.eks_admin_principal_arns
+  lbc_chart_version        = var.eks_lb_controller_chart_version
+  fluent_bit_chart_version = var.eks_fluent_bit_chart_version
+  name_suffix              = var.name_suffix
+}
+
+# What every workload module needs to know about the cluster.
+locals {
+  eks_facts = local.enable_eks ? {
+    cluster_name              = module.eks[0].cluster_name
+    cluster_security_group_id = module.eks[0].cluster_security_group_id
+    oidc_provider_arn         = module.eks[0].oidc_provider_arn
+    oidc_issuer_host          = module.eks[0].oidc_issuer_host
+    log_group_prefix          = module.eks[0].log_group_prefix
+    controllers_ready         = module.eks[0].controllers_ready
+  } : null
+}
+
 # Required for the "litellm" model backend: it holds the gateway key so that
 # session containers never receive it. Off by default because a Bedrock-direct
 # deployment has no gateway key to protect and would just be paying for an ALB
@@ -85,6 +122,7 @@ module "llm_edge" {
   log_bucket         = module.platform.log_bucket
   certificate_arn    = var.llm_edge_certificate_arn
   desired_count      = var.llm_edge_desired_count
+  eks                = local.eks_facts
   name_suffix        = var.name_suffix
 }
 
@@ -115,6 +153,7 @@ module "portal" {
   # mcp-hub demo is on (the demo app calls the private API from in-VPC)
   service_api_allowed_vpces = concat(var.service_api_allowed_vpces, aws_vpc_endpoint.service_entry[*].id)
   llm_edge_url              = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].edge_url : ""
+  eks                       = local.eks_facts
   name_suffix               = var.name_suffix
 }
 
@@ -130,6 +169,7 @@ module "team_auth" {
   keycloak_image_tag     = coalesce(var.keycloak_image_tag, var.team_auth_image_tag, var.image_tag)
   log_bucket             = module.platform.log_bucket
   cf_log_destination_arn = module.platform.cf_log_destination_arn
+  eks                    = local.eks_facts
   name_suffix            = var.name_suffix
 }
 

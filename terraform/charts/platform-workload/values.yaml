@@ -1,0 +1,56 @@
+# Workload name: Deployment, Service, ServiceAccount and the `app` label.
+name: ""
+image: ""
+replicas: 1
+# Container port; also the Service port and the target-group port.
+port: 8000
+
+# Plain environment variables (rendered sorted).
+env: {}
+# Environment variables that must not live in the pod spec. Values are
+# base64-encoded by the caller (they go straight into the Secret's `data`),
+# which keeps passwords with commas or brackets safe through `helm --set`.
+# Rendered into a Secret named after the workload and injected with envFrom;
+# the pod template carries a checksum so a changed value rolls the Deployment.
+secretEnv: {}
+
+serviceAccount:
+  # IAM role the pod assumes through IRSA. Empty = the workload gets no AWS
+  # identity at all (the default token is not even mounted).
+  roleArn: ""
+
+# HTTP GET probe. `startup` covers services that take a while to come up
+# (Keycloak imports its realm before it listens).
+probe:
+  path: /health
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 20
+    failureThreshold: 3
+  startup:
+    enabled: false
+    periodSeconds: 10
+    failureThreshold: 30
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 512Mi
+
+# Terraform-owned ELBv2 target groups the pods register into (target type ip).
+# The load balancer controller keeps membership in step with the ready pods.
+targetGroups: []
+#  - arn: arn:aws:elasticloadbalancing:...
+#    port: 8000
+
+terminationGracePeriodSeconds: 30
+
+# Opaque; Terraform passes a value here purely to order the release after the
+# cluster controllers. Nothing renders it.
+dependencyToken: ""

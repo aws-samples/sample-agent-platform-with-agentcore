@@ -108,7 +108,7 @@ class WorkflowEngine:
         node = shutil.which("node")
         if not node:
             return {"ok": False, "result": None, "logs": [],
-                    "error": "node is not available in this environment — pipeline scripts run on the backend (ECS)"}
+                    "error": "node is not available in this environment — pipeline scripts run on the backend (EKS)"}
 
         logs: list[str] = []
         state = {"result": None, "error": "", "done": False, "phase": ""}

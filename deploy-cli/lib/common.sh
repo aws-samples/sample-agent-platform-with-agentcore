@@ -49,6 +49,25 @@ TABLE="agent-platform${SUFFIX}"
 LLM_SECRET="agent-platform${SUFFIX}/llm-gateway-key"
 ENTRY_SECRET="agent-platform${SUFFIX}/service-entry"
 
+# ---- EKS: every platform container (backend, llm-edge) runs on this cluster.
+# Pods authenticate to AWS with IRSA; the Pod Identity agent is not installed.
+EKS_CLUSTER="agent-platform${SUFFIX}"
+EKS_VERSION="${EKS_VERSION:-1.36}"
+# Graviton, and a type that supports ENI trunking (security groups for Pods):
+# m/c/r families from 6g on, never the t family. The images are arm64 only.
+EKS_NODE_TYPE="${EKS_NODE_TYPE:-m7g.large}"
+EKS_NODE_COUNT="${EKS_NODE_COUNT:-2}"       # one per private subnet
+EKS_NODE_MAX="${EKS_NODE_MAX:-3}"
+# Who may reach the public Kubernetes API endpoint (it is IAM-authenticated
+# regardless). Narrow this to your operators' egress addresses.
+EKS_PUBLIC_CIDRS="${EKS_PUBLIC_CIDRS:-0.0.0.0/0}"
+LBC_CHART_VERSION="${LBC_CHART_VERSION:-3.5.0}"
+FLUENT_BIT_CHART_VERSION="${FLUENT_BIT_CHART_VERSION:-0.2.0}"
+LOG_PREFIX="/eks/agent-platform${SUFFIX}"
+# The workload charts are shared with the Terraform path — one definition of
+# what a platform pod looks like.
+CHARTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../terraform/charts" && pwd)"
+
 KERNEL_REPOS=(claude-code-kernel agent-sdk-kernel mcp-tools-kernel backend)
 # Kept out of KERNEL_REPOS deliberately: the kernel execution roles are granted
 # ECR pull on every repo in that list, and nothing in a session container should
@@ -106,4 +125,60 @@ retry_until() {
   done
   warn "timed out waiting for: $desc"
   return 1
+}
+
+# ---------------------------------------------------------------- kubernetes
+# kubectl/helm against the platform cluster through a private kubeconfig, so a
+# deploy never rewrites the operator's current-context. Built lazily on first
+# use; needs the cluster to exist (25-eks.sh).
+KUBECONFIG_FILE="$STATE_DIR/${NAME}.kubeconfig"
+kube_ready() {
+  if [ ! -s "$KUBECONFIG_FILE" ]; then
+    aws eks update-kubeconfig --name "$EKS_CLUSTER" --kubeconfig "$KUBECONFIG_FILE" >/dev/null
+  fi
+}
+kube() { kube_ready; kubectl --kubeconfig "$KUBECONFIG_FILE" "$@"; }
+helm_k() { kube_ready; helm --kubeconfig "$KUBECONFIG_FILE" "$@"; }
+
+need_tools() {  # tool...
+  local t
+  for t in "$@"; do
+    command -v "$t" >/dev/null 2>&1 || die "$t is required for this phase and is not on PATH"
+  done
+}
+
+# irsa_trust namespace sa [sa...] — trust policy for a role assumed through the
+# cluster's OIDC provider by exactly these service accounts.
+irsa_trust() {
+  local ns="$1"; shift
+  : "${OIDC_PROVIDER_ARN:?run 25-eks.sh}"; : "${OIDC_HOST:?run 25-eks.sh}"
+  python3 - "$OIDC_PROVIDER_ARN" "$OIDC_HOST" "$ns" "$@" <<'PY'
+import json, sys
+arn, host, ns, *sas = sys.argv[1:]
+subs = [f"system:serviceaccount:{ns}:{sa}" for sa in sas]
+print(json.dumps({"Version": "2012-10-17", "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": arn},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {"StringEquals": {
+        f"{host}:aud": "sts.amazonaws.com",
+        f"{host}:sub": subs if len(subs) > 1 else subs[0]}}}]}))
+PY
+}
+
+# workload_install name namespace values-file [sg-id...] — the two Helm
+# releases every platform workload is made of: its SecurityGroupPolicy first
+# (it only applies to pods created after it exists), then the workload itself.
+workload_install() {
+  local name="$1" ns="$2" values="$3"; shift 3
+  local sgs=("$@") sgargs=() i
+  for i in "${!sgs[@]}"; do sgargs+=(--set "securityGroupIds[$i]=${sgs[$i]}"); done
+  helm_k upgrade --install "${name}-sg" "$CHARTS_DIR/pod-security-group" \
+    --namespace "$ns" --create-namespace --set "name=$name" "${sgargs[@]}" >/dev/null
+  log "security group policy $name -> ${sgs[*]}"
+  # --atomic: a rollout whose pods never become ready is rolled back, the way
+  # the ECS deployment circuit breaker used to.
+  helm_k upgrade --install "$name" "$CHARTS_DIR/platform-workload" \
+    --namespace "$ns" --values "$values" --wait --timeout 15m --atomic >/dev/null
+  log "workload $name ready ($(kube -n "$ns" get deploy "$name" -o jsonpath='{.status.readyReplicas}') replicas)"
 }

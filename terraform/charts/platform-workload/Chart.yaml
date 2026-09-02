@@ -1,0 +1,5 @@
+apiVersion: v2
+name: platform-workload
+description: One stateless platform service on EKS — Deployment, ClusterIP Service, IRSA-annotated ServiceAccount, optional Secret, and TargetGroupBinding into Terraform-owned target groups.
+type: application
+version: 0.1.0

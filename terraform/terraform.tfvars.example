@@ -49,10 +49,20 @@ oidc_issuer = ""
 # Caller interface-VPC-endpoint IDs for the private service-entry API.
 service_api_allowed_vpces = [] # e.g. ["vpce-0123456789abcdef0"]
 
+# --- EKS --------------------------------------------------------------------
+# The containers run on a dedicated EKS cluster in the platform VPC (Graviton
+# managed node group, IRSA). Narrow the API endpoint to your operators' egress
+# addresses; the sample default is open because the API is IAM-authenticated.
+# eks_public_access_cidrs  = ["203.0.113.10/32"]
+# eks_admin_principal_arns = ["arn:aws:iam::123456789012:role/PlatformOperators"]
+# eks_node_instance_type   = "m7g.large"
+# eks_node_count           = 3
+
 # --- deploy staging ---------------------------------------------------------
 # Phase 1 (repos only):   enable_runtime = false, enable_portal = false
 # Phase 2: push images (scripts/build-and-push.sh)
-# Phase 3: flip both to true and apply again
+# Phase 3: flip both to true and apply again (this also creates the EKS
+#          cluster and its node group — allow ~20 minutes)
 enable_runtime   = true
 enable_portal    = true
 enable_team_auth = false

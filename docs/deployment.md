@@ -2,46 +2,57 @@
 
 ## Prerequisites
 
-- AWS CLI configured; CDK v2 bootstrapped in the target account/region
+- AWS CLI configured; Terraform ≥ 1.9. The platform is deployed with the
+  configuration in [`terraform/`](../terraform/README.md); the CDK stacks in
+  `infrastructure/` are the legacy ECS Fargate variant (see
+  [Legacy: CDK stacks](#legacy-cdk-stacks-ecs-fargate)).
+- `kubectl` and `helm` for operating the EKS cluster the containers run on.
+  Terraform itself needs neither — it talks to the cluster through the AWS
+  CLI (`aws eks get-token`) and its own Helm provider.
 - Docker with `linux/arm64` build support (`docker buildx`) — AgentCore Runtime
-  only runs ARM64 images. On x86 hosts enable QEMU emulation or build on a
+  only runs ARM64 images, and the platform services share the arm64 build (the
+  EKS nodes are Graviton). On x86 hosts enable QEMU emulation or build on a
   Graviton instance.
 - Amazon Bedrock AgentCore available in your target region
 - Python ≥ 3.11, Node.js ≥ 20
 
 > **Deploying into a permission-controlled account?** Read
-> [permissions.md](permissions.md) first. It enumerates the four IAM roles the
+> [permissions.md](permissions.md) first. It enumerates the IAM roles the
 > platform creates (exact actions, resource scopes, conditions), the deployer
-> permissions `cdk deploy` itself needs, and how to hand the security team a
-> single reviewable artifact (`cdk synth --all`) instead of granting
+> permissions `terraform apply` itself needs, and how to hand the security team
+> a single reviewable artifact (`terraform plan -out`) instead of granting
 > speculative access. §8 and §10 there are written for exactly this case.
 
 ## 1. Network + platform resources
 
 ```bash
-cd infrastructure
-pip install -r requirements.txt
-cdk deploy AgentPlatformNetwork AgentPlatformPlatform
+cd terraform
+cp terraform.tfvars.example terraform.tfvars   # then edit
+terraform init
+terraform apply -var enable_runtime=false -var enable_portal=false
 ```
 
-Note the `NatEipAddress` output — this is the fixed egress IP for all runtime
+Note the `nat_eip_address` output — this is the fixed egress IP for all runtime
 traffic.
 
 ### Reusing an existing VPC
 
 If your account already has a VPC with private subnets routing through a NAT
 Gateway (or you're at the VPC/EIP quota), deploy in reuse mode instead of
-creating a new VPC:
+creating a new VPC — in `terraform.tfvars`:
 
-```bash
-cdk deploy AgentPlatformNetwork AgentPlatformPlatform \
-  -c existing_vpc_id=vpc-xxxxxxxx \
-  -c existing_nat_eip=<your NAT gateway's EIP>
+```hcl
+existing_vpc_id             = "vpc-xxxxxxxx"
+existing_private_subnet_ids = ["subnet-…", "subnet-…", "subnet-…"]
+existing_public_subnet_ids  = ["subnet-…", "subnet-…", "subnet-…"]
+existing_nat_eip            = "<your NAT gateway's EIP>"
 ```
 
-Requirements: the VPC must contain at least one private subnet whose route
-table sends `0.0.0.0/0` to a NAT Gateway (CDK discovers these during the
-lookup). Pass the same `-c` flags to every subsequent `cdk deploy`.
+Requirements: the private subnets must route `0.0.0.0/0` to a NAT Gateway, and
+there must be at least two of them in different AZs (EKS needs two; the
+default node count assumes one node per private subnet). Terraform cannot
+classify subnets by route table the way CDK's `Vpc.fromLookup` did, so the
+subnet IDs are listed explicitly.
 
 ## 2. Choose your model access mode
 
@@ -58,7 +69,7 @@ gateway requires a grant the backend mints for one session, because a kernel
 container's user is root inside it and must not hold the gateway key. That grant
 is served by the `llm-edge` service, so gateway mode needs it deployed.
 
-1. Store the gateway API key. Only the `llm-edge` task role can read it:
+1. Store the gateway API key. Only the `llm-edge` workload role can read it:
 
    ```bash
    aws secretsmanager put-secret-value \
@@ -129,17 +140,27 @@ offers a Bedrock profile ID that the gateway would reject.
 ./scripts/build-and-push.sh          # builds arm64 images, pushes to ECR
 ```
 
-## 4. Deploy the runtimes
+## 4. Deploy the runtimes, the cluster and the portal
 
 ```bash
-cdk deploy AgentPlatformRuntime
+terraform apply
 ```
 
-Outputs: `InteractiveRuntimeArn`, `SdkRuntimeArn`.
+One apply creates the three AgentCore runtimes, the EKS cluster (control
+plane ≈ 10 min, node group ≈ 3 min, then the two cluster controllers) and the
+portal — the backend Deployments on the cluster, the load balancers, CloudFront,
+Cognito, the scheduler engine and the private service-entry API. Budget about
+25 minutes.
 
-To roll out a new image build, push with a new tag and redeploy with
-`-c image_tag=<tag>` — CloudFormation creates a new runtime version and moves
-the DEFAULT endpoint automatically.
+Outputs: `interactive_runtime_arn`, `sdk_runtime_arn`, `portal_url`,
+`kubeconfig_command`.
+
+To roll out a new image build, push with a new tag, set it in
+`terraform.tfvars` (`image_tag`, or a per-image override such as
+`backend_image_tag`) and apply again. Runtimes get a new version with the
+DEFAULT endpoint moved automatically; the backend Deployments roll
+surge-then-drain (one extra pod up, then the old one drained), so the
+target group never drops below the desired count.
 
 ## 5. Run the portal
 
@@ -162,34 +183,50 @@ Your local AWS credentials must be able to `InvokeAgentRuntime` and
 `InvokeAgentRuntimeWithWebSocketStream` on the runtimes, plus read the
 DynamoDB table and workspace bucket.
 
-### Hosted (ECS Fargate + CloudFront)
+### Hosted (EKS + CloudFront)
+
+The apply in §4 already runs the backend. Ship the frontend bundle and the
+scheduler code, then open the portal:
 
 ```bash
-cdk deploy AgentPlatformPortal
 ./scripts/deploy-frontend.sh
 ./scripts/deploy-schedule-lambda.sh   # schedule-runner Lambda code
+terraform -chdir=terraform output -raw portal_url
 ```
 
-Open the `PortalUrl` output.
+What runs where: the backend is two Deployments in the `portal` namespace of
+the `agent-platform` EKS cluster — `backend` (the management API, 2 replicas)
+and `entry` (the same image in `ENTRY_ONLY` mode behind the private
+service-entry API). Both assume the `agent-platform-backend-task` IAM role
+through **IRSA** (the cluster's OIDC provider, pinned to those two service
+accounts), carry the portal service security group through a
+`SecurityGroupPolicy`, and register into the Terraform-owned target groups
+through a `TargetGroupBinding`. Container logs land in CloudWatch under
+`/eks/agent-platform/portal.<backend|entry>`.
 
-The Portal stack also provisions the **scheduler firing engine**: an
+```bash
+$(terraform -chdir=terraform output -raw kubeconfig_command)
+kubectl -n portal get deploy,pods -o wide
+kubectl -n portal logs deploy/backend --tail=100
+```
+
+The portal module also provisions the **scheduler firing engine**: an
 EventBridge Scheduler group, the `agent-platform-schedule-runner` Lambda and
-an SQS DLQ. CloudFormation creates the function with placeholder code —
+an SQS DLQ. Terraform creates the function with placeholder code —
 `deploy-schedule-lambda.sh` builds the real package (the backend's `app`
 module + arm64 wheels) and updates it, the same split as kernel images
-(infra in CFN, code artifact via script). Re-run it whenever backend service
-code changes. Locally (`uvicorn`, no EventBridge wiring) the backend falls
-back to an in-process tick loop automatically.
+(infra in Terraform, code artifact via script). Re-run it whenever backend
+service code changes. Locally (`uvicorn`, no EventBridge wiring) the backend
+falls back to an in-process tick loop automatically.
 
 ### Portal sign-in (Cognito)
 
-`AgentPlatformPortal` provisions a Cognito user pool; every `/api` request
+The portal module provisions a Cognito user pool; every `/api` request
 must carry a valid ID token (the frontend handles sign-in). Self-signup is
 disabled — create users yourself:
 
 ```bash
-POOL_ID=$(aws cloudformation describe-stacks --stack-name AgentPlatformPortal \
-  --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
+POOL_ID=$(terraform -chdir=terraform output -raw user_pool_id)
 
 aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" --username alice \
   --user-attributes Name=email,Value=alice@example.com Name=email_verified,Value=true \
@@ -205,7 +242,7 @@ Auth modes (backend resolves in this order):
 
 | Mode | Trigger | Behavior |
 |---|---|---|
-| Cognito | `PLATFORM_COGNITO_POOL_ID` + `PLATFORM_COGNITO_CLIENT_ID` set (PortalStack does this) | Bearer ID token verified against the pool JWKS |
+| Cognito | `PLATFORM_COGNITO_POOL_ID` + `PLATFORM_COGNITO_CLIENT_ID` set (the portal module does this) | Bearer ID token verified against the pool JWKS |
 | Static token | `PLATFORM_API_TOKEN` set | Exact Bearer match — CI / scripting |
 | Open | neither set | Local development only |
 
@@ -257,7 +294,7 @@ The portal splits into a developer surface (Overview, Dev Workbench,
 Publish, Debug — own resources only) and an admin surface (everything
 else). Admins are members of the **`platform-admin`** group:
 
-- **Cognito mode** — the PortalStack creates the group; add each admin:
+- **Cognito mode** — the portal module creates the group; add each admin:
   `aws cognito-idp admin-add-user-to-group --user-pool-id <pool> \
   --username <user> --group-name platform-admin`. The `admin` user works
   without group membership (`PLATFORM_ADMIN_USERS` defaults to it) so the
@@ -270,13 +307,13 @@ else). Admins are members of the **`platform-admin`** group:
 
 ## 6b. IAM service entry (server-to-server callers)
 
-The PortalStack also deploys the **service-entry API Gateway**
-(`ServiceEntryApiUrl` output): SigV4-authenticated submit/poll access to
+The portal module also deploys the **service-entry API Gateway**
+(`service_entry_api_url` output): SigV4-authenticated submit/poll access to
 `iam` channels for workloads on AWS — no channel token exists. The API is
 **private** (unreachable from the internet; callers need an `execute-api`
-interface VPC endpoint in their VPC, and the API reaches the backend over a
-VPC Link + internal NLB). Optionally pin the allowed endpoints with
-`-c service_api_allowed_vpces=vpce-…`. The flow to onboard a workload (an
+interface VPC endpoint in their VPC, and the API reaches the `entry` pods over
+a VPC Link + internal NLB). Optionally pin the allowed endpoints with
+`service_api_allowed_vpces = ["vpce-…"]`. The flow to onboard a workload (an
 EKS pod, say):
 
 1. Channels page → New channel → *Caller authentication: AWS IAM* →
@@ -314,9 +351,9 @@ not part of this sample.
 
 A pipeline that writes outside `feeds/` needs its own prefix in the headless
 kernel's S3 grant. Add it with the `async_artifact_prefixes` context key
-(`"feeds,my-pipeline-output"` in `cdk.json`, or the Terraform variable of the
-same name) rather than by editing `RuntimeStack` — the grant is deployment
-configuration, not something the workload should have to fork the stack for.
+(the `async_artifact_prefixes` Terraform variable) rather than by editing the
+runtime module — the grant is deployment configuration, not something the
+workload should have to fork the module for.
 
 1. **Register the example pipeline** (writes the agent and the pipeline
    definition to DynamoDB — no new infra):
@@ -366,8 +403,8 @@ Two constraints worth knowing before you run it: the connector is offered
 **only in us-east-1**, so the gateway is created there regardless of where the
 rest of the platform lives (the kernels sign for the region in the endpoint
 hostname, so a platform in another region still reaches it); and the kernel
-roles need `bedrock-agentcore:InvokeGateway`, which `RuntimeStack` grants via
-its `InvokeGateways` statement — redeploy that stack if you are upgrading an
+roles need `bedrock-agentcore:InvokeGateway`, which the runtime module grants
+via its `InvokeGateways` statement — apply again if you are upgrading an
 existing deployment.
 
 Web Search returns snippets only, so read page bodies with the AgentCore
@@ -401,21 +438,24 @@ headers.
 | Terminal stuck on `Reconnecting…` | Caller's IAM lacks `bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStream` |
 | Model calls fail inside the kernel | Gateway key not set in Secrets Manager, or NAT EIP not allow-listed on the gateway |
 | `/model` switch fails with a 400 in a Dev Workbench terminal | On Bedrock: the alias resolves to an Anthropic API model name — set the `anthropic_default_*_model` context values (§2 Option B). On a gateway session: the picker offered a model the gateway doesn't serve — make sure the backend's catalog (Governance → Model backends) lists the models your gateway actually routes |
-| Interactive workspace never syncs to S3 / restore is empty | The kernel's sync uses backend-minted per-session credentials, not the container role. Check the backend logs for AssumeRole errors on `agent-platform-workspace-access`, and that `PLATFORM_WORKSPACE_ACCESS_ROLE_ARN` is set on the backend (PortalStack does this) |
+| Interactive workspace never syncs to S3 / restore is empty | The kernel's sync uses backend-minted per-session credentials, not the container role. Check the backend logs for AssumeRole errors on `agent-platform-workspace-access`, and that `PLATFORM_WORKSPACE_ACCESS_ROLE_ARN` is set on the backend (the portal module does this) |
 | Terminal glyphs render as `_` / broken borders | tmux running without a UTF-8 locale — keep `LANG=C.UTF-8` and the `tmux -u` flag if you change the base image |
 | Conversation restarts instead of resuming on reconnect | The runtime session expired (AgentCore idle timeout); expected — history is restored via `claude --continue`, but the previous process is gone |
 | Interactive terminal drops to a bare `bash` prompt instead of Claude Code | Claude Code 2.1.x+ gates bypassPermissions mode behind a launch dialog; keep `skipDangerousModePermissionPrompt: true` in the kernel's `settings.json` (a new base-image build can pull a CLI version that adds such gates) |
-| Built-in tool call fails with AccessDenied | Runtime execution role missing `StartCodeInterpreterSession` / `StartBrowserSession` (+ connect/invoke actions) on the account's `code-interpreter/*` / `browser/*` resources — see `RuntimeStack` `BuiltinTools` policy |
+| Built-in tool call fails with AccessDenied | Runtime execution role missing `StartCodeInterpreterSession` / `StartBrowserSession` (+ connect/invoke actions) on the account's `code-interpreter/*` / `browser/*` resources — see the runtime module's `BuiltinTools` policy |
 | Schedules never fire (hosted) | Check the schedule-runner Lambda's logs (`/aws/lambda/agent-platform-schedule-runner`) and the `agent-platform-schedule-dlq` queue; a `RuntimeError: code not deployed` means `scripts/deploy-schedule-lambda.sh` hasn't been run. Verify the mirror exists: `aws scheduler get-schedule --group-name agent-platform --name sched-<id>` |
 | Schedules never fire (local dev) | The fallback tick loop runs inside the backend process — `uvicorn` must be running; check `enabled` and `next_run_at` on the Scheduler page |
-| Feed pipeline search stage returns nothing / AccessDenied | The Web Search gateway is missing or unreachable: run `scripts/deploy_websearch_gateway.py`, confirm `/agent-platform/websearch-gateway` exists in SSM (us-east-1), and check the kernel role has `bedrock-agentcore:InvokeGateway` (`InvokeGateways` statement in `RuntimeStack`) |
+| Feed pipeline search stage returns nothing / AccessDenied | The Web Search gateway is missing or unreachable: run `scripts/deploy_websearch_gateway.py`, confirm `/agent-platform/websearch-gateway` exists in SSM (us-east-1), and check the kernel role has `bedrock-agentcore:InvokeGateway` (`InvokeGateways` statement in the runtime module) |
 | Search stage fails with `ValidationException` on `filters` | The connector target is pinned to `1.1.0`, which has no request-level filters — re-run `scripts/deploy_websearch_gateway.py` (it re-pins to `1.2.0`; an omitted version is sticky on update) |
 | Crawl stage reports `crawl_ok: false` for most items | Expected for paywalled or bot-blocked pages — the summary falls back to the search snippet. If it is *every* item, check the `BuiltinTools` grant covers `StartBrowserSession` on `browser/*` |
 | `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the `agent-platform/portal-admin` secret exists and the Lambda role's `PortalAdminSecret` grant, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB) |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |
 | Memory retrieval returns nothing right after a conversation | Long-term extraction is asynchronous (typically under a minute); raw events are visible immediately on the Memory page |
-| `CREATE_FAILED` on runtime stack | Image tag not pushed to ECR yet — run `scripts/build-and-push.sh` first |
+| Runtime creation fails during `terraform apply` | Image tag not pushed to ECR yet — run `scripts/build-and-push.sh` first |
+| Backend pods `Pending` with `Insufficient vpc.amazonaws.com/pod-eni` | Every platform pod needs a branch ENI (security groups for Pods). The node type must support ENI trunking (Graviton m/c/r from 6g; no `t` family) and each node carries a fixed number of branch ENIs — add a node (`eks_node_count`) or use a larger type |
+| Backend pods `Running` but never `Ready`; the ALB target group shows no healthy targets | kubelet probes and the ALB reach the pod through its own security groups: check the portal service group admits the cluster security group (probes) and the ALB group on 8000, and that `aws-node` runs with `POD_SECURITY_GROUP_ENFORCING_MODE=strict` + `DISABLE_TCP_EARLY_DEMUX=true` (`kubectl -n kube-system describe ds aws-node`) |
+| Backend pod logs show `AccessDenied` / `Not authorized to perform sts:AssumeRoleWithWebIdentity` | IRSA wiring: the service account must carry the `eks.amazonaws.com/role-arn` annotation and the role's trust must name the cluster's OIDC provider with `sub = system:serviceaccount:portal:backend` (and `:entry`). `kubectl -n portal describe sa backend`; `terraform output eks_oidc_provider_arn` |
 | Runtime never becomes READY | Check `/aws/bedrock-agentcore/runtimes/*` CloudWatch logs; usually a container boot error |
 | First invoke very slow | Expected: cold start provisions a microVM and restores the S3 workspace |
 | Invoke fails with `RuntimeClientError: Runtime initialization time exceeded … 120s` | VPC-mode image pull is blocked: layers download from S3 (`prod-<region>-starport-layer-bucket`), so the runtime subnets need an S3 gateway-endpoint route **and** the runtime SG needs `443 → S3 prefix list` egress — outbound rules that only reference endpoint SGs silently drop it. The runtime showing READY proves nothing here: that's a control-plane check, the pull happens at session start. See permissions.md §10 |
@@ -425,9 +465,20 @@ headers.
 ## Teardown
 
 ```bash
-cdk destroy AgentPlatformPortal AgentPlatformRuntime AgentPlatformPlatform AgentPlatformNetwork
+cd terraform && terraform destroy
 ```
 
-The workspace bucket is retained by default (session data) — empty and delete
-it manually if you want a full cleanup. The NAT Gateway bills hourly (~$32/mo);
-destroy the network stack when not in use.
+The workspace bucket is retained by default (session data): `destroy` stops on
+it while it is non-empty — empty it first if you want a full cleanup. With the
+team-auth demo enabled, the Keycloak RDS instance has deletion protection on;
+turn it off before destroying. The NAT Gateway (~$32/mo) and the EKS control
+plane (~$73/mo) bill hourly whether or not anything runs — destroy when not
+in use.
+
+## Legacy: CDK stacks (ECS Fargate)
+
+`infrastructure/` holds the original CDK stacks. They still describe the
+platform as it was deployed on **ECS Fargate** and have not been ported to EKS
+or IRSA; they are kept as a reference for teams that want to compare the two
+shapes, not as a deployment path. Do not run `cdk deploy` against an account
+managed by `terraform/` — the two would fight over the same resource names.

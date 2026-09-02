@@ -20,11 +20,11 @@ AgentCore Gateway  agent-platform-team   · CUSTOM_JWT inbound
    │                                     · Lambda REQUEST interceptor gates
    │                                       team-c___* tool calls on the
    │                                       (gateway-verified) `team` claim
-   ├─► team-a-api / team-b-api (ECS)     · OBO token exchange (RFC 8693) at
+   ├─► team-a-api / team-b-api (EKS)     · OBO token exchange (RFC 8693) at
    │     Keycloak per tool call: fresh token — same `sub`, same `team` —
    │     and the backends validate JWKS + enforce `team` THEMSELVES
    │     → 403 across teams (app-layer authorization)
-   └─► team-c-api (ECS, NO SSO support)  · gateway injects a static X-Api-Key
+   └─► team-c-api (EKS, NO SSO support)  · gateway injects a static X-Api-Key
          (API-key credential provider); team authorization already happened
          in the interceptor — AgentCore enforces what the backend cannot
 ```
@@ -113,7 +113,7 @@ Design decisions:
 
 | Piece | What it is |
 |---|---|
-| `AgentPlatformTeamAuth` stack | Keycloak (Fargate, production mode on RDS PostgreSQL) + `team-a-api`/`team-b-api`/`team-c-api` containers behind one ALB + CloudFront (HTTPS for the OIDC discovery URL); generates the team-c static key (`agent-platform/team-c-api-key`) |
+| `team_auth` module (`AgentPlatformTeamAuth` in the legacy CDK) | Keycloak (production mode on RDS PostgreSQL) + `team-a-api`/`team-b-api`/`team-c-api` as Deployments on the platform's EKS cluster (namespace `team-auth`, each pod carrying the team-auth service security group; Keycloak also the database-client group) behind one ALB + CloudFront (HTTPS for the OIDC discovery URL); generates the team-c static key (`agent-platform/team-c-api-key`) |
 | `AgentPlatformTeamDemo` stack | The JWT-inbound runtime (`team_demo_kernel`) |
 | `services/keycloak/` | Keycloak image with the realm baked in: groups, users (alice/bob/carol), `portal-web` (public, PKCE) and `gateway-delegate` (confidential, standard token exchange) clients, `team`/audience mappers |
 | `services/team-api/` | One image; `TEAM` selects the team, `TEAM_API_AUTH` the authz depth: `oidc` (JWKS-validating middleware, `tools/call` team-gated, catalog stays listable) or `api-key` (static `X-Api-Key` check only — the no-SSO backend) |
@@ -258,8 +258,9 @@ exercises the whole chain from a pod.
    `Claude Code returned an error result`. `cdk.json` sets
    `anthropic_model` explicitly for all runtimes.
 5. **Keycloak needs a real database, not dev mode.** It ran `start-dev` on an
-   in-memory H2 database until 2026-08-19, which made every task replacement a
-   silent SSO outage: Fargate retired the task on its own after nine days, the
+   in-memory H2 database until 2026-08-19, which made every container
+   replacement a silent SSO outage: ECS Fargate (the container platform at the
+   time) retired the task on its own after nine days, the
    fresh one re-imported the realm from the image, and everything applied
    *after* that import was gone — the portal's redirect URI, the confidential
    clients' secrets, the user passwords. Sign-in failed with

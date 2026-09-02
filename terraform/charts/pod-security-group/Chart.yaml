@@ -1,0 +1,5 @@
+apiVersion: v2
+name: pod-security-group
+description: Binds EC2 security groups to the pods of one platform workload (SecurityGroupPolicy). Installed before the workload so its first pod already carries them.
+type: application
+version: 0.1.0
