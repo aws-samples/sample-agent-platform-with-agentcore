@@ -114,7 +114,7 @@ export default function AppShell() {
                     {user}
                   </p>
                   <p className="text-[11px] leading-tight text-slate-400">
-                    {identity?.is_admin ? 'Administrator' : identity ? 'Developer' : ''}
+                    {identity?.is_super_admin ? 'Super administrator' : identity?.is_admin ? 'Administrator' : identity ? 'Developer' : ''}
                     {identity?.issuer ? ' · SSO' : identity ? ' · signed in' : 'signed in'}
                   </p>
                 </div>

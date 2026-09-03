@@ -47,6 +47,7 @@ export interface Kernel {
 export interface Identity {
   user: string
   is_admin: boolean
+  is_super_admin?: boolean
   groups: string[]
   teams: string[]
   issuer: string
