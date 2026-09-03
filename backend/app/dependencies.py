@@ -24,6 +24,7 @@ class Principal(str):
     """
 
     is_admin: bool = False
+    is_super_admin: bool = False
     groups: tuple[str, ...] = ()
 
 
@@ -52,7 +53,16 @@ def _principal(
         # schedule-runner Lambda's portal-admin delegation user).
         admin_users = {u.strip() for u in settings.admin_users.split(",") if u.strip()}
         admin = settings.admin_group in principal.groups or username in admin_users
-    principal.is_admin = admin
+    super_users = {u.strip() for u in settings.super_admin_users.split(",") if u.strip()}
+    super_admin = (
+        settings.super_admin_group in principal.groups
+        or username in super_users
+        # An explicit admin=True with no IdP claims is a development mode:
+        # the pre-RBAC "one operator owns everything" world, so super too.
+        or (claims is None and admin is True)
+    )
+    principal.is_super_admin = bool(super_admin)
+    principal.is_admin = bool(admin or super_admin)
     return principal
 
 
@@ -69,7 +79,10 @@ def get_current_user(authorization: str = Header(default="")) -> Principal:
       4. Open — local development only.
 
     Admin role: membership of ``settings.admin_group`` in the token's group
-    claims, or the username appearing in ``settings.admin_users``. Modes 3/4
+    claims, or the username appearing in ``settings.admin_users``. Super-admin
+    (``is_super_admin``): the same test against ``super_admin_group`` /
+    ``super_admin_users`` — the tier that may manage other users' schedules.
+    Modes 3/4
     have no IdP and are development modes — the caller is treated as admin so
     a local backend behaves like the pre-RBAC platform.
     """

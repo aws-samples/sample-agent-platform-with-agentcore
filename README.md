@@ -78,6 +78,11 @@ architecture, all live:
 - **Scheduler** — cron / `rate(N minutes)` schedules against any kernel or
   published agent, fired by **EventBridge Scheduler → Lambda** (retries +
   DLQ), with an in-process tick loop as the local-development fallback.
+  Schedules are isolated per creator: administrators see and manage only the
+  schedules they created themselves, so one operator cannot silently pause
+  another's production job. A super-administrator tier
+  (`PLATFORM_SUPER_ADMIN_GROUP` / `PLATFORM_SUPER_ADMIN_USERS`) sees and
+  manages every schedule.
 - **Channels** — entry points for external systems. Simple token webhooks,
   plus an **IAM service entry**: a *private* API Gateway (SigV4-authenticated,
   reachable only through allow-listed VPC interface endpoints) with an async

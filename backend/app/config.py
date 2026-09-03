@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # schedule-runner Lambda signs in as (agent-platform/portal-admin secret).
     admin_group: str = "platform-admin"
     admin_users: str = "admin"
+    # A second tier above administrators. Administrators share the management
+    # surface but own their schedules individually (one admin cannot pause
+    # another's job); super-administrators see and manage every schedule.
+    # Same two mechanisms as the admin tier: an IdP group, or a comma-separated
+    # username list. Super-administrators are administrators implicitly.
+    super_admin_group: str = "platform-super-admin"
+    super_admin_users: str = "admin"
 
     # IAM service entry (needs the PortalStack's API Gateway front door):
     # the gateway injects a shared secret header so the backend can tell

@@ -129,6 +129,7 @@ if not settings.entry_only:
         return {
             "user": user,
             "is_admin": getattr(user, "is_admin", False),
+            "is_super_admin": getattr(user, "is_super_admin", False),
             "groups": list(getattr(user, "groups", ())),
             "teams": [team] if isinstance(team, str) else [str(t).strip("/") for t in team],
             "issuer": claims.get("iss", ""),
