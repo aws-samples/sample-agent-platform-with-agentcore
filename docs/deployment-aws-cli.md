@@ -417,6 +417,26 @@ aws lambda wait function-updated --function-name "$SCHEDULE_FN"
 
 Re-run it whenever backend service code changes.
 
+Phase 6 fills in the function's environment (it cannot happen in phase 5 —
+`PLATFORM_PORTAL_API_URL` needs the CloudFront domain), including
+`PLATFORM_PORTAL_ADMIN_SECRET`. Two things to know about that secret:
+
+* It holds `{"username","password"}` for a portal admin and nothing creates it
+  for you. The runner reads it only to delegate a `pipeline:{name}` schedule to
+  the backend API — workflow scripts need Node, which the Lambda has not got.
+* **Its name carries `SUFFIX`** (`agent-platform${SUFFIX}/portal-admin`),
+  because the credential is a user in *this* stack's Cognito pool. Two stacks in
+  one account each need their own; `verify.sh` asserts that the runner's env and
+  the grant on its role name the same one.
+
+```bash
+aws secretsmanager create-secret --name "agent-platform${SUFFIX:-}/portal-admin" \
+  --secret-string '{"username":"admin","password":"<the admin password>"}'
+```
+
+`scripts/e2e_platform.py` defaults to the unsuffixed name — pass
+`PORTAL_ADMIN_SECRET` to point it at a suffixed stack's secret.
+
 ---
 
 ## 4. Verify
@@ -437,7 +457,7 @@ LAYER=1 bash tests/verify.sh
 PORTAL_PASSWORD='ChangeMe-12+chars' bash tests/verify.sh
 
 # Against a TERRAFORM deployment (no .state file): ids resolve from
-# `terraform output` + the fixed naming convention. Same 50 checks — this is
+# `terraform output` + the fixed naming convention. The same checks — this is
 # the acceptance test for any deployment of the platform, however built.
 TF_DIR=../../terraform LAYER=1 bash tests/verify.sh
 ```

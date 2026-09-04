@@ -30,6 +30,12 @@ output "schedule_dlq_url" {
   value = aws_sqs_queue.schedule_dlq.url
 }
 
+# The operator creates this secret by hand (see docs/deployment.md); the name
+# is suffix-dependent, so read it from here rather than typing it.
+output "portal_admin_secret_name" {
+  value = local.portal_admin_secret
+}
+
 output "service_entry_api_url" {
   value = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
 }

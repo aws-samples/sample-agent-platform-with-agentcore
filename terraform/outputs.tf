@@ -109,6 +109,10 @@ output "schedule_dlq_url" {
   value = try(module.portal[0].schedule_dlq_url, null)
 }
 
+output "portal_admin_secret_name" {
+  value = try(module.portal[0].portal_admin_secret_name, null)
+}
+
 output "service_entry_api_url" {
   value = try(module.portal[0].service_entry_api_url, null)
 }

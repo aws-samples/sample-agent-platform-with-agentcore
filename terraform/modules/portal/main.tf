@@ -6,6 +6,14 @@ data "aws_region" "current" {}
 locals {
   account = data.aws_caller_identity.current.account_id
   region  = data.aws_region.current.region
+
+  # Portal-admin credential the schedule-runner Lambda signs in with to
+  # delegate pipeline runs. Created out-of-band by the operator (like the
+  # gateway key), so there is no resource to reference — but the name is
+  # suffix-aware like every other platform secret, because the credential is a
+  # user in *this* stack's Cognito pool. Two stacks in one account each need
+  # their own.
+  portal_admin_secret = "agent-platform${var.name_suffix}/portal-admin"
 }
 
 # ------------------------------- auth --------------------------------------
