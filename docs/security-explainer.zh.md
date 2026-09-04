@@ -330,7 +330,7 @@ AgentCore 数据面 → 为本次调用的 session 分配/复用专属 microVM �
 
 ## 7. 线上 URL 的调用方鉴权与治理
 
-调用已发布 agent 有两种身份路径，面向不同受众：
+调用已发布 agent 有三种身份路径，面向不同受众：
 
 **路径一：IdP 签发的 Bearer token（平台用户 / 内部系统）。**与门户登录同一套
 身份：SSO 模式下是企业 IdP 的 access token，Cognito 模式下是用户池的 ID token
@@ -342,12 +342,33 @@ AgentCore 数据面 → 为本次调用的 session 分配/复用专属 microVM �
 路径的授权范围极窄：一个 token 只能调用**它绑定的那一个 agent**，无法访问任何
 其他平台 API。外部系统因此完全不需要 AWS 凭证或用户池账号。
 
+**路径三：IAM 服务入口（AWS 上的工作负载，无 token）。**调用方是本账号内的
+工作负载（EKS Pod、Lambda 等）时，不发 token：请求用 **SigV4** 签名，打到一个
+**私有 API Gateway**（`AWS_IAM` 授权 + PRIVATE 端点类型），网关经 VPC Link →
+内部 NLB 到后端的 `/service/v1` 路由，全程不出 AWS 网络，CloudFront 完全不参与。
+分层很关键：**IAM 只负责"这个工作负载能进入口"，且是一次性、API 级的授权**；
+"它能调用哪些 channel"由每个 channel 自己的**调用方白名单**（必填、默认拒绝、
+在门户里编辑）决定，因此 day-2 的绑定与吊销**不需要再动 IAM**。网关向后端注入
+两样东西：已验证的调用者 ARN，以及 Secrets Manager 里的入口共享密钥——在私有
+网络下这个密钥防的是 **VPC 内部**的伪造（平台 VPC 里的 runtime 容器也能连到
+内部 NLB）。契约是**提交/轮询**（202 + DynamoDB 里的调用记录），因为 agent 运行
+时长会超过前门超时；配额与台账的身份是调用方的**角色 ARN**。需要"人的身份"的
+工作负载可以额外带上自己 IdP 的 client-credentials token（`x-robot-token`），
+平台校验后作为调用者身份向下传递。详见
+[user-guide.md](user-guide.md#iam-channels--services-on-aws) 与
+[permissions.md §7](permissions.md#7-authentication-vs-authorization)。
+
 无论哪条路径，进入的都是**同一条治理管道**，没有旁路：
 
 - **配额**：按用户和平台总量的每日调用上限，超限返回 429；
-- **来源开关**：debug / api / schedule / channel / eval 五个入口各有独立
-  开关，例如停用 `channel` 后所有 webhook 立即返回 429，可作为紧急停用手段；
+- **来源开关**：debug / api / schedule / channel / eval / pipeline 六个入口
+  各有独立开关（`governance_service.py` 的 `sources_enabled`），例如停用
+  `channel` 后所有 webhook 立即返回 429，可作为紧急停用手段；
 - **轮次上限**：平台级 max-turns 上限优先于调用方指定的值；
+- **调度归属**：管理员之间互相隔离——`/api/v1/schedules` 只返回调用者自己创建的
+  调度，改动他人的调度返回 403；只有超级管理员
+  （`PLATFORM_SUPER_ADMIN_GROUP` / `PLATFORM_SUPER_ADMIN_USERS`）能看到并管理
+  全部。这一层是应用层边界，两个层级的 IAM 权限完全相同；
 - **调用台账**：每次调用记录来源、目标、调用者、延迟、轮次、成本、错误、实际
   使用的模型后端，Observability 页可查；平台的每个变更动作另有只可追加的
   审计日志。

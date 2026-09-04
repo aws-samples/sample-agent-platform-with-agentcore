@@ -10,10 +10,16 @@ merge every time.
 The guiding rule the code is organized around:
 
 > Configuration and content are separated from mechanism. Point the platform at
-> your environment with **environment variables and CDK context** (no tracked
-> code edits), and replace the sample catalog by editing **only the seed data
-> file**. The seeding/plumbing logic that upstream keeps changing stays in files
-> you never have to touch.
+> your environment with **Terraform variables and environment variables** (no
+> tracked code edits), and replace the sample catalog by editing **only the seed
+> data file**. The seeding/plumbing logic that upstream keeps changing stays in
+> files you never have to touch.
+
+Deployment paths, so the tables below are unambiguous: `terraform/` is the
+**maintained** one, `infrastructure/` is the legacy CDK (ECS Fargate) variant
+kept for reference, and `deploy-cli/` is an AWS-CLI-only port for accounts that
+can run neither. Terraform variables and CDK context keys share names wherever
+both exist.
 
 ---
 
@@ -24,15 +30,18 @@ with an upstream update.
 
 | To point at… | Set | Where |
 |---|---|---|
-| Your AWS account / region | `CDK_DEFAULT_ACCOUNT`, `CDK_DEFAULT_REGION` | shell env at `cdk deploy` |
-| An existing VPC (quota-constrained or enterprise) | `-c existing_vpc_id=… -c existing_nat_eip=…` | CDK context — see [network_stack.py](infrastructure/stacks/network_stack.py) |
+| Your AWS account / region | `AWS_PROFILE` / `AWS_REGION` (CDK: `CDK_DEFAULT_ACCOUNT`, `CDK_DEFAULT_REGION`) | shell env at `terraform apply` |
+| An existing VPC (quota-constrained or enterprise) | `existing_vpc_id`, `existing_private_subnet_ids`, `existing_public_subnet_ids`, `existing_nat_eip` | [terraform.tfvars](terraform/terraform.tfvars.example) — reuse mode validates that the subnet lists are present; CDK equivalent: `-c existing_vpc_id=… -c existing_nat_eip=…` |
+| Which layers to create | `enable_runtime`, `enable_portal`, `enable_llm_edge`, `enable_team_auth`, `enable_team_demo`, `enable_mcp_hub_demo` | [terraform/variables.tf](terraform/variables.tf) — the quick start uses them to stage the deploy |
 | Bedrock direct mode | `CLAUDE_CODE_USE_BEDROCK=1` | runtime env; no key involved |
-| Your LLM gateway | `enable_llm_edge=true` + the backend's `base_url` in Governance → Model backends | key in Secrets Manager, read only by `llm-edge`; kernels get a per-session grant, never the key |
-| Backend runtime settings (table, buckets, ARNs, Cognito, CORS) | `PLATFORM_*` env vars | [backend/app/config.py](backend/app/config.py), `backend/.env.example` |
+| Your LLM gateway | `enable_llm_edge = true` + the backend's `base_url` in Governance → Model backends | key in Secrets Manager, read only by `llm-edge`; kernels get a per-session grant, never the key |
+| Backend runtime settings (table, buckets, ARNs, Cognito, CORS, admin tiers) | `PLATFORM_*` env vars | [backend/app/config.py](backend/app/config.py) — every field there is `PLATFORM_<FIELD>` (`env_prefix`); `backend/.env.example` for local runs |
 
-`infrastructure/cdk.context.json` is **git-ignored on purpose** — it caches
-account-specific VPC/EIP/AZ lookups. Never commit it; your fork re-resolves it
-against your own account on first synth.
+Terraform state is yours: `terraform/backend.tf.example` shows the remote-state
+block to copy. On the legacy CDK path, `infrastructure/cdk.context.json` is
+**git-ignored on purpose** — it caches account-specific VPC/EIP/AZ lookups.
+Never commit it; your fork re-resolves it against your own account on first
+synth.
 
 There are no account IDs, VPC IDs, or resource ARNs baked into tracked source.
 
@@ -79,7 +88,7 @@ exact touch points:
 1. [`runtimes/claude-code-kernel/contract-server/main.js`](runtimes/claude-code-kernel/contract-server/main.js) — `applySessionConfig` `kind` branch (writes `.mcp.json`)
 2. [`runtimes/agent-sdk-kernel/src/main.py`](runtimes/agent-sdk-kernel/src/main.py) — `build_mcp_config` `kind` branch
 3. [`backend/app/services/seed_data.py`](backend/app/services/seed_data.py) — if you seed instances of the new kind
-4. [`infrastructure/stacks/runtime_stack.py`](infrastructure/stacks/runtime_stack.py) — IAM, if the kind needs new permissions (built-in tools did)
+4. [`terraform/modules/runtime/iam.tf`](terraform/modules/runtime/iam.tf) — IAM, if the kind needs new permissions (built-in tools did); mirror it in [`infrastructure/stacks/runtime_stack.py`](infrastructure/stacks/runtime_stack.py) and `deploy-cli/scripts/30-runtime.sh` only if you keep those paths alive
 
 This is intentionally *not* abstracted behind a plugin registry: adding a kind is
 rare, and the explicit branches keep the sample readable. Expect these four
@@ -109,11 +118,25 @@ each has a documented production upgrade:
 | Invocation ledger in DynamoDB | CloudWatch GenAI Observability dashboards + OTel traces (already emitted by the runtimes) |
 | LLM judge via the platform kernel | A dedicated eval framework with reference-model grading |
 
+### Extend the workflow engine — experimental surface
+
+Phase 5 (the *Workflow* portal page, `pipeline_service.py` +
+`workflow_engine.py` + [`backend/app/workflow/runner.mjs`](backend/app/workflow/runner.mjs))
+is shipped **experimental**: the script dialect and the host-primitive set may
+still change, so pin your fork if you build on it. Adding a primitive means one
+handler in the Python engine plus its counterpart in the Node shim — both sides
+of the stdio bridge — and nothing else; the bridge is the only I/O a script
+gets, which is what keeps `agent()` calls inside the governed pipeline and S3
+access inside the workspace bucket. Sample scripts live in
+[`pipelines/`](pipelines/) and seed via `scripts/seed_example_pipeline.py`.
+
 ### Add a whole new kernel — structural
 
 A new runtime type (beyond interactive / headless / MCP-tools) is a new
-directory under `runtimes/`, a stack wiring in [infrastructure](infrastructure/),
-and a catalog entry in
+directory under `runtimes/`, an ECR repo name in
+[`terraform/modules/platform/main.tf`](terraform/modules/platform/main.tf)
+(`kernel_repo_names`), runtime + role wiring in
+[`terraform/modules/runtime`](terraform/modules/runtime), and a catalog entry in
 [`kernel_service.py`](backend/app/services/kernel_service.py). Treated as a
 first-class change, not an every-adopter one.
 

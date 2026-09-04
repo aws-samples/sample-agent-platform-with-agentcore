@@ -8,7 +8,7 @@ legacy ECS variant.
 | Module | CDK stack | Contents |
 |---|---|---|
 | `modules/network` | AgentPlatformNetwork | VPC (fresh or reuse) + fixed-EIP NAT + runtime SG |
-| `modules/platform` | AgentPlatformPlatform | workspace S3, DynamoDB, 6 ECR repos, LLM-gateway secret |
+| `modules/platform` | AgentPlatformPlatform | workspace S3 + access-log S3, DynamoDB, 7 ECR repos (4 kernel/backend, `llm-edge`, 2 team-auth), LLM-gateway secret |
 | `modules/runtime` | AgentPlatformRuntime | 3 AgentCore runtimes + kernel IAM roles + workspace-access role |
 | `modules/eks` | — | The EKS cluster every container runs on: Graviton managed node group, OIDC provider for IRSA, VPC CNI in security-groups-for-Pods mode, CoreDNS/kube-proxy, AWS Load Balancer Controller and Fluent Bit (Helm) |
 | `modules/portal` | AgentPlatformPortal | Cognito, frontend S3+OAC, backend + entry Deployments, ALB, CloudFront, EventBridge Scheduler + runner Lambda + DLQ, private service-entry API (API GW → VPC Link → internal NLB) |
@@ -37,7 +37,7 @@ cross-variable references in `validation` blocks are a 1.9 feature. Check
 `terraform version` before chasing those. Note that Homebrew's core formula
 stops at 1.5.7 and is disabled, so `brew upgrade` will not move you past it.
 
-The full resource-by-resource inventory (121 resources in the five default
+The full resource-by-resource inventory (120 resource blocks in the five default
 modules: purpose, key configuration, dependency order) is in
 [`docs/resource-inventory.md`](../docs/resource-inventory.md) — useful for
 scoping a deployment role's IAM or porting to an in-house IaC standard.

@@ -20,8 +20,9 @@ provisioning the platform itself see the
 10. [Memory — recall across sessions](#memory)
 11. [Observability — what ran, how it went](#observability)
 12. [Evaluation — score before rollout](#evaluation)
-13. [Governance — quotas and audit](#governance)
-14. [Calling the platform from code](#calling-the-platform-from-code)
+13. [Workflow — multi-step pipelines (experimental)](#workflow-experimental)
+14. [Governance — quotas and audit](#governance)
+15. [Calling the platform from code](#calling-the-platform-from-code)
 
 ---
 
@@ -48,9 +49,17 @@ hand back the same identity.
 **Roles.** What you see depends on who you are. Members of the
 `platform-admin` group get the full management surface; everyone else gets
 the developer surface — Overview, Dev Workbench, Publish and Debug, scoped
-to resources they created. The sidebar badge (*Administrator* /
-*Developer*) tells you which one you got, and the split is enforced by the
-API (a hidden page is not a hidden capability).
+to resources they created. The sidebar badge (*Super administrator* /
+*Administrator* / *Developer*) tells you which one you got, and the split is
+enforced by the API (a hidden page is not a hidden capability).
+
+**Super administrator** is a third tier above administrator. It exists for one
+thing today: administrators share the management surface but **own their
+schedules individually**, so one operator cannot pause or delete another's
+recurring job (see [Scheduler](#scheduler)). A super administrator sees and
+manages every schedule. Your operator sets the tier with a group
+(`platform-super-admin`) or a username list — everything else an administrator
+can do is unchanged.
 
 ## Five concepts in sixty seconds
 
@@ -238,6 +247,14 @@ generated expression is previewed live, and a *custom* preset accepts any
   missed occurrences).
 - Each row shows the last result preview and total run count; full results
   are in [Observability](#observability) (source = `schedule`).
+- **You only see your own schedules.** The page is administrator-only, but
+  administrators are isolated from each other here: the list shows what *you*
+  created, and pausing, editing, deleting or running someone else's is refused
+  (403). A colleague quietly switching off your production job is exactly the
+  failure this prevents. A **super administrator** sees and manages all of
+  them — ask one if a schedule needs to change hands. Firing is unaffected by
+  who is signed in: a schedule always runs as its creator, so the invocation
+  lands under their quota and shows up as theirs in Observability.
 
 Scheduled runs count against Governance quotas like any other invocation.
 
@@ -376,6 +393,51 @@ and judge verdicts.
 The practical workflow: build a dataset that encodes your quality bar, run it
 against agent v1, tweak the manifest, republish, run again — same suite,
 comparable scores.
+
+## Workflow (experimental)
+
+*Administrator-only, and marked **Experimental** in the portal — the script
+dialect can still change.*
+
+When one prompt is not enough — fan out over ten inputs, then summarize; stage
+a retrieval phase before a writing phase — register a **workflow script**
+instead of chaining schedules by hand. The script is JavaScript in the Claude
+Code Workflow dialect, and the platform stores it as data:
+
+```js
+export const meta = {
+  name: 'my-pipeline',
+  description: '…',
+  phases: [{ title: 'Phase 1' }],
+}
+
+phase('Phase 1')
+const answer = await agent('Say hello in one sentence.', { label: 'hello' })
+return { answer }
+```
+
+**Register** — *New workflow* → name, description, script. `agent(prompt, opts)`
+runs one governed invocation (give it a `label` so you can find it in the run
+tree, and a `phase` to group it); `parallel([...])` and `pipeline(items, ...)`
+fan out; `phase('title')` marks progress; `log()` writes to the run log.
+`s3read` / `s3write` / `s3list` are confined to the platform's workspace bucket.
+
+**Run** — *Run* on a card, or point a schedule at `pipeline:{name}`. Runs appear
+below and update live.
+
+**Read a run** — the card header shows status (with the current phase while it
+runs), who started it, the source, total cost, and a *↳ nested* badge if a
+parent script invoked it via `workflow()`. Expand it for the **Agents** tab —
+the phase → agent tree, each row with its label, latency and cost, subtotalled
+per phase — plus **Logs**, **Result JSON** and an **Artifact** view, each shown
+only when the run produced one. If the run was traced, a *CloudWatch trace*
+link opens its X-Ray trace (needs Transaction Search enabled on the account).
+
+Two things worth knowing: every `agent()` call is an ordinary platform
+invocation — it counts against Governance quotas and appears in
+[Observability](#observability) like anything else — and the script's only way
+to reach the outside world is that metered bridge, so a workflow cannot make
+AWS calls of its own.
 
 ## Governance
 

@@ -9,7 +9,7 @@ The upstream sample ships Terraform (and legacy CDK stacks). This runbook is for
 teams that cannot introduce either — a change-controlled account where every API
 call has to be auditable, an environment with no Terraform state backend, or a
 proof of concept that has to be readable end to end. It provisions the same five
-modules (**network, platform, eks, runtime, portal** — 121 resources, tabulated
+modules (**network, platform, eks, runtime, portal** — 120 resource blocks, tabulated
 with purpose and dependencies in [`resource-inventory.md`](resource-inventory.md))
 and reaches the same working portal. "AWS CLI only" has one qualification since
 the containers moved to EKS: the Kubernetes side of the cluster (two
@@ -141,7 +141,7 @@ Everything else is set in `lib/common.sh`. The knobs you may want to change:
 | `VPC_CIDR` | `10.20.0.0/16` | must not overlap anything you plan to peer with |
 | `IMAGE_TAG` | `latest` | the tag the runtimes and the EKS pods pull |
 | `ANTHROPIC_MODEL` | Sonnet 4.5 profile | baked into the kernels as the default |
-| `ENABLE_LLM_EDGE` | `0` | `1` deploys `llm-edge`, required for the litellm model backend — it holds the gateway key so no kernel container receives one (phase 4b) |
+| `ENABLE_LLM_EDGE` | `0` | `1` deploys `llm-edge`, required for the litellm model backend — it holds the gateway key so no kernel container receives one (phase 4b). Read from the environment by `scripts/00-deploy-all.sh`, not declared in `common.sh`: `ENABLE_LLM_EDGE=1 bash scripts/00-deploy-all.sh` |
 | `STATE_DIR` | `./.state` | where resource ids are recorded — **see §6** |
 
 Leaving `SUFFIX` empty produces the same names the CDK and Terraform stacks use
@@ -181,8 +181,12 @@ bash scripts/20-platform.sh
 ```
 
 Workspace bucket (versioned, encrypted, TLS-only), access-log bucket (90-day
-expiry), frontend bucket, DynamoDB table (PITR + SSE), four ECR repositories
-(scan-on-push), and the LLM-gateway secret placeholder.
+expiry), frontend bucket, DynamoDB table (PITR + SSE), five ECR repositories
+(the four kernel/backend repos plus `llm-edge`, all scan-on-push), and the
+LLM-gateway secret placeholder. `llm-edge` is kept out of the kernel repo set
+deliberately: the kernel execution roles get pull on every repo in that set, and
+nothing in a session container should be able to pull the image of the service
+that holds the gateway key.
 
 ### Phase 2b — EKS cluster (~20 min)
 
@@ -604,7 +608,7 @@ so the same line is correct there. This matters only for blocks you paste into a
 interactive shell, which on macOS is zsh: the scripts themselves are `#!/bin/bash`
 and unaffected. The symptom points at the wrong phase — the push fails with
 `name unknown: The repository … does not exist`, which reads as a phase 2
-problem, when in fact the four repositories were created correctly and are simply
+problem, when in fact the repositories were created correctly and are simply
 empty. Brace every expansion followed by a literal colon.
 
 **macOS ships bash 3.2 (2007).** `mapfile`, associative arrays and `${var^^}`

@@ -5,9 +5,12 @@ principal the platform creates**, the exact actions and resource scopes each
 one holds, and *why*. It is written for a security team that has to approve the
 deployment into a controlled test environment.
 
-Everything here is derived from the CDK stacks in `infrastructure/stacks/` and
-cross-checked against the AWS API calls the code actually makes
-(`backend/`, `runtimes/`). Where a statement uses a wildcard resource
+Everything here is derived from the Terraform modules in `terraform/modules/`
+— the maintained deployment path — and cross-checked against the AWS API calls
+the code actually makes (`backend/`, `runtimes/`). The legacy CDK stacks in
+`infrastructure/stacks/` and the AWS-CLI port in `deploy-cli/` create the same
+roles with the same policies; where a name differs, the Terraform one is
+authoritative. Where a statement uses a wildcard resource
 (`"*"`), it is called out explicitly in
 [§4 Wildcard resources](#4-wildcard-resource-statements) with the reason and how
 to narrow it.
@@ -32,24 +35,31 @@ stacks template these automatically.
 
 ## 1. Principals at a glance
 
-The platform runs under seven IAM principals: one execution role **per
-kernel** (so each container holds only what its code calls), a per-session
-workspace-access role the backend assumes, the backend workload role and the
-Lambda execution role, and a service role EventBridge Scheduler assumes. The
-EKS cluster the containers run on adds five infrastructure roles of its own
+The platform runs under seven IAM principals by default: one execution role
+**per kernel** (so each container holds only what its code calls), a
+per-session workspace-access role the backend assumes, the backend workload
+role and the Lambda execution role, and a service role EventBridge Scheduler
+assumes. LLM-gateway mode (`enable_llm_edge = true`) adds an eighth, the
+`llm-edge` workload role — the only principal that may read the gateway key.
+The EKS cluster the containers run on adds five infrastructure roles of its own
 (cluster, node, and IRSA roles for the VPC CNI, the load balancer controller
 and Fluent Bit); they hold no platform data access and are listed in
-`terraform/modules/eks/iam.tf`.
+`terraform/modules/eks/iam.tf`. The optional enterprise-SSO and MCP-hub demos
+create their own roles in `terraform/modules/team_auth` and
+`terraform/modules/mcp_hub_demo`; they are covered in
+[enterprise-sso.md](enterprise-sso.md) and
+[mcp-hub-integration.md](mcp-hub-integration.md).
 
 | # | Principal | Created in | Assumed by | Purpose |
 |---|---|---|---|---|
-| 1 | **`agent-platform-interactive-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The identity inside the interactive (Dev Workbench) kernel. **No `workspaces/*` access** — workspace sync uses per-session credentials (#4). |
-| 2 | **`agent-platform-sdk-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The identity inside the headless kernel — the one that executes published agents and externally supplied prompts. **No workspace access at all.** |
-| 3 | **`agent-platform-mcp-tools-role`** | `RuntimeStack` | `bedrock-agentcore.amazonaws.com` | The demo MCP server. ECR pull + logs only — **no S3, no secrets, no data-plane actions**. |
-| 4 | **`agent-platform-workspace-access`** | `RuntimeStack` | The account (in practice: only the backend task role holds `sts:AssumeRole` on it) | The **only** principal that can touch `workspaces/*`. The backend assumes it per session with an inline session policy narrowing to `workspaces/{sessionId}/*` and hands the 1h credentials to that session's container. |
-| 5 | **Backend workload role** (`agent-platform-backend-task`) | `portal` module | The EKS cluster's OIDC provider via **IRSA** — only the `backend` and `entry` service accounts in the `portal` namespace | The control-plane API on EKS: session routing, invoking runtimes, memory/scheduler/eval management, minting workspace credentials. |
-| 6 | **Schedule-runner Lambda role** (`PortalStack/ScheduleRunner`) | `PortalStack` | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
-| 7 | **Scheduler role** (`PortalStack/SchedulerRole`) | `PortalStack` | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
+| 1 | **`agent-platform-interactive-role`** | `runtime` module (CDK: `RuntimeStack`) | `bedrock-agentcore.amazonaws.com` | The identity inside the interactive (Dev Workbench) kernel. **No `workspaces/*` access** — workspace sync uses per-session credentials (#4). |
+| 2 | **`agent-platform-sdk-role`** | `runtime` module | `bedrock-agentcore.amazonaws.com` | The identity inside the headless kernel — the one that executes published agents and externally supplied prompts. **No workspace access at all.** |
+| 3 | **`agent-platform-mcp-tools-role`** | `runtime` module | `bedrock-agentcore.amazonaws.com` | The demo MCP server. ECR pull + logs only — **no S3, no secrets, no data-plane actions**. |
+| 4 | **`agent-platform-workspace-access`** | `runtime` module | The account (in practice: only the backend task role holds `sts:AssumeRole` on it) | The **only** principal that can touch `workspaces/*`. The backend assumes it per session with an inline session policy narrowing to `workspaces/{sessionId}/*` and hands the 1h credentials to that session's container. |
+| 5 | **`agent-platform-backend-task`** | `portal` module | The EKS cluster's OIDC provider via **IRSA** — only the `backend` and `entry` service accounts in the `portal` namespace | The control-plane API on EKS: session routing, invoking runtimes, memory/scheduler/eval management, minting workspace credentials. |
+| 6 | **`agent-platform-schedule-runner`** | `portal` module (CDK: `PortalStack/ScheduleRunner`) | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
+| 7 | **`agent-platform-scheduler`** | `portal` module (CDK: `PortalStack/SchedulerRole`) | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
+| 8 | **`agent-platform-llm-edge`** — *gateway mode only* | `llm_edge` module | The cluster's OIDC provider via **IRSA** — only the `edge` service account in the `llm-edge` namespace | The gateway broker. Holds exactly two grants: `secretsmanager:GetSecretValue` on the gateway key (the **only** principal that has it) and `dynamodb:GetItem` on the platform table for per-session token lookup — no `Query`, no `Scan`, nothing else. |
 
 The single most important property for a security review: **the browser and
 end users never hold AWS credentials.** All AWS access is server-side under
@@ -268,6 +278,19 @@ Two separate concerns, easy to conflate in a review:
   `require_admin`); everyone else gets the developer APIs scoped to their
   own resources. `PLATFORM_ADMIN_USERS` (default `admin`) is the escape
   hatch for principals that cannot carry groups.
+- **Super-administrators.** A third tier above `platform-admin`, selected the
+  same two ways: `PLATFORM_SUPER_ADMIN_GROUP` (default
+  `platform-super-admin`) or `PLATFORM_SUPER_ADMIN_USERS` (default `admin`).
+  It exists for one reason: administrators share the management surface but
+  **own their schedules individually**. `/api/v1/schedules` lists only what
+  the caller created, and every mutation compares `created_by` to the caller
+  — a cross-owner attempt is a **403**, a missing schedule a **404**, so a job
+  that stopped firing is distinguishable from one that was never there. Only
+  a super-administrator bypasses that check. Super-administrators are
+  administrators implicitly (`is_super_admin` ⇒ `is_admin`), and the check
+  lives in `api/schedules.py`, not the UI. No IAM permission differs between
+  the tiers — this is entirely an application-layer boundary over the one
+  backend role in [§3](#3-backend-workload-role-irsa).
 - **Token channels** are the one path that bypasses Cognito by design: a
   webhook is authenticated by a server-generated bearer token (shown once,
   constant-time compared), so external systems need no AWS credentials and no
@@ -278,7 +301,8 @@ Two separate concerns, easy to conflate in a review:
   1. **Network**: the API is a **PRIVATE API Gateway** — reachable only
      through `execute-api` interface VPC endpoints, and its resource policy
      admits only this account's principals (optionally pinned to specific
-     endpoint IDs via `-c service_api_allowed_vpces`). Downstream it
+     endpoint IDs via the `service_api_allowed_vpces` variable — a `-c`
+     context key of the same name on the legacy CDK path). Downstream it
      reaches the backend through a **VPC Link → internal NLB**; no hop
      crosses the internet, and the backend's `/service/v1` routes are not
      routed by CloudFront at all.
@@ -320,26 +344,34 @@ environment, keep Cognito on; never ship the open mode.
 ## 8. Deployer / Terraform permissions
 
 The roles above are what the platform runs *as*. Separately, whoever runs
-`cdk deploy` needs permission to **create** them. In a locked-down account the
-deploy identity is usually the tightest gate.
+`terraform apply` needs permission to **create** them. In a locked-down account
+the deploy identity is usually the tightest gate.
 
 Practical options, tightest first:
 
-1. **CDK execution role via `cdk bootstrap` (recommended).** Bootstrap the
-   account with a permissions boundary or a scoped
-   `--cloudformation-execution-policies`, and let CloudFormation assume the
-   bootstrap deploy role. The human then only needs `sts:AssumeRole` into the
-   CDK roles, not broad admin. This is the standard pattern for accounts where
-   engineers cannot hold `AdministratorAccess`.
-2. **A scoped deploy policy** covering the services the stacks create:
-   `cloudformation:*` (on `AgentPlatform*` stacks), `ec2:*` (VPC, subnets, NAT,
-   EIP, security groups — NetworkStack), `s3:*` (create the two buckets),
-   `dynamodb:*` (the table), `ecr:*` (the four repos), `secretsmanager:*` (the
-   three secrets), `iam:CreateRole/PutRolePolicy/PassRole/...` (the four roles),
-   `bedrock-agentcore:*Runtime*` (runtime module), `eks:*` (cluster, node
-   group, add-ons, access entries — eks module), `elasticloadbalancing:*`,
-   `cloudfront:*`, `cognito-idp:*`, `lambda:*`, `scheduler:*`, `sqs:*`, and
-   `logs:*` (portal module). Constrain with a permissions boundary.
+1. **A dedicated deploy role the human assumes (recommended).** Put the
+   permissions below on one `agent-platform-deployer` role with a permissions
+   boundary, and give engineers nothing but `sts:AssumeRole` into it. Terraform
+   picks it up through the provider's `assume_role` block or an AWS profile, so
+   no one holds `AdministratorAccess` and every deploy action is attributable.
+   (On the legacy CDK path the equivalent is `cdk bootstrap` with a scoped
+   `--cloudformation-execution-policies`, so CloudFormation — not the human —
+   holds the create permissions.)
+2. **A scoped deploy policy** covering the services the modules create:
+   `ec2:*` (VPC, subnets, NAT, EIP, security groups — `network` module),
+   `s3:*` (the workspace, access-log and frontend buckets), `dynamodb:*` (the
+   platform table), `ecr:*` (the five repos: `claude-code-kernel`,
+   `agent-sdk-kernel`, `mcp-tools-kernel`, `backend`, `llm-edge` — plus
+   `keycloak` and `team-api` with the team-auth demo), `secretsmanager:*` (the
+   `agent-platform/*` secrets: the gateway key and the service-entry secret,
+   plus the team-auth demo's three), `iam:CreateRole/PutRolePolicy/PassRole/...`
+   (the roles in [§1](#1-principals-at-a-glance)),
+   `bedrock-agentcore:*Runtime*` (`runtime` module), `eks:*` (cluster, node
+   group, add-ons, access entries — `eks` module), `elasticloadbalancing:*`,
+   `cloudfront:*`, `cognito-idp:*`, `apigateway:*`, `lambda:*`, `scheduler:*`,
+   `sqs:*`, and `logs:*` (`portal` module). On the CDK path add
+   `cloudformation:*` on `AgentPlatform*` stacks. Constrain with a permissions
+   boundary.
 
 Two hard requirements regardless of option:
 
@@ -359,15 +391,16 @@ Two hard requirements regardless of option:
   workspace bucket.
   These are operator actions, deliberately kept out of the stack roles.
 
-If the customer wants a single reviewable artifact, generate the synthesized
-templates and hand those to the security team instead of granting speculative
-permissions:
+If the customer wants a single reviewable artifact, generate the plan and hand
+that to the security team instead of granting speculative permissions:
 
 ```bash
-cd infrastructure && cdk synth --all      # writes cdk.out/*.template.json
+cd terraform && terraform plan -out=tfplan && terraform show -json tfplan > plan.json
+# legacy CDK path: cd infrastructure && cdk synth --all   # writes cdk.out/*.template.json
 ```
 
-Every IAM statement in this document appears verbatim in those templates.
+Every IAM statement in this document appears verbatim in that plan (filter
+`plan.json` for `aws_iam_role_policy` / `aws_iam_role`).
 
 ---
 
