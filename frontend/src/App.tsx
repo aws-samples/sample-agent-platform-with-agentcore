@@ -12,6 +12,7 @@ import ObservabilityPage from '@/pages/ObservabilityPage'
 import MemoryPage from '@/pages/MemoryPage'
 import EvalPage from '@/pages/EvalPage'
 import PipelinePage from '@/pages/PipelinePage'
+import WorkflowInsightsPage from '@/pages/WorkflowInsightsPage'
 import ChannelsPage from '@/pages/ChannelsPage'
 import GovernancePage from '@/pages/GovernancePage'
 import GatewayPage from '@/pages/GatewayPage'
@@ -90,6 +91,7 @@ export default function App() {
         <Route path="/memory" element={<RequireAdmin><MemoryPage /></RequireAdmin>} />
         <Route path="/eval" element={<RequireAdmin><EvalPage /></RequireAdmin>} />
         <Route path="/pipeline" element={<RequireAdmin><PipelinePage /></RequireAdmin>} />
+        <Route path="/pipeline/insights" element={<RequireAdmin><WorkflowInsightsPage /></RequireAdmin>} />
         <Route path="/governance" element={<RequireAdmin><GovernancePage /></RequireAdmin>} />
         <Route path="/gateway" element={<RequireAdmin><GatewayPage /></RequireAdmin>} />
         <Route path="*" element={<Navigate to="/" replace />} />

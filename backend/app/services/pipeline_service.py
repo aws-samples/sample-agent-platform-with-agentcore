@@ -18,6 +18,7 @@ CloudWatch (Transaction Search), regardless of which pipeline is running.
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -196,17 +197,99 @@ class PipelineService:
             "error": item.get("error", ""),
         }
 
-    def list_runs(self, pipeline: str | None = None, limit: int = 20) -> list[dict]:
-        resp = self.table.query(
-            KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": PK_RUN},
-            ScanIndexForward=False,
-            Limit=100 if pipeline else min(limit, 50),
-        )
-        runs = [self._run_public(i) for i in resp.get("Items", [])]
-        if pipeline:
-            runs = [r for r in runs if r["pipeline"] == pipeline][:limit]
-        return runs
+    def list_runs(self, pipeline: str | None = None, limit: int = 20, view: str = "full") -> list[dict]:
+        """Newest first. ``view="summary"`` returns the slim per-run shape
+        (:meth:`_run_summary`) the Insights page charts from — no logs, no
+        per-agent rows, result reduced to the contract keys.
+
+        With a pipeline filter the query is paginated: a single 100-item page
+        post-filtered in Python (the previous behaviour) returned only a
+        handful of runs for a workflow that runs every few days among daily
+        ones, which capped every cross-run chart at that depth.
+        """
+        limit = max(1, min(int(limit or 20), 200))
+        public = self._run_summary if view == "summary" else self._run_public
+        if not pipeline:
+            resp = self.table.query(
+                KeyConditionExpression="PK = :pk",
+                ExpressionAttributeValues={":pk": PK_RUN},
+                ScanIndexForward=False,
+                Limit=min(limit, 50),
+            )
+            return [public(i) for i in resp.get("Items", [])]
+        items: list[dict] = []
+        kwargs: dict = {}
+        scanned = 0
+        while len(items) < limit and scanned < 2000:
+            resp = self.table.query(
+                KeyConditionExpression="PK = :pk",
+                FilterExpression="#pl = :p",
+                ExpressionAttributeNames={"#pl": "pipeline"},
+                ExpressionAttributeValues={":pk": PK_RUN, ":p": pipeline},
+                ScanIndexForward=False,
+                Limit=100,
+                **kwargs,
+            )
+            items.extend(resp.get("Items", []))
+            scanned += int(resp.get("ScannedCount") or 100)
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs = {"ExclusiveStartKey": lek}
+        return [public(i) for i in items[:limit]]
+
+    # result keys a script may publish for the portal's cross-run views; the
+    # rest of the result (artifact text, per-feed detail, …) stays on the full
+    # run and out of the summary payload
+    SUMMARY_RESULT_KEYS = ("date", "counts", "health", "summary", "trend_keys", "funnel")
+
+    def _run_summary(self, item: dict) -> dict:
+        agents = item.get("agents", []) or []
+        order: list[str] = []
+        by: dict[str, list[dict]] = {}
+        for a in agents:
+            p = a.get("phase") or "(no phase)"
+            if p not in by:
+                by[p] = []
+                order.append(p)
+            by[p].append(a)
+
+        def pct(sorted_vals: list[float], p: int) -> float | None:
+            if not sorted_vals:
+                return None
+            idx = min(len(sorted_vals) - 1, max(0, math.ceil(p / 100 * len(sorted_vals)) - 1))
+            return sorted_vals[idx]
+
+        phases = []
+        for p in order:
+            lst = by[p]
+            durs = sorted(float(a["duration_ms"]) for a in lst if a.get("duration_ms"))
+            phases.append({
+                "phase": p,
+                "calls": len(lst),
+                "failed": sum(1 for a in lst if not a.get("ok")),
+                "cost_usd": float(sum(Decimal(str(a.get("cost_usd") or 0)) for a in lst)),
+                "duration_ms_sum": sum(durs),
+                "duration_ms_p50": pct(durs, 50),
+                "duration_ms_p95": pct(durs, 95),
+                "duration_ms_max": durs[-1] if durs else None,
+            })
+        result = item.get("result")
+        slim = {k: result[k] for k in self.SUMMARY_RESULT_KEYS if k in result} if isinstance(result, dict) else None
+        return _plain({
+            "id": item.get("run_id", ""),
+            "pipeline": item.get("pipeline", ""),
+            "status": item.get("status", ""),
+            "source": item.get("source", ""),
+            "parent_run": item.get("parent_run", ""),
+            "started_at": item.get("started_at", ""),
+            "finished_at": item.get("finished_at", ""),
+            "trace_id": item.get("trace_id", ""),
+            "error": item.get("error", ""),
+            "agents_total": len(agents),
+            "phases": phases,
+            "result": slim,
+        })
 
     def get_run(self, run_id: str) -> dict | None:
         for run in self.list_runs(limit=50):

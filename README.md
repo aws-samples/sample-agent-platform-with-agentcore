@@ -96,7 +96,10 @@ architecture, all live:
   (so channel conversations survive microVM recycling), and appends the
   exchange after it.
 - **Observability** — a platform invocation ledger (latency, turns, cost,
-  source) over every governed call, complementing CloudWatch GenAI traces.
+  source) over every governed call, plus one CloudWatch trace per pipeline run
+  that reaches down to the kernel's `AGENT` / `TOOL` spans when the headless
+  kernel is deployed as its opt-in observability image variant (ADOT +
+  OpenInference) — see [docs/observability.md](docs/observability.md).
 - **Evaluation** — fixed task suites executed against any target and scored
   by an LLM judge; compare a published agent against the raw kernel before
   rollout.
