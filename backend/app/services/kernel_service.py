@@ -100,6 +100,7 @@ class KernelService:
         model: dict | None = None,
         async_output: dict | None = None,
         user: str = "",
+        trace: dict | None = None,
     ) -> dict:
         """Proxy an invocation to the headless kernel.
 
@@ -111,6 +112,11 @@ class KernelService:
         mode: the call returns ``{accepted: true}`` immediately and the kernel
         writes the answer + a ``{key}.status.json`` sidecar to S3 when done
         (poll the sidecar for completion — see invocation_service).
+        ``trace`` ({xray, traceparent, baggage, attributes}) propagates the
+        caller's trace context: the ids ride the X-Amzn-Trace-Id / traceparent
+        / baggage request headers (AgentCore Observability picks them up so
+        the kernel's spans join the caller's trace), and a copy goes in the
+        payload for the kernel to tag its spans with the attributes.
         """
         if not settings.sdk_runtime_arn:
             return {"ok": False, "result": "", "raw": {"error": "sdk_runtime_arn not configured"}}
@@ -158,6 +164,18 @@ class KernelService:
             payload["model"] = model
         if async_output and async_output.get("key"):
             payload["async"] = async_output
+        trace_headers: dict = {}
+        if trace:
+            if trace.get("xray"):
+                trace_headers["traceId"] = str(trace["xray"])
+            if trace.get("traceparent"):
+                trace_headers["traceParent"] = str(trace["traceparent"])
+            if trace.get("baggage"):
+                trace_headers["baggage"] = str(trace["baggage"])
+            payload["trace"] = {
+                "xray": trace.get("xray", ""),
+                "attributes": trace.get("attributes") or {},
+            }
 
         def _invoke():
             return self.agentcore.invoke_agent_runtime(
@@ -165,6 +183,7 @@ class KernelService:
                 qualifier=settings.runtime_qualifier,
                 runtimeSessionId=sid,
                 payload=json.dumps(payload).encode(),
+                **trace_headers,
             )
 
         try:

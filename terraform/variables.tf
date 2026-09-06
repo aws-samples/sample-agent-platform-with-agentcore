@@ -107,6 +107,12 @@ variable "sdk_image_tag" {
   default = ""
 }
 
+variable "agent_observability" {
+  description = "Opt in to AgentCore Observability for the headless kernel: creates the runtime trace delivery to X-Ray and grants the telemetry IAM statements. Pair with sdk_image_tag pointing at the observability image variant (Dockerfile.otel, tag <tag>-otel); the base image emits no spans."
+  type        = bool
+  default     = false
+}
+
 variable "mcp_tools_image_tag" {
   type    = string
   default = ""

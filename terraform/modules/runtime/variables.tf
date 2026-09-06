@@ -43,6 +43,12 @@ variable "async_artifact_prefixes" {
   default     = ["feeds"]
 }
 
+variable "agent_observability" {
+  description = "Create the sdk kernel's trace delivery and telemetry IAM statements (observability image variant only)."
+  type        = bool
+  default     = false
+}
+
 variable "name_suffix" {
   type    = string
   default = ""

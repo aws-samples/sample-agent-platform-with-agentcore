@@ -375,15 +375,35 @@ class PipelineService:
         async_spec = opts.get("async") if isinstance(opts.get("async"), dict) else None
         entry = {"phase": phase, "label": label[:120], "ok": False}
         span_start = time.time()
+        # The per-agent subsegment id is fixed up front so the kernel's own
+        # spans (ADOT in the runtime) can be parented to it — the trace tree
+        # then reads run → phase → agent call → AGENT span → TOOL spans.
+        span_id = tb.new_id() if tb is not None else None
+        trace = None
         value = None
         try:
             target = "agent-sdk"
+            agent_version = None
             if opts.get("agent"):
-                agents = {a["name"]: a["id"] for a in agent_service.list_agents()}
-                agent_id = agents.get(str(opts["agent"]))
-                if not agent_id:
+                agents = {a["name"]: a for a in agent_service.list_agents()}
+                agent_rec = agents.get(str(opts["agent"]))
+                if not agent_rec:
                     raise ValueError(f"published agent not found: {opts['agent']}")
-                target = f"agent:{agent_id}"
+                target = f"agent:{agent_rec['id']}"
+                agent_version = agent_rec.get("version")
+
+            if tb is not None:
+                # Attributes travel as span attributes + baggage on the kernel
+                # side; they are what lets Transaction Search group spans by
+                # run / phase / agent version when tuning a prompt.
+                trace = tb.propagation(span_id, {
+                    "pipeline.name": tb.name,
+                    "pipeline.run_id": sk.partition("#")[2],
+                    "pipeline.phase": phase,
+                    "agent.label": label[:120],
+                    "agent.name": opts.get("agent") or "",
+                    "agent.version": agent_version,
+                })
 
             if async_spec and async_spec.get("key"):
                 # long-running unit (feed generation): AgentCore async task;
@@ -392,7 +412,7 @@ class PipelineService:
                     user=user, source=SOURCE, target=target, prompt=prompt,
                     output_key=str(async_spec["key"]),
                     timeout_s=min(int(async_spec.get("timeout_s") or 1800), 45 * 60),
-                    ref=ref,
+                    ref=ref, trace=trace,
                 )
                 usage = res.get("usage") or {}
                 entry.update(
@@ -409,7 +429,7 @@ class PipelineService:
                 self._append_agent(sk, entry)
                 if tb is not None:
                     tb.add_span(
-                        label, span_start, time.time(), parent_id=parent_span,
+                        label, span_start, time.time(), parent_id=parent_span, span_id=span_id,
                         annotations={"phase": phase, "ok": entry["ok"], "async": True,
                                      "num_turns": entry.get("num_turns"),
                                      "cost_usd": float(entry["cost_usd"]) if entry.get("cost_usd") else None,
@@ -428,7 +448,7 @@ class PipelineService:
                 user=user, source=SOURCE, target=target, prompt=eff_prompt,
                 system=str(opts["system"]) if opts.get("system") else None,
                 max_turns=int(opts["max_turns"]) if opts.get("max_turns") else None,
-                ref=ref,
+                ref=ref, trace=trace,
             )
             usage = res.get("usage") or {}
             entry.update(
@@ -468,7 +488,7 @@ class PipelineService:
         self._append_agent(sk, entry)
         if tb is not None:
             tb.add_span(
-                label, span_start, time.time(), parent_id=parent_span,
+                label, span_start, time.time(), parent_id=parent_span, span_id=span_id,
                 annotations={
                     "phase": phase, "ok": entry["ok"],
                     "num_turns": entry.get("num_turns"),

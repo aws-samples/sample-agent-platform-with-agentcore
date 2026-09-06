@@ -63,6 +63,7 @@ module "runtime" {
   kernel_tags             = local.kernel_tags
   model_env               = local.model_env
   async_artifact_prefixes = var.async_artifact_prefixes
+  agent_observability     = var.agent_observability
   name_suffix             = var.name_suffix
   runtime_name_suffix     = local.runtime_suffix
 }

@@ -189,6 +189,41 @@ data "aws_iam_policy_document" "sdk_extras" {
     resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/remote-mcp-key*"]
   }
 
+  # AgentCore Observability export, opt-in with var.agent_observability. The
+  # observability image variant runs under ADOT (opentelemetry-instrument):
+  # spans go to the X-Ray OTLP endpoint, EMF metrics to the bedrock-agentcore
+  # namespace, OTEL logs to the runtime log group already covered by
+  # kernel_base "Logs". These are the telemetry statements of the documented
+  # AgentCore Runtime execution role; the base image emits no telemetry and the
+  # other two kernels are not instrumented, so they stay without.
+  dynamic "statement" {
+    for_each = var.agent_observability ? [1] : []
+    content {
+      sid = "TelemetryTraces"
+      actions = [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets",
+      ]
+      resources = ["*"] # X-Ray has no resource-level scoping for these
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.agent_observability ? [1] : []
+    content {
+      sid       = "TelemetryMetrics"
+      actions   = ["cloudwatch:PutMetricData"]
+      resources = ["*"]
+      condition {
+        test     = "StringEquals"
+        variable = "cloudwatch:namespace"
+        values   = ["bedrock-agentcore"]
+      }
+    }
+  }
+
   # AgentCore Memory (data plane): memory-bound invocations run on the
   # headless kernel only.
   statement {

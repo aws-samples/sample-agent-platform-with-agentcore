@@ -129,6 +129,27 @@ def _resolve_target(
             "model_spec": model_spec}
 
 
+def _with_model(trace: dict | None, model_label: str) -> dict | None:
+    """Stamp the routed model on the trace attributes. The kernel's
+    instrumentor reports ``llm.model_name`` from the SDK's per-model usage
+    map and, on a run that also touches the small/fast model, names that one
+    (2026-09-03 smoke: a Sonnet-routed call was tagged haiku). The backend's
+    routing decision is the authoritative label, so it rides along."""
+    if not trace or not model_label:
+        return trace
+    attrs = dict(trace.get("attributes") or {})
+    attrs["agent.model"] = model_label
+    out = dict(trace)
+    out["attributes"] = attrs
+    if trace.get("baggage") is not None:
+        from urllib.parse import quote
+
+        out["baggage"] = ",".join(
+            filter(None, [trace.get("baggage", ""), f"agent.model={quote(model_label, safe='')}"])
+        )[:4096]
+    return out
+
+
 def invoke(
     *,
     user: str,
@@ -145,11 +166,13 @@ def invoke(
     memory_last_k_turns: int | None = None,
     ref: str = "",
     model_spec: dict | None = None,
+    trace: dict | None = None,
 ) -> dict:
     """Run one governed, recorded invocation. Raises ``QuotaExceeded`` /
     ``SourceDisabled`` (governance) and ``KeyError`` (unknown agent target).
     ``model_spec`` overrides the target's own model routing (used by the
-    model-config connectivity test)."""
+    model-config connectivity test). ``trace`` is the caller's trace context
+    for the kernel (see kernel_service.invoke_sdk_kernel)."""
 
     # -------- resolve the target into kernel payload pieces --------
     cfg = _resolve_target(target, system, max_turns, memory_id, mcp_server_ids, skill_ids)
@@ -157,6 +180,7 @@ def invoke(
     mcp_servers, skills = forward_identity(cfg["mcp_servers"]), cfg["skills"]
     model_spec = model_spec if model_spec is not None else cfg["model_spec"]
     model_label = f"{model_spec['backend']}:{model_spec.get('model', '')}" if model_spec else ""
+    trace = _with_model(trace, model_label)
 
     # -------- governance: policy + quota (counts the call) --------
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
@@ -183,6 +207,7 @@ def invoke(
             memory=memory,
             model=model_spec,
             user=user,
+            trace=trace,
         )
     except Exception as e:
         observability_service.record(
@@ -228,6 +253,7 @@ def invoke_async_and_wait(
     system: str | None = None,
     max_turns: int | None = None,
     ref: str = "",
+    trace: dict | None = None,
 ) -> dict:
     """One governed *async* invocation, blocking until the kernel finishes.
 
@@ -243,6 +269,8 @@ def invoke_async_and_wait(
     """
     cfg = _resolve_target(target, system, max_turns, "", None, None)
     cfg["mcp_servers"] = forward_identity(cfg["mcp_servers"])
+    spec = cfg["model_spec"]
+    trace = _with_model(trace, f"{spec['backend']}:{spec.get('model', '')}" if spec else "")
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
 
     s3 = boto3.client("s3", region_name=settings.aws_region)
@@ -268,6 +296,7 @@ def invoke_async_and_wait(
             model=cfg["model_spec"],
             async_output={"bucket": settings.workspace_bucket, "key": output_key},
             user=user,
+            trace=trace,
         )
         out["runtime_session_id"] = accept.get("runtime_session_id", "")
         if not (accept.get("ok") and accept.get("raw", {}).get("accepted")):

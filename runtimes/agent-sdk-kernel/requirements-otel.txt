@@ -1,0 +1,10 @@
+# Observability variant only (Dockerfile.otel). The base image does not
+# install these; main.py degrades to a no-op when the OTel API is absent.
+#
+# ADOT reads the exporter configuration AgentCore Runtime injects and
+# auto-activates the OpenInference Claude Agent SDK instrumentor, so every
+# query() becomes an AGENT span (prompt, result, model, token counts) with a
+# TOOL child span per tool call. >=0.1.3 is the earliest instrumentor version
+# AgentCore Evaluations was tested against.
+aws-opentelemetry-distro>=0.19.0
+openinference-instrumentation-claude-agent-sdk>=0.1.3

@@ -1,0 +1,24 @@
+# Observability variant of the headless kernel: the base agent-sdk-kernel
+# image plus ADOT and the OpenInference Claude Agent SDK instrumentor, started
+# under `opentelemetry-instrument` so every invocation reaches CloudWatch /
+# AgentCore Observability as AGENT + TOOL spans (see docs/observability.md).
+#
+# Opt-in. Build the base image first, then layer this on top of it:
+#   docker buildx build --platform linux/arm64 -f Dockerfile.otel \
+#     --build-arg BASE_IMAGE=<registry>/agent-platform/agent-sdk-kernel:<tag> \
+#     -t <registry>/agent-platform/agent-sdk-kernel:<tag>-otel --push .
+# (`scripts/build-and-push.sh` does this when OTEL_VARIANT=1.) Point the
+# runtime at the variant with `sdk_image_tag = "<tag>-otel"` and switch on
+# `agent_observability` so Terraform also creates the trace delivery and the
+# telemetry IAM statements.
+ARG BASE_IMAGE=agent-sdk-kernel:latest
+# nosemgrep: dockerfile-source-not-pinned
+FROM ${BASE_IMAGE}
+# checkov:skip=CKV_DOCKER_2: AgentCore Runtime health-checks via the /ping HTTP contract, not Docker HEALTHCHECK.
+# checkov:skip=CKV_DOCKER_3: Same execution model as the base image (root inside a per-session AgentCore microVM).
+
+COPY requirements-otel.txt /opt/requirements-otel.txt
+RUN pip install --no-cache-dir -r /opt/requirements-otel.txt
+
+WORKDIR /app
+CMD ["opentelemetry-instrument", "python", "main.py"]
