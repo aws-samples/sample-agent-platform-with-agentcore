@@ -24,8 +24,12 @@
 //      sends about routing is trusted: upstream base URL, the gateway secret
 //      name and the permitted model list all come from the token item the
 //      backend wrote.
-//   3. Inject the real gateway key and stream the response straight through.
-//   4. Emit a structured usage line for cost attribution.
+//   3. Allow only inference routes (routes.js). The key is injected into
+//      whatever is forwarded, so a gateway's management API — key minting,
+//      spend logs, model catalog — must never be reachable through here,
+//      whatever the stored key happens to be entitled to.
+//   4. Inject the real gateway key and stream the response straight through.
+//   5. Emit a structured usage line for cost attribution.
 //
 // Implementation note: raw node:http on purpose. Express/Fastify response
 // pipelines buffer, and compression middleware buffers by definition — either
@@ -40,6 +44,7 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
+import { authorizeRoute, forwardableHeader } from "./routes.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
@@ -143,23 +148,11 @@ function deny(res, status, message) {
   res.end(body);
 }
 
-// Hop-by-hop headers must not be forwarded, and the caller's own auth header
-// is replaced rather than passed along.
-const DROP_REQUEST_HEADERS = new Set([
-  "authorization",
-  "x-api-key",
-  "host",
-  "connection",
-  "keep-alive",
-  "transfer-encoding",
-  "upgrade",
-  "proxy-authorization",
-  "content-length",
-  "x-platform-session-id",
-  // gzip on a streamed response forces the compressor to buffer; ask upstream
-  // for identity so every SSE frame reaches the client as it is produced.
-  "accept-encoding",
-]);
+// Request headers are forwarded from an allowlist (routes.js), so hop-by-hop
+// headers, the caller's own credentials and anything gateway-specific never
+// travel under the platform key. accept-encoding is pinned to identity below:
+// gzip on a streamed response forces the compressor to buffer, and every SSE
+// frame should reach the client as it is produced.
 const DROP_RESPONSE_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -168,7 +161,7 @@ const DROP_RESPONSE_HEADERS = new Set([
   "content-length",
 ]);
 
-async function handleProxy(req, res, sessionItem, body) {
+async function handleProxy(req, res, sessionItem, body, route) {
   const baseUrl = String(sessionItem.upstream_base_url || "").replace(/\/+$/, "");
   const secretName = String(sessionItem.gateway_secret_name || "");
   if (!baseUrl || !secretName) {
@@ -179,9 +172,16 @@ async function handleProxy(req, res, sessionItem, body) {
   // platform model control plane and written onto the token item, so a caller
   // cannot widen it by editing the request.
   //
-  // Bodyless requests (a GET for model discovery, say) carry no model to
-  // authorize and are forwarded as-is. A request that *has* a body must name a
-  // permitted model: that is where inference is actually requested.
+  // The route table says whether a body is expected: inference routes require
+  // one (that is where the model is named), discovery forbids one. So a
+  // request that reaches the model check below with no body is exactly a
+  // bodyless GET /v1/models, never a decoy for something else.
+  if (route.body === "required" && body.length === 0) {
+    return deny(res, 400, "request body is required");
+  }
+  if (route.body === "forbidden" && body.length > 0) {
+    return deny(res, 400, "request must not have a body");
+  }
   const allowed = Array.isArray(sessionItem.allowed_models) ? sessionItem.allowed_models : [];
   let requested = "";
   if (body.length > 0) {
@@ -212,10 +212,12 @@ async function handleProxy(req, res, sessionItem, body) {
     return deny(res, 503, "gateway credential unavailable");
   }
 
-  const target = new URL(baseUrl + req.url);
+  // The path is the allow-listed one, in canonical form (routes.js), so the
+  // base URL's own path prefix cannot be escaped through it.
+  const target = new URL(baseUrl + route.pathname + route.search);
   const headers = {};
   for (const [k, v] of Object.entries(req.headers)) {
-    if (!DROP_REQUEST_HEADERS.has(k.toLowerCase())) headers[k] = v;
+    if (forwardableHeader(k)) headers[k] = v;
   }
   headers["authorization"] = `Bearer ${key}`;
   headers["accept-encoding"] = "identity";
@@ -321,6 +323,21 @@ const server = http.createServer(async (req, res) => {
     return deny(res, 401, "invalid or expired session credential");
   }
 
+  // Route authorization happens before the body is read: a request for a
+  // route this edge does not serve is refused without buffering anything.
+  const route = authorizeRoute(req.method, req.url);
+  if (!route.ok) {
+    log({
+      level: "warn",
+      msg: "route not permitted",
+      session: sessionItem.runtime_session_id,
+      user: sessionItem.user,
+      method: req.method,
+      url: String(req.url).slice(0, 200),
+    });
+    return deny(res, route.status, route.message);
+  }
+
   let body;
   try {
     body = await readBody(req);
@@ -329,7 +346,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    await handleProxy(req, res, sessionItem, body);
+    await handleProxy(req, res, sessionItem, body, route);
   } catch (e) {
     log({ level: "error", msg: "proxy failed", error: e.message });
     if (!res.headersSent) deny(res, 500, "internal error");

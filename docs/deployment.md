@@ -69,7 +69,10 @@ gateway requires a grant the backend mints for one session, because a kernel
 container's user is root inside it and must not hold the gateway key. That grant
 is served by the `llm-edge` service, so gateway mode needs it deployed.
 
-1. Store the gateway API key. Only the `llm-edge` workload role can read it:
+1. Store the gateway API key. Only the `llm-edge` workload role can read it.
+   Use a key scoped to the models you intend to serve (a LiteLLM *virtual
+   key*, not the master key): `llm-edge` only forwards the Anthropic
+   inference routes, but least privilege on the key itself costs nothing.
 
    ```bash
    aws secretsmanager put-secret-value \
