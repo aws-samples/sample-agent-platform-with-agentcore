@@ -234,6 +234,35 @@ export interface PipelineRun {
   error: string
 }
 
+/** Per-phase aggregate of a run's agent calls (backend `view=summary`). */
+export interface PhaseStat {
+  phase: string
+  calls: number
+  failed: number
+  cost_usd: number
+  duration_ms_sum: number
+  duration_ms_p50: number | null
+  duration_ms_p95: number | null
+  duration_ms_max: number | null
+}
+
+/** Slim run for cross-run charts: no logs, no per-agent rows, result reduced
+ *  to the contract keys (counts / health / summary / trend_keys / funnel). */
+export interface PipelineRunSummary {
+  id: string
+  pipeline: string
+  status: string
+  source: string
+  parent_run?: string
+  started_at: string
+  finished_at: string
+  trace_id: string
+  error: string
+  agents_total: number
+  phases: PhaseStat[]
+  result: Record<string, unknown> | null
+}
+
 export interface MemoryStore {
   id: string
   arn: string
@@ -514,6 +543,12 @@ export const api = {
     }),
   listPipelineRuns: (pipeline?: string) =>
     request<PipelineRun[]>(`/api/v1/pipeline-runs${pipeline ? `?pipeline=${encodeURIComponent(pipeline)}` : ''}`),
+  // deeper, slimmer history for the Insights page. An older backend ignores the
+  // extra params and returns full runs (capped at 20) — the page normalises both.
+  listPipelineRunHistory: (pipeline: string, limit = 30) =>
+    request<(PipelineRun | PipelineRunSummary)[]>(
+      `/api/v1/pipeline-runs?pipeline=${encodeURIComponent(pipeline)}&limit=${limit}&view=summary`,
+    ),
   getPipelineRun: (id: string) => request<PipelineRun>(`/api/v1/pipeline-runs/${id}`),
 
   // Memory

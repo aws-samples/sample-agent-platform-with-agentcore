@@ -5,7 +5,7 @@ executed by the platform engine; a run fans out over governed agent
 invocations and updates progressively, so the portal can poll while it runs.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.dependencies import get_current_user, require_admin
@@ -70,8 +70,15 @@ async def start_run(name: str, req: PipelineRunRequest, user: str = Depends(get_
 
 
 @router.get("/pipeline-runs")
-def list_runs(pipeline: str | None = None, user: str = Depends(get_current_user)):
-    return pipeline_service.list_runs(pipeline=pipeline)
+def list_runs(
+    pipeline: str | None = None,
+    limit: int = Query(20, ge=1, le=200),
+    view: str = Query("full", pattern="^(full|summary)$"),
+    user: str = Depends(get_current_user),
+):
+    """``view=summary`` is the slim cross-run shape (per-phase aggregates,
+    contract-only result) used by the Insights page; ``full`` is unchanged."""
+    return pipeline_service.list_runs(pipeline=pipeline, limit=limit, view=view)
 
 
 @router.get("/pipeline-runs/{run_id}")

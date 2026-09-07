@@ -16,6 +16,7 @@ import json
 import logging
 import secrets
 import time
+from urllib.parse import quote
 
 import boto3
 
@@ -46,6 +47,27 @@ class TraceBuilder:
     @staticmethod
     def new_id() -> str:
         return secrets.token_hex(8)
+
+    def propagation(self, span_id: str, attributes: dict | None = None) -> dict:
+        """Trace context to hand to a downstream call so its own spans join
+        this trace under ``span_id``.
+
+        Returns the X-Ray header (``Root=…;Parent=…;Sampled=1``), the W3C
+        ``traceparent`` (same ids, 32-hex form: X-Ray's ``1-<time>-<rand>``
+        is ``<time><rand>``), and a W3C ``baggage`` string of the attributes
+        (percent-encoded). The kernel behind AgentCore Runtime runs ADOT,
+        which honours all three, so an agent invocation's AGENT/TOOL spans
+        appear beneath the pipeline's per-agent subsegment.
+        """
+        _, t_time, t_rand = self.trace_id.split("-")
+        attrs = {str(k): str(v) for k, v in (attributes or {}).items() if v not in (None, "")}
+        baggage = ",".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in attrs.items())
+        return {
+            "xray": f"Root={self.trace_id};Parent={span_id};Sampled=1",
+            "traceparent": f"00-{t_time}{t_rand}-{span_id}-01",
+            "baggage": baggage[:4096],
+            "attributes": attrs,
+        }
 
     def add_span(
         self,

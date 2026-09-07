@@ -16,6 +16,7 @@ import {
   LogOut,
   Webhook,
   Workflow,
+  BarChart3,
 } from 'lucide-react'
 import { getUser, signOut } from '@/services/auth'
 import { api, type Identity } from '@/services/api'
@@ -34,7 +35,8 @@ const NAV = [
   { to: '/observability', label: 'Observability', icon: Activity, admin: true },
   { to: '/memory', label: 'Memory', icon: Database, admin: true },
   { to: '/eval', label: 'Evaluation', icon: FlaskConical, admin: true },
-  { to: '/pipeline', label: 'Workflow', icon: Workflow, badge: 'Exp', admin: true },
+  { to: '/pipeline', label: 'Workflow', icon: Workflow, badge: 'Exp', admin: true, end: true },
+  { to: '/pipeline/insights', label: 'Insights', icon: BarChart3, admin: true },
   { to: '/governance', label: 'Governance', icon: Shield, admin: true },
 ] as Array<{
   to: string

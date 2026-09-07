@@ -18,6 +18,7 @@ CloudWatch (Transaction Search), regardless of which pipeline is running.
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -196,17 +197,99 @@ class PipelineService:
             "error": item.get("error", ""),
         }
 
-    def list_runs(self, pipeline: str | None = None, limit: int = 20) -> list[dict]:
-        resp = self.table.query(
-            KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": PK_RUN},
-            ScanIndexForward=False,
-            Limit=100 if pipeline else min(limit, 50),
-        )
-        runs = [self._run_public(i) for i in resp.get("Items", [])]
-        if pipeline:
-            runs = [r for r in runs if r["pipeline"] == pipeline][:limit]
-        return runs
+    def list_runs(self, pipeline: str | None = None, limit: int = 20, view: str = "full") -> list[dict]:
+        """Newest first. ``view="summary"`` returns the slim per-run shape
+        (:meth:`_run_summary`) the Insights page charts from — no logs, no
+        per-agent rows, result reduced to the contract keys.
+
+        With a pipeline filter the query is paginated: a single 100-item page
+        post-filtered in Python (the previous behaviour) returned only a
+        handful of runs for a workflow that runs every few days among daily
+        ones, which capped every cross-run chart at that depth.
+        """
+        limit = max(1, min(int(limit or 20), 200))
+        public = self._run_summary if view == "summary" else self._run_public
+        if not pipeline:
+            resp = self.table.query(
+                KeyConditionExpression="PK = :pk",
+                ExpressionAttributeValues={":pk": PK_RUN},
+                ScanIndexForward=False,
+                Limit=min(limit, 50),
+            )
+            return [public(i) for i in resp.get("Items", [])]
+        items: list[dict] = []
+        kwargs: dict = {}
+        scanned = 0
+        while len(items) < limit and scanned < 2000:
+            resp = self.table.query(
+                KeyConditionExpression="PK = :pk",
+                FilterExpression="#pl = :p",
+                ExpressionAttributeNames={"#pl": "pipeline"},
+                ExpressionAttributeValues={":pk": PK_RUN, ":p": pipeline},
+                ScanIndexForward=False,
+                Limit=100,
+                **kwargs,
+            )
+            items.extend(resp.get("Items", []))
+            scanned += int(resp.get("ScannedCount") or 100)
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs = {"ExclusiveStartKey": lek}
+        return [public(i) for i in items[:limit]]
+
+    # result keys a script may publish for the portal's cross-run views; the
+    # rest of the result (artifact text, per-feed detail, …) stays on the full
+    # run and out of the summary payload
+    SUMMARY_RESULT_KEYS = ("date", "counts", "health", "summary", "trend_keys", "funnel")
+
+    def _run_summary(self, item: dict) -> dict:
+        agents = item.get("agents", []) or []
+        order: list[str] = []
+        by: dict[str, list[dict]] = {}
+        for a in agents:
+            p = a.get("phase") or "(no phase)"
+            if p not in by:
+                by[p] = []
+                order.append(p)
+            by[p].append(a)
+
+        def pct(sorted_vals: list[float], p: int) -> float | None:
+            if not sorted_vals:
+                return None
+            idx = min(len(sorted_vals) - 1, max(0, math.ceil(p / 100 * len(sorted_vals)) - 1))
+            return sorted_vals[idx]
+
+        phases = []
+        for p in order:
+            lst = by[p]
+            durs = sorted(float(a["duration_ms"]) for a in lst if a.get("duration_ms"))
+            phases.append({
+                "phase": p,
+                "calls": len(lst),
+                "failed": sum(1 for a in lst if not a.get("ok")),
+                "cost_usd": float(sum(Decimal(str(a.get("cost_usd") or 0)) for a in lst)),
+                "duration_ms_sum": sum(durs),
+                "duration_ms_p50": pct(durs, 50),
+                "duration_ms_p95": pct(durs, 95),
+                "duration_ms_max": durs[-1] if durs else None,
+            })
+        result = item.get("result")
+        slim = {k: result[k] for k in self.SUMMARY_RESULT_KEYS if k in result} if isinstance(result, dict) else None
+        return _plain({
+            "id": item.get("run_id", ""),
+            "pipeline": item.get("pipeline", ""),
+            "status": item.get("status", ""),
+            "source": item.get("source", ""),
+            "parent_run": item.get("parent_run", ""),
+            "started_at": item.get("started_at", ""),
+            "finished_at": item.get("finished_at", ""),
+            "trace_id": item.get("trace_id", ""),
+            "error": item.get("error", ""),
+            "agents_total": len(agents),
+            "phases": phases,
+            "result": slim,
+        })
 
     def get_run(self, run_id: str) -> dict | None:
         for run in self.list_runs(limit=50):
@@ -375,15 +458,35 @@ class PipelineService:
         async_spec = opts.get("async") if isinstance(opts.get("async"), dict) else None
         entry = {"phase": phase, "label": label[:120], "ok": False}
         span_start = time.time()
+        # The per-agent subsegment id is fixed up front so the kernel's own
+        # spans (ADOT in the runtime) can be parented to it — the trace tree
+        # then reads run → phase → agent call → AGENT span → TOOL spans.
+        span_id = tb.new_id() if tb is not None else None
+        trace = None
         value = None
         try:
             target = "agent-sdk"
+            agent_version = None
             if opts.get("agent"):
-                agents = {a["name"]: a["id"] for a in agent_service.list_agents()}
-                agent_id = agents.get(str(opts["agent"]))
-                if not agent_id:
+                agents = {a["name"]: a for a in agent_service.list_agents()}
+                agent_rec = agents.get(str(opts["agent"]))
+                if not agent_rec:
                     raise ValueError(f"published agent not found: {opts['agent']}")
-                target = f"agent:{agent_id}"
+                target = f"agent:{agent_rec['id']}"
+                agent_version = agent_rec.get("version")
+
+            if tb is not None:
+                # Attributes travel as span attributes + baggage on the kernel
+                # side; they are what lets Transaction Search group spans by
+                # run / phase / agent version when tuning a prompt.
+                trace = tb.propagation(span_id, {
+                    "pipeline.name": tb.name,
+                    "pipeline.run_id": sk.partition("#")[2],
+                    "pipeline.phase": phase,
+                    "agent.label": label[:120],
+                    "agent.name": opts.get("agent") or "",
+                    "agent.version": agent_version,
+                })
 
             if async_spec and async_spec.get("key"):
                 # long-running unit (feed generation): AgentCore async task;
@@ -392,7 +495,7 @@ class PipelineService:
                     user=user, source=SOURCE, target=target, prompt=prompt,
                     output_key=str(async_spec["key"]),
                     timeout_s=min(int(async_spec.get("timeout_s") or 1800), 45 * 60),
-                    ref=ref,
+                    ref=ref, trace=trace,
                 )
                 usage = res.get("usage") or {}
                 entry.update(
@@ -409,7 +512,7 @@ class PipelineService:
                 self._append_agent(sk, entry)
                 if tb is not None:
                     tb.add_span(
-                        label, span_start, time.time(), parent_id=parent_span,
+                        label, span_start, time.time(), parent_id=parent_span, span_id=span_id,
                         annotations={"phase": phase, "ok": entry["ok"], "async": True,
                                      "num_turns": entry.get("num_turns"),
                                      "cost_usd": float(entry["cost_usd"]) if entry.get("cost_usd") else None,
@@ -428,7 +531,7 @@ class PipelineService:
                 user=user, source=SOURCE, target=target, prompt=eff_prompt,
                 system=str(opts["system"]) if opts.get("system") else None,
                 max_turns=int(opts["max_turns"]) if opts.get("max_turns") else None,
-                ref=ref,
+                ref=ref, trace=trace,
             )
             usage = res.get("usage") or {}
             entry.update(
@@ -468,7 +571,7 @@ class PipelineService:
         self._append_agent(sk, entry)
         if tb is not None:
             tb.add_span(
-                label, span_start, time.time(), parent_id=parent_span,
+                label, span_start, time.time(), parent_id=parent_span, span_id=span_id,
                 annotations={
                     "phase": phase, "ok": entry["ok"],
                     "num_turns": entry.get("num_turns"),

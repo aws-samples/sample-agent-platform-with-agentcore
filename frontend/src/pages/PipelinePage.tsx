@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import {
+  BarChart3,
   CheckCircle2,
   Code2,
   ExternalLink,
@@ -13,6 +15,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
+import { HealthBadge, healthOf, summaryOf } from '@/components/pipelines/health'
 import { api, type Pipeline, type PipelineRun, type PipelineRunAgent } from '@/services/api'
 import { getPublicConfig } from '@/services/auth'
 import { fmtTs } from '@/services/format'
@@ -101,7 +104,10 @@ function RunCard({ run, region }: { run: PipelineRun; region: string }) {
     byPhase.get(p)!.push(a)
   }
   const totalCost = run.agents.reduce((s, a) => s + (Number(a.cost_usd) || 0), 0)
-  const counts = (run.result?.counts ?? null) as Record<string, number> | null
+  // the script's own one-line funnel + health verdict (see TrendPanel for the contract);
+  // the raw counts stay in the Result JSON tab
+  const summary = summaryOf(run.result)
+  const health = healthOf(run.result)
   const shortlistMd = typeof run.result?.shortlist_md === 'string' ? (run.result.shortlist_md as string) : ''
   const traceUrl = run.trace_id
     ? `https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#xray:traces/${run.trace_id}`
@@ -123,11 +129,8 @@ function RunCard({ run, region }: { run: PipelineRun; region: string }) {
           </span>
         )}
         <span className="text-xs text-slate-400">by {run.started_by} · {run.source}</span>
-        {counts && (
-          <span className="text-xs text-slate-500">
-            {Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(' · ')}
-          </span>
-        )}
+        {summary && <span className="text-xs text-slate-500">{summary}</span>}
+        <HealthBadge checks={health} />
         <span className="font-mono text-xs text-slate-400">{fmtCost(totalCost)}</span>
         <span className="ml-auto text-[11px] text-slate-400">{fmtTs(run.started_at)}</span>
       </div>
@@ -351,7 +354,10 @@ export default function PipelinePage() {
         )}
       </div>
 
-      <p className="mb-2 text-xs font-medium text-slate-500">Runs</p>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-medium text-slate-500">Runs</p>
+        <Link to="/pipeline/insights" className="btn-secondary !py-1 text-xs"><BarChart3 size={12} /> Insights</Link>
+      </div>
       <div className="space-y-3">
         {(() => {
           // group nested runs (workflow() children) under their parent so the

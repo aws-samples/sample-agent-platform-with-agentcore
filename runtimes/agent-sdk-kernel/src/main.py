@@ -40,6 +40,10 @@ Payload contract::
             "endpoint": "http://…",         // internal llm-edge listener
             "session_id": "…",              // identifies the grant to the edge
             "token": "…", "expires_at": 1234567890
+        },
+        "trace": {                  // optional: caller's trace context (observability)
+            "xray": "Root=1-…;Parent=…;Sampled=1",   // copy of the X-Amzn-Trace-Id header
+            "attributes": {"pipeline.run_id": "…", "agent.label": "…"}  // span attrs + baggage
         }
     }
 
@@ -81,6 +85,71 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("agent-sdk-kernel")
 
 app = BedrockAgentCoreApp()
+
+# ---------------------------------------------------------------- telemetry
+# The observability image variant (Dockerfile.otel) runs this file under
+# ``opentelemetry-instrument`` (ADOT). ADOT configures the exporter from the
+# environment AgentCore Runtime injects and activates
+# ``openinference-instrumentation-claude-agent-sdk``, so each query() below
+# becomes an AGENT span (prompt, result, model, token counts) with one TOOL
+# child span per tool call — nothing in this file creates those. The base
+# image ships without the OTel packages and everything below is a no-op there.
+#
+# What the SDK cannot know is *why* it was invoked: which pipeline run, phase
+# and published-agent version this call belongs to. The backend sends that in
+# ``payload.trace`` (plus the same trace id in the X-Amzn-Trace-Id header), and
+# ``otel_context`` turns it into a parent span + baggage so the SDK spans can
+# be grouped and filtered by those keys in Transaction Search. Everything here
+# degrades to a no-op when the OTel API is not installed (the base image, or
+# local runs without the distro), and never fails an invocation.
+try:
+    from opentelemetry import baggage as _otel_baggage
+    from opentelemetry import context as _otel_context
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry.trace import Status, StatusCode
+
+    try:
+        # Header carrier fallback (ADOT ships this propagator). The HTTP layer
+        # normally extracts X-Amzn-Trace-Id already; this covers the case
+        # where the server span is absent so the caller's trace id still wins.
+        from opentelemetry.propagators.aws import AwsXRayPropagator
+
+        _xray_propagator = AwsXRayPropagator()
+    except Exception:  # noqa: BLE001
+        _xray_propagator = None
+    _tracer = _otel_trace.get_tracer("agent-sdk-kernel")
+except Exception:  # noqa: BLE001
+    _tracer = None
+
+
+def otel_context(trace_meta: dict | None, session_id: str) -> dict | None:
+    """Build ``{ctx, attributes}`` for run_agent from the caller's trace block.
+
+    ``ctx`` is the OTel context the run should execute under: the current
+    (server) span's context, or one extracted from the X-Ray header copy when
+    no server span exists, with every attribute also set as baggage.
+    """
+    if _tracer is None:
+        return None
+    meta = trace_meta or {}
+    attrs = {
+        str(k)[:64]: str(v)[:256]
+        for k, v in (meta.get("attributes") or {}).items()
+        if isinstance(k, str) and v not in (None, "")
+    }
+    if session_id:
+        attrs.setdefault("session.id", session_id)
+    ctx = _otel_context.get_current()
+    if (
+        not _otel_trace.get_current_span(ctx).get_span_context().is_valid
+        and _xray_propagator is not None
+        and meta.get("xray")
+    ):
+        ctx = _xray_propagator.extract({"X-Amzn-Trace-Id": str(meta["xray"])}, context=ctx)
+    for k, v in attrs.items():
+        ctx = _otel_baggage.set_baggage(k, v, context=ctx)
+    return {"ctx": ctx, "attributes": attrs}
+
 
 DEFAULT_MAX_TURNS = int(os.environ.get("KERNEL_MAX_TURNS", "10"))
 DEFAULT_SYSTEM_PROMPT = os.environ.get(
@@ -502,16 +571,7 @@ def mount_skills(skills: list[dict]) -> bool:
     return mounted
 
 
-async def run_agent(prompt: str, options: "ClaudeAgentOptions") -> tuple[str, dict, bool]:
-    """One full agent run → (answer, usage, is_error). Shared by the
-    synchronous entrypoint and background async tasks.
-
-    The answer is ResultMessage.result — the agent's *final* reply. Joining
-    every AssistantMessage text block would also capture the running
-    commentary the model emits between tool calls ("let me search…"), which
-    pollutes artifact-shaped outputs (feed markdown); it stays only as a
-    fallback for SDK versions/paths that leave result empty.
-    """
+async def _run_agent(prompt: str, options: "ClaudeAgentOptions") -> tuple[str, dict, bool]:
     text_parts: list[str] = []
     final = ""
     usage: dict = {}
@@ -533,17 +593,53 @@ async def run_agent(prompt: str, options: "ClaudeAgentOptions") -> tuple[str, di
     return final or "\n".join(text_parts).strip(), usage, is_error
 
 
+async def run_agent(prompt: str, options: "ClaudeAgentOptions",
+                    otel: dict | None = None) -> tuple[str, dict, bool]:
+    """One full agent run → (answer, usage, is_error). Shared by the
+    synchronous entrypoint and background async tasks.
+
+    The answer is ResultMessage.result — the agent's *final* reply. Joining
+    every AssistantMessage text block would also capture the running
+    commentary the model emits between tool calls ("let me search…"), which
+    pollutes artifact-shaped outputs (feed markdown); it stays only as a
+    fallback for SDK versions/paths that leave result empty.
+
+    ``otel`` (from :func:`otel_context`) makes the run execute under the
+    caller's trace context inside a ``agent-sdk-kernel.run`` span carrying the
+    caller's attributes; the instrumentor's AGENT/TOOL spans nest under it.
+    The context is attached explicitly rather than inherited so the async
+    path — where the handler has already returned — gets the same parent.
+    """
+    if not otel or _tracer is None:
+        return await _run_agent(prompt, options)
+    token = _otel_context.attach(otel["ctx"])
+    try:
+        with _tracer.start_as_current_span(
+            "agent-sdk-kernel.run", attributes=otel["attributes"]
+        ) as span:
+            answer, usage, is_error = await _run_agent(prompt, options)
+            for k in ("duration_ms", "num_turns", "total_cost_usd"):
+                if usage.get(k) is not None:
+                    span.set_attribute(f"agent.{k}", usage[k])
+            if is_error:
+                span.set_status(Status(StatusCode.ERROR, "agent run reported is_error"))
+            return answer, usage, is_error
+    finally:
+        _otel_context.detach(token)
+
+
 # Strong references so background async tasks aren't garbage-collected
 _ASYNC_TASKS: set = set()
 
 
 async def run_async_task(prompt: str, options: "ClaudeAgentOptions",
-                         bucket: str, key: str, task_id: int) -> None:
+                         bucket: str, key: str, task_id: int,
+                         otel: dict | None = None) -> None:
     """Background body of an async invocation: run the agent, persist the
     answer + a status sidecar to S3, then release the AgentCore task."""
     status: dict = {"ok": False, "usage": {}, "error": ""}
     try:
-        answer, usage, is_error = await run_agent(prompt, options)
+        answer, usage, is_error = await run_agent(prompt, options, otel)
         status["usage"] = usage
         if is_error or not answer:
             status["error"] = "agent run failed" if is_error else "agent produced no output"
@@ -640,13 +736,19 @@ async def invoke(payload: dict, context) -> dict:
 
     logger.info("invoke session=%s prompt=%.80r", session_id or "?", prompt)
 
+    try:
+        otel = otel_context((payload or {}).get("trace"), session_id)
+    except Exception:  # noqa: BLE001 — telemetry must never fail a run
+        logger.exception("trace context setup failed; continuing untraced")
+        otel = None
+
     # ---- async mode: register an AgentCore task and return immediately ----
     async_spec = (payload or {}).get("async") or {}
     if async_spec.get("bucket") and async_spec.get("key"):
         bucket, key = str(async_spec["bucket"]), str(async_spec["key"]).lstrip("/")
         task_id = app.add_async_task("agent-run", {"key": key})
         task = asyncio.get_running_loop().create_task(
-            run_async_task(prompt, options, bucket, key, task_id)
+            run_async_task(prompt, options, bucket, key, task_id, otel)
         )
         _ASYNC_TASKS.add(task)
         task.add_done_callback(_ASYNC_TASKS.discard)
@@ -659,7 +761,7 @@ async def invoke(payload: dict, context) -> dict:
                 "task_id": task_id, "output_key": key}
 
     try:
-        answer, usage, is_error = await run_agent(prompt, options)
+        answer, usage, is_error = await run_agent(prompt, options, otel)
     finally:
         llm_shim.release(grant_token)
     if memory and not is_error:

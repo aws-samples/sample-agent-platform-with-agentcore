@@ -360,8 +360,14 @@ free.
     AgentCore's side.
 - **Observability** (`observability_service.py`) — an invocation ledger in
   DynamoDB (source, target, latency, turns, cost, error) with aggregate
-  stats. This is the platform-side view; span-level traces still flow to
-  CloudWatch GenAI Observability from the runtimes.
+  stats. This is the platform-side view. Span-level telemetry is opt-in and
+  comes from the headless kernel's observability image variant
+  (`Dockerfile.otel`): it runs under ADOT with the OpenInference Claude Agent
+  SDK instrumentor, so every invocation yields an `AGENT` span (model, token
+  counts, cost) plus a `TOOL` span per tool call in CloudWatch GenAI
+  Observability, joined to the caller's trace. The base image emits no spans;
+  `agent_observability` in Terraform switches the delivery and IAM on with it
+  — see [docs/observability.md](observability.md).
 - **Evaluation** (`eval_service.py`) — datasets (prompt + expected criteria)
   run case-by-case against any target, then judged by the same headless
   kernel under a strict-JSON judge prompt. Runs execute in the background and
@@ -405,6 +411,25 @@ the Claude Code Workflow tool) and registered as a named platform *pipeline*.
 - **Tracing** — each run emits a root → phase → agent span trace to X-Ray
   (`PutTraceSegments`); with Transaction Search enabled it renders in the
   CloudWatch Traces console. The Workflow portal page shows the same tree live.
+  Every `agent()` call also propagates its subsegment id to the runtime
+  (`traceId` / `traceParent` / `baggage` on `InvokeAgentRuntime`), so the
+  kernel's own `AGENT` / `TOOL` spans hang beneath the agent subsegment and one
+  trace covers the run down to individual tool calls
+- **Insights page** (`/pipeline/insights`) — cross-run view of one workflow:
+  KPI tiles for the selected run against the window median, a checks × runs
+  **health matrix**, the intake → output **funnel** and its stages over time,
+  **composition** splits (any nested `{name: number}` object under
+  `result.counts`), cost / agent-time / calls **by phase** with a per-phase
+  latency table, a **metric explorer** over any numeric counts key, and the run
+  table with trace links. Data comes from `GET /pipeline-runs?pipeline=…&limit=…&view=summary`,
+  a slim, paginated shape (per-phase aggregates, no logs, result reduced to the
+  contract keys). A script opts in with four optional result fields: `summary`
+  (one-line funnel on the run row), `trend_keys` (default charts), `funnel`
+  (ordered counts keys) and `health` (`[{check, ok, level: 'error'|'warn', detail}]`).
+  The platform stays workload-agnostic: thresholds and the reading of each
+  check belong to the script, not the portal
+  (`frontend/src/components/pipelines/health.tsx`, `frontend/src/components/pipelines/insights/`).
+  ([docs/observability.md](observability.md)).
 
 ### 5. Frontend portal (`frontend/`)
 
@@ -425,6 +450,7 @@ React + Vite + Tailwind. Information architecture:
 | Evaluation | ✅ live | datasets, LLM-judged runs with per-case verdicts |
 | Governance | ✅ live | usage policy editor, today's usage, audit log |
 | Workflow | 🧪 experimental | register Workflow-dialect pipeline scripts; phase→agent run tree (Phase 5) |
+| Insights | 🧪 experimental | cross-run charts for a workflow: health matrix, funnel, composition, cost by phase, metric explorer |
 
 ### 6. Infrastructure (`infrastructure/`, CDK Python)
 
