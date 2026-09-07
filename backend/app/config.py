@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     portal_api_url: str = ""
     portal_admin_secret: str = "agent-platform/portal-admin"
 
+    # Unprivileged account the pipeline workflow script host (Node) is
+    # switched to when the backend runs as root (see workflow_engine). The
+    # Dockerfile creates it; empty = keep the backend's own identity.
+    workflow_runner_user: str = "workflow"
+
     # CORS origins for the portal frontend
     cors_origins: str = "http://localhost:5173"
 

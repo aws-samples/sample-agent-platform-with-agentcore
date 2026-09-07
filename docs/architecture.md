@@ -393,7 +393,13 @@ the Claude Code Workflow tool) and registered as a named platform *pipeline*.
   governed invocation pipeline (quota → invoke → ledger), and
   `s3read/s3write/s3list` are confined to the workspace bucket by the backend.
   This keeps a workflow's trust model equivalent to a CI pipeline definition:
-  it is code, but its only I/O is the metered bridge.
+  it is code, but its only I/O is the metered bridge. The subprocess is also
+  kept away from the backend's own identity: it gets an allow-listed
+  environment (no `AWS_*` / `PLATFORM_*`), runs under Node's permission model
+  with read access to the runner and the script only (no `child_process`,
+  workers or addons, so the pod's IRSA token file is unreachable) and, when
+  the backend runs as root, as the unprivileged `workflow` account. The
+  engine refuses to run scripts on a Node without the permission model.
 - **Feed layer** — retrieval is the AgentCore-managed **Web Search** connector
   behind a gateway of the platform's own (registry kind `agentcore-gateway`,
   SigV4 with the kernel's role), and page bodies are read with the **Browser**
