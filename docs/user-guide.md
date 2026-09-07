@@ -128,7 +128,9 @@ agent card:
   budget, tool attachments and memory binding in a form and hit *Publish
   v(N+1)*. Handy for quick tweaks without going back to a workspace.
 - **Republish from the workspace** — edit the manifest and publish again;
-  same name = version bump.
+  same name = version bump. A name belongs to whoever published it first:
+  only that user (or an administrator) can publish a new version under it,
+  and administrator republishes leave the ownership unchanged.
 
 Publishing is config-only, so a new version is live immediately for every
 consumer and there is nothing to roll out.

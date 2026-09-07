@@ -297,7 +297,8 @@ free.
   attachments by name, memory binding, turn budget) served by the shared
   headless kernel. The self-service path reads `agent.yaml` from a Dev
   Workbench session's S3 workspace; republishing the same name bumps the
-  version and keeps history. Config-only publishing means instant rollout and
+  version and keeps history (only the publisher or an administrator may do
+  so — the id, and everything bound to it, survives a republish). Config-only publishing means instant rollout and
   no per-agent runtime; image-based custom kernels remain the CDK path.
 - **Scheduler** (`schedule_service.py`) — schedules in DynamoDB, fired by
   **Amazon EventBridge Scheduler**: the backend mirrors every schedule into a

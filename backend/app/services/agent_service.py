@@ -78,6 +78,7 @@ class AgentService:
             "created_by": item.get("created_by", ""),
             "created_at": item.get("created_at", ""),
             "updated_at": item.get("updated_at", ""),
+            "updated_by": item.get("updated_by", item.get("created_by", "")),
             "history": item.get("history", []),
         }
 
@@ -164,14 +165,28 @@ class AgentService:
         existing = next((a for a in self.list_agents() if a["name"] == name), None)
         now = _now()
         if existing:
+            # Names are global, but re-publishing keeps the agent's id — and
+            # every channel, schedule, eval and API caller bound to that id.
+            # Only the publisher (or an administrator) may replace what runs
+            # behind it; anyone else republishing the same name would take
+            # the agent over. Ownership stays with the original publisher
+            # even when an administrator pushes a new version.
+            owner = existing.get("created_by", "")
+            if str(user) != owner and not getattr(user, "is_admin", False):
+                raise PermissionError(
+                    f"agent '{name}' is published by another user; choose a different name"
+                )
             agent_id = existing["id"]
             version = existing["version"] + 1
-            history = ([{"version": existing["version"], "at": existing["updated_at"], "by": existing["created_by"]}]
+            history = ([{"version": existing["version"], "at": existing["updated_at"],
+                         "by": existing.get("updated_by") or owner}]
                        + list(existing.get("history", [])))[:MAX_HISTORY]
             created_at = existing["created_at"]
+            created_by = owner or str(user)
         else:
             agent_id = uuid.uuid4().hex[:12]
             version, history, created_at = 1, [], now
+            created_by = str(user)
 
         # An mcp-hub attachment makes this agent an application in the hub's
         # eyes, so publish is where its Actor credentials come to exist —
@@ -201,9 +216,10 @@ class AgentService:
             "mcp_hub_secret_name": mcp_hub_secret_name,
             "version": version,
             "source": source,
-            "created_by": user,
+            "created_by": created_by,
             "created_at": created_at,
             "updated_at": now,
+            "updated_by": str(user),
             "history": history,
         }
         self.table.put_item(Item=item)
