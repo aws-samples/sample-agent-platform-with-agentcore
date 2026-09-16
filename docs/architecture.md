@@ -18,7 +18,8 @@ The platform hosts two kinds of agent kernels behind one control plane:
                            │                Portal (React)               │
                            │  Workbench · Publish · Debug · Scheduler    │
                            │  Channels · Memory · Observability · Eval   │
-                           │  Governance · MCP & Skills                  │
+                           │  Governance · MCP & Skills · Gateway        │
+                           │  Workflow (experimental)                    │
                            └──────┬──────────────────────────┬───────────┘
                                   │ REST                     │ WSS (SigV4 pre-signed)
                                   ▼                          │
@@ -277,7 +278,7 @@ locally. Responsibilities:
 | Sessions | `POST/GET/DELETE /api/v1/sessions` | DynamoDB single-table; a session = `{id, kernel, runtimeSessionId, status}` |
 | Terminal connect | `GET /api/v1/sessions/{id}/connect` | warmup `InvokeAgentRuntime` + return SigV4 pre-signed WSS URL |
 | Kernel catalog | `GET /api/v1/kernels` | registered runtimes (interactive + headless), status, endpoint ARNs |
-| Debug invoke | `POST /api/v1/kernels/{id}/invoke` | proxy `InvokeAgentRuntime` for the Debug console |
+| Debug invoke | `POST /api/v1/kernels/agent-sdk/invoke` | proxy `InvokeAgentRuntime` for the Debug console (the headless kernel is the only invocable one; the interactive kernel is reached over the terminal WebSocket) |
 | Workspace | `GET /api/v1/sessions/{id}/artifacts` | list/read the session's S3 workspace prefix |
 
 AgentCore enforces `runtimeSessionId` ≥ 33 chars; the backend pads/derives IDs
@@ -308,7 +309,10 @@ free.
   DynamoDB). Expressions: `rate(N minutes|hours|days)` or 5-field cron (UTC)
   — translated to EventBridge's 6-field dialect at mirror time. Local
   development (no EventBridge wiring) falls back to an in-process 30 s tick
-  loop with conditional-update claiming.
+  loop with conditional-update claiming. Schedules are **isolated per
+  creator**: the router is admin-only, but listing and every mutation are
+  filtered by `created_by`, with super-administrators as the only exception
+  (see [RBAC](#security-notes)).
 - **Channels** (`channel_service.py`) — two caller-authentication kinds:
   - `token` — webhook endpoints authenticated by a server-generated token
     (shown once, constant-time compare), for external systems that cannot
@@ -489,7 +493,9 @@ a new runtime version automatically).
 - No secrets are baked into images; keys are read from Secrets Manager at
   container/Lambda start.
 - The browser and end users hold **no AWS credentials** — all AWS access is
-  server-side under four IAM roles.
+  server-side under the platform's seven IAM roles (an eighth,
+  `agent-platform-llm-edge`, in gateway mode), enumerated in
+  [permissions.md §1](permissions.md#1-principals-at-a-glance).
 - If your LLM gateway is HTTP-only, traffic from NAT → gateway crosses the
   network unencrypted; put a TLS listener or PrivateLink in front for
   production.
@@ -511,6 +517,21 @@ a new runtime version automatically).
   published agents are listed/deletable by their publisher). Enforcement
   lives in the API layer (`require_admin` in `dependencies.py`); the nav
   filter and route guards in the frontend are UX, not the boundary.
+
+  A third tier sits above administrators. Administrators share the management
+  surface but **own their schedules individually** — the Scheduler APIs filter
+  by creator, so one operator cannot pause, edit or delete another's
+  production job. **Super-administrators** (`PLATFORM_SUPER_ADMIN_GROUP`,
+  default `platform-super-admin`, or the `PLATFORM_SUPER_ADMIN_USERS` list,
+  default `admin`) see and manage every schedule; they are administrators
+  implicitly (`is_super_admin` ⇒ `is_admin` in `dependencies.py`), and the
+  sidebar badge reads *Super administrator*. Ownership is an API-layer check
+  (`api/schedules.py`): a cross-owner mutation gets **403**, a missing
+  schedule **404**, so an operator whose job stopped firing can tell the two
+  apart. Firing is unaffected — the schedule-runner Lambda calls
+  `schedule_service.run_once` directly and attributes the invocation to the
+  schedule's `created_by`, so a schedule keeps running as its creator no
+  matter who is signed in.
 
 For the full, code-verified account of every IAM principal — exact actions,
 resource scopes, conditions, the handful of wildcard-resource statements

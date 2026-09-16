@@ -10,6 +10,8 @@ container, reachable from the browser as a web terminal.
 | `contract-server/` | Node.js server on :8080 — `GET /ping`, `POST /invocations` (warmup + session-ID capture), `WS /ws` bridge to ttyd |
 | ttyd (:7681, loopback) | Web terminal backend running `bash -l`; the login shell auto-starts `claude` |
 | `scripts/start.sh` | Model access resolution, workspace prep, S3 restore/sync, process supervision |
+| `scripts/builtin_tools_mcp.py` | Stdio MCP wrapper for the AgentCore built-in tools (Code Interpreter / Browser), installed to `/opt/platform/` — kept in sync with the copy in `agent-sdk-kernel` |
+| `scripts/mcp_hub_proxy.py`, `scripts/mcphub_hmac.py` | Stdio proxy + HMAC signer for a customer-owned MCP hub (registry kind `mcp-hub`) — see [docs/mcp-hub-integration.md](../../docs/mcp-hub-integration.md) |
 
 See [docs/architecture.md](../../docs/architecture.md) for the end-to-end
 terminal connection flow (SigV4 pre-signed WSS URLs).
@@ -22,8 +24,9 @@ terminal connection flow (SigV4 pre-signed WSS URLs).
 | `WORKSPACE_S3_PREFIX` | | Key prefix, default `workspaces` |
 | `WORKSPACE_SYNC_INTERVAL` | | Sync period in seconds, default `30` |
 | `CLAUDE_CODE_USE_BEDROCK` | | Set `1` for Bedrock direct mode (use `global.` cross-region model IDs) |
-| `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` | | Model overrides |
+| `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` | | The container's **default** models. Per-session choices win: `contract-server` renders the resolved spec (plus the `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` aliases) into a shell env file that the terminal's Claude Code sources at launch |
 | `MCP_RUNTIME_ARN` | | Optional: ARN of an MCP-protocol AgentCore Runtime to expose as tools |
+| `MCP_RUNTIME_REGION` | | Region of that runtime; defaults to `AWS_REGION` |
 | `AWS_REGION` | | Defaults to `us-east-1` |
 
 Gateway mode has no environment variables here on purpose. The session's user is

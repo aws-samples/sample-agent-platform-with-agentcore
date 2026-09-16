@@ -116,10 +116,14 @@ in Dev Workbench sessions. Without these, the aliases resolve to Anthropic API
 model names, which Bedrock rejects with a 400:
 
 ```json
-"anthropic_default_opus_model": "global.anthropic.claude-opus-5",
-"anthropic_default_sonnet_model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-"anthropic_default_haiku_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+"anthropic_default_opus_model":   "global.anthropic.claude-opus-<ver>-v1:0",
+"anthropic_default_sonnet_model": "global.anthropic.claude-sonnet-<ver>-v1:0",
+"anthropic_default_haiku_model":  "global.anthropic.claude-haiku-<ver>-v1:0"
 ```
+
+Use the exact inference-profile IDs your account has access to
+(`aws bedrock list-inference-profiles`) — a shortened or stale ID is rejected
+the same way an Anthropic API model name is.
 
 (`sonnet`/`haiku` default to `anthropic_model`/`anthropic_small_fast_model`
 when unset; `opus` has no fallback.) Users can also pick a backend + model per
@@ -304,6 +308,22 @@ else). Admins are members of the **`platform-admin`** group:
   as the demo administrator; alice, bob and carol land on the developer
   surface (passwords for all four are seeded into the
   `agent-platform/team-demo-users` secret by `scripts/seed_team_idp.py`).
+
+**Super-administrators** are a third tier, selected the same two ways as
+admins: `PLATFORM_SUPER_ADMIN_GROUP` (default `platform-super-admin`) or
+`PLATFORM_SUPER_ADMIN_USERS` (default `admin`). Administrators own their
+schedules individually — one cannot pause, edit or delete another's — and only
+a super-administrator sees and manages every schedule. Nothing else differs
+between the tiers, and no IAM permission changes.
+
+Out of the box that means **only the `admin` user** holds the tier: the portal
+module creates the `platform-admin` Cognito group but *not*
+`platform-super-admin`, and neither `PLATFORM_SUPER_ADMIN_*` variable is set in
+`terraform/modules/portal/workloads.tf` — the backend falls back to the defaults
+in `config.py`. To put real people in the tier, either create the group and add
+them (`aws cognito-idp create-group --group-name platform-super-admin …`, which
+needs no backend change since the name is the default), or add the variable to
+`backend_env` and re-apply.
 
 ## 6b. IAM service entry (server-to-server callers)
 

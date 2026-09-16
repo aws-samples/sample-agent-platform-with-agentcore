@@ -44,10 +44,15 @@ backend with per-application HMAC signatures and a forwarded user token).
 │   ├── claude-code-kernel/   # Interactive kernel: web terminal (ttyd+tmux) + Claude Code + S3 workspace persistence
 │   ├── agent-sdk-kernel/     # Headless kernel: Claude Agent SDK behind the AgentCore /invocations contract
 │   └── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
-├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry
-├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Gateway, Channels, Memory, Observability, Eval, Governance
-├── infrastructure/           # CDK (Python): VPC/NAT network, platform resources, AgentCore runtimes, portal hosting + scheduler engine
-├── scripts/                  # Image build & deployment helpers
+├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry, workflow engine
+├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Gateway, Channels, Memory, Observability, Eval, Workflow, Governance
+├── services/                 # llm-edge (sole holder of the gateway key) + the optional Keycloak IdP and team APIs
+├── terraform/                # Terraform (the maintained path): network, platform resources, AgentCore runtimes, EKS, portal hosting + scheduler engine
+├── infrastructure/           # CDK (Python): the legacy ECS Fargate variant of the same stacks, kept for reference
+├── deploy-cli/               # AWS-CLI-only deployment port for accounts that cannot run Terraform or CDK
+├── pipelines/                # Sample Workflow-dialect pipeline scripts (Phase 5)
+├── demo/                     # Standalone tryouts (invoke a kernel from your terminal, EKS Pod Identity caller)
+├── scripts/                  # Image build, deployment and end-to-end test helpers
 └── docs/                     # Architecture, deployment, permissions, user guide
 ```
 
@@ -107,6 +112,16 @@ architecture, all live:
   switches, turn caps, and an audit trail of every platform action. All
   invocation paths funnel through one governed pipeline.
 
+**Workflow engine (Phase 5, experimental)**: multi-step orchestration written
+as a **Workflow-dialect script** (`agent()` / `parallel()` / `pipeline()` /
+`phase()`) and registered as a named platform *pipeline*. The script runs in a
+short-lived Node subprocess whose only I/O is a metered bridge back to the
+engine, so `agent()` calls land in the same governed pipeline (quota → invoke →
+ledger) and S3 access stays inside the workspace bucket. Runs are traceable
+(root → phase → agent spans to X-Ray) and schedulable (`pipeline:{name}`). The
+portal page is marked *Exp*; see
+[docs/architecture.md § Workflow engine](docs/architecture.md#workflow-engine--pipeline-as-data-phase-5-experimental).
+
 See [docs/architecture.md](docs/architecture.md) for the full design, including
 how the browser ⇄ AgentCore WebSocket terminal works — and
 [docs/user-guide.md](docs/user-guide.md) for how to *use* the platform, page
@@ -159,13 +174,15 @@ through IRSA and carries its own security group. The CDK stacks in
 
 Full walkthrough: [docs/deployment.md](docs/deployment.md). Once deployed,
 hand users the [user guide](docs/user-guide.md); verify the deployment with
-`scripts/e2e_platform.py` (20 automated end-to-end checks).
+`scripts/e2e_platform.py`, which drives the Phase 4 surface (publish,
+scheduler, channels, memory, eval, governance) against the live portal and
+prints a pass/fail line per check.
 
 ## Adapting this sample
 
-This is meant to be forked. Point it at your environment with environment
-variables and CDK context (no tracked code edits), and replace the starter
-catalog by editing a single content-only module —
+This is meant to be forked. Point it at your environment with Terraform
+variables and environment variables (no tracked code edits), and replace the
+starter catalog by editing a single content-only module —
 [`backend/app/services/seed_data.py`](backend/app/services/seed_data.py) — kept
 separate from the seeding mechanism so upstream updates merge cleanly.
 [**EXTENDING.md**](EXTENDING.md) maps the codebase into "what upstream owns" vs
@@ -179,6 +196,10 @@ tools); Phase 3 wires in the AgentCore built-in tools (Code Interpreter +
 Browser) through that same registry; Phase 4 ships the platform-operations
 layer — self-service publishing, scheduler, channels, memory, observability,
 evaluation and governance (scheduling runs on EventBridge Scheduler + Lambda).
+Phases 1–4 are live. **Phase 5 — the workflow engine (pipeline-as-data)** —
+is in the tree and usable, but shipped as **experimental**: the portal page
+carries an *Exp* badge and the script dialect may still change.
+
 Remaining ideas (image-based custom kernel publishing via CodeBuild,
 CloudWatch GenAI dashboard deep links, DLQ alarming) are documented as
 extension points in [EXTENDING.md](EXTENDING.md).
@@ -225,7 +246,11 @@ identity, so the OBO exchange authorizes team-scoped backends for robots
 exactly as for humans. An agent whose tools require a verified identity
 fails closed when no token arrives. Portal APIs themselves are role-gated:
 platform admins see the whole catalog and the admin pages, developers see
-what they created. Three E2E suites cover it (20 + 15 + 12 checks).
+what they created. Five E2E suites under `scripts/` cover these paths —
+`e2e_platform.py` (platform operations), `e2e_team_auth.py` (the SSO chain
+end to end), `e2e_gateway_identity.py` (same agent, different signed-in
+user), `e2e_service_entry.py` (private SigV4 entry + robot identity) and
+`e2e_mcp_hub.py` (customer-owned MCP hub).
 
 Deploying into a permission-controlled account? [**docs/permissions.md**](docs/permissions.md)
 is the code-verified IAM reference — every role's exact actions and resource
