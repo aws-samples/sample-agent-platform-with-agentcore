@@ -113,22 +113,39 @@ class LlmCredentialsService:
 
         token = secrets.token_urlsafe(32)
         expires_at = int(time.time()) + max(60, int(ttl_s))
-        self.table.put_item(
-            Item={
-                "PK": LLM_TOKEN_PK,
-                "SK": f"RSID#{runtime_session_id}",
-                # Only the digest is stored: a reader of this table cannot
-                # replay the grant.
-                "token_sha256": _sha256(token),
-                "expires_at": expires_at,
-                "runtime_session_id": runtime_session_id,
-                "user": user,
-                "team": team,
-                "upstream_base_url": base_url,
-                "gateway_secret_name": secret_name,
-                "allowed_models": models,
-            }
-        )
+        try:
+            self.table.put_item(
+                Item={
+                    "PK": LLM_TOKEN_PK,
+                    "SK": f"RSID#{runtime_session_id}",
+                    # Only the digest is stored: a reader of this table cannot
+                    # replay the grant.
+                    "token_sha256": _sha256(token),
+                    "expires_at": expires_at,
+                    "runtime_session_id": runtime_session_id,
+                    "user": user,
+                    "team": team,
+                    "upstream_base_url": base_url,
+                    "gateway_secret_name": secret_name,
+                    "allowed_models": models,
+                },
+                # A grant belongs to the session's owner. Only mint a new one
+                # or re-mint the owner's own — never overwrite a live grant held
+                # by a different principal. Session ids are already caller-bound
+                # upstream (see session_binding), so a collision here should be
+                # unreachable; this makes overwriting another user's grant (and
+                # the targeted DoS it enables) impossible even if that breaks.
+                ConditionExpression="attribute_not_exists(PK) OR #u = :user",
+                ExpressionAttributeNames={"#u": "user"},
+                ExpressionAttributeValues={":user": user},
+            )
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.error(
+                "refusing to mint gateway credentials for %s: session grant is "
+                "held by a different principal",
+                runtime_session_id,
+            )
+            return None
         return {
             "endpoint": settings.llm_edge_url,
             # Echoed back by the kernel as the x-platform-session-id header so

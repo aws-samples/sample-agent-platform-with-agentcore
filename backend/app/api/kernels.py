@@ -26,7 +26,13 @@ def invoke_sdk_kernel(req: InvokeRequest, user: Principal = Depends(get_current_
             prompt=req.prompt,
             system=req.system,
             max_turns=req.max_turns,
-            runtime_session_id=req.session_id,
+            # a caller-submitted session_id selects which warm microVM/process
+            # (and its /tmp, secret cache and gateway grant) the call lands on,
+            # so it is namespaced under the caller — never passed through
+            # verbatim (see resolve_session_id / resolve_memory_actor)
+            runtime_session_id=invocation_service.resolve_session_id(
+                user, req.session_id
+            ),
             mcp_server_ids=req.mcp_server_ids,
             skill_ids=req.skill_ids,
             memory_id=req.memory_id,

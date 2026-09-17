@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     portal_api_url: str = ""
     portal_admin_secret: str = "agent-platform/portal-admin"
 
+    # Keys the caller-binding of client-controllable AgentCore session ids
+    # (see session_binding). A caller-submitted session_id and a channel
+    # conversation id are both folded through an HMAC under this secret so
+    # they cannot resolve onto another tenant's warm microVM, and a channel
+    # session id cannot be predicted offline from the public webhook URL.
+    # Empty = a fallback keyed on deployment identifiers (runtime ARNs, table
+    # name); set explicitly in production. Only needs to be stable across
+    # replicas and restarts.
+    session_binding_secret: str = ""
+
     # CORS origins for the portal frontend
     cors_origins: str = "http://localhost:5173"
 
