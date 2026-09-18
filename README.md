@@ -151,9 +151,10 @@ cp terraform.tfvars.example terraform.tfvars   # then edit
 terraform init
 terraform apply -var enable_runtime=false -var enable_portal=false
 
-# 2. Store your LLM gateway key (skip if using Bedrock direct).
+# 2. Store your LLM gateway key (skip for Bedrock direct or AgentCore Gateway).
 #    Readable only by the llm-edge service; it never enters a kernel container.
-#    Gateway mode also needs enable_llm_edge=true — see docs/deployment.md §2.
+#    Gateway mode also needs enable_llm_edge=true — see docs/deployment.md §2,
+#    which also covers the agentcore_gateway backend (no key on this side).
 aws secretsmanager put-secret-value \
   --secret-id agent-platform/llm-gateway-key \
   --secret-string '{"api_key":"sk-..."}'
