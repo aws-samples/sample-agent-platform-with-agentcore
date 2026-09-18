@@ -264,14 +264,18 @@ def build_model_env(
         if small:
             env["ANTHROPIC_SMALL_FAST_MODEL"] = small
         return env, model, ""
-    if backend == "gateway":
+    if backend in ("gateway", "agentcore_gateway"):
         # No key is fetched and the upstream address is not even in the spec —
         # the backend strips base_url/secret_name before sending it here. The
         # CLI talks to the loopback shim with a token that means nothing outside
         # this container and nothing after this invocation.
+        #
+        # Which credential the shim then presents upstream is the grant's
+        # business: a bearer token for llm-edge, or SigV4 over per-session STS
+        # credentials for an AgentCore Gateway. The CLI sees neither.
         if not grant:
             raise ValueError(
-                "model.backend=gateway requires llm_credentials in the payload"
+                f"model.backend={backend} requires llm_credentials in the payload"
             )
         local_token = llm_shim.register(grant)
         env = {

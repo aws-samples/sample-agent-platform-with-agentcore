@@ -14,6 +14,7 @@
  */
 const http = require("http");
 const https = require("https");
+const crypto = require("crypto");
 const fs = require("fs");
 const url = require("url");
 const { spawn, execFile } = require("child_process");
@@ -124,13 +125,78 @@ setInterval(refreshWorkspaceCredentials, 5 * 60_000);
 // models this session may use on every call.
 // ---------------------------------------------------------------------------
 const LLM_SHIM_PORT = 8787;
+// Only the SigV4 path buffers a request body (it needs the payload hash), so
+// cap it rather than let a malformed or hostile body exhaust the kernel.
+const SHIM_MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 // {endpoint, token, expires_at} — set from the warmup payload and rotated by
 // the same refresh call that renews workspace credentials.
 let llmGrant = null;
 
+// ---------------------------------------------------------------------------
+// SigV4, by hand.
+//
+// The agentcore_gateway grant is a set of STS credentials rather than a bearer
+// token, so each request has to be signed. Claude Code cannot sign — which is
+// the whole reason the signing belongs here and not in the CLI subprocess.
+//
+// Written against node:crypto rather than pulling in an AWS SDK: this contract
+// server has exactly one dependency today, and a signing routine is 40 lines.
+// ---------------------------------------------------------------------------
+const sha256Hex = (b) => crypto.createHash("sha256").update(b).digest("hex");
+const hmac = (key, msg) => crypto.createHmac("sha256", key).update(msg).digest();
+
+function sigv4Headers(grant, method, target, body) {
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const region = String(grant.region || "");
+  const service = String(grant.service || "bedrock-agentcore");
+
+  // Only a minimal, deterministic set is signed. Everything the caller sent is
+  // attached after signing, where it cannot affect the signature.
+  const signed = {
+    host: target.host,
+    "content-type": "application/json",
+    "x-amz-date": amzDate,
+  };
+  if (grant.session_token) signed["x-amz-security-token"] = grant.session_token;
+
+  const names = Object.keys(signed).sort();
+  const canonicalHeaders = names.map((n) => `${n}:${String(signed[n]).trim()}\n`).join("");
+  const signedHeaders = names.join(";");
+  const canonicalRequest = [
+    method,
+    target.pathname,
+    target.searchParams ? target.searchParams.toString() : "",
+    canonicalHeaders,
+    signedHeaders,
+    sha256Hex(body),
+  ].join("\n");
+
+  const scope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    scope,
+    sha256Hex(Buffer.from(canonicalRequest, "utf8")),
+  ].join("\n");
+
+  const kDate = hmac(`AWS4${grant.secret_access_key}`, dateStamp);
+  const kSigning = hmac(hmac(hmac(kDate, region), service), "aws4_request");
+  const signature = crypto.createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+
+  return {
+    ...signed,
+    authorization:
+      `AWS4-HMAC-SHA256 Credential=${grant.access_key_id}/${scope}, ` +
+      `SignedHeaders=${signedHeaders}, Signature=${signature}`,
+  };
+}
+
 function setLlmGrant(grant) {
-  if (!grant || !grant.endpoint || !grant.token) return;
+  if (!grant || !grant.endpoint) return;
+  if (!grant.token && !grant.access_key_id) return;
   llmGrant = grant;
   console.log(
     `[model] gateway grant active via ${grant.endpoint}` +
@@ -180,53 +246,108 @@ function startLlmShim() {
       return;
     }
 
-    const headers = {};
+    const sigv4 = Boolean(llmGrant.access_key_id);
+    const passthrough = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      if (!SHIM_DROP_HEADERS.has(k.toLowerCase())) headers[k] = v;
+      const lk = k.toLowerCase();
+      if (SHIM_DROP_HEADERS.has(lk)) continue;
+      // On the SigV4 path a caller-supplied x-amz-* header would either be
+      // folded into the signature or contradict it.
+      if (sigv4 && lk.startsWith("x-amz-")) continue;
+      passthrough[k] = v;
     }
-    headers["authorization"] = `Bearer ${llmGrant.token}`;
-    // The grant names the session it was issued for; fall back to the ID
-    // AgentCore injected in case an older backend omits it.
-    headers["x-platform-session-id"] = llmGrant.session_id || runtimeSessionId || "";
-    headers["accept-encoding"] = "identity";
 
-    const client = target.protocol === "https:" ? https : http;
-    const upstream = client.request(
-      target,
-      { method: req.method, headers, timeout: 15 * 60_000 },
-      (up) => {
-        const out = {};
-        for (const [k, v] of Object.entries(up.headers)) {
-          if (!["connection", "keep-alive", "transfer-encoding"].includes(k.toLowerCase())) {
-            out[k] = v;
-          }
+    // body === null means "stream it through unread", which is what the edge
+    // path does: the shim has no reason to inspect it and the edge authorizes
+    // the requested model. SigV4 needs the payload hash, so that path buffers.
+    const forward = (body) => {
+      let headers;
+      if (sigv4) {
+        headers = sigv4Headers(llmGrant, req.method, target, body);
+        // Anything that took part in the signature keeps its signed value.
+        const signed = new Set(Object.keys(headers));
+        for (const [k, v] of Object.entries(passthrough)) {
+          if (!signed.has(k.toLowerCase())) headers[k] = v;
         }
-        res.writeHead(up.statusCode || 502, out);
-        // Straight pipe: nothing here may buffer, or token-by-token output
-        // would arrive as one blob at the end of the response.
-        up.pipe(res);
-      },
-    );
+      } else {
+        headers = { ...passthrough };
+        headers["authorization"] = `Bearer ${llmGrant.token}`;
+        // The grant names the session it was issued for; fall back to the ID
+        // AgentCore injected in case an older backend omits it.
+        headers["x-platform-session-id"] = llmGrant.session_id || runtimeSessionId || "";
+      }
+      headers["accept-encoding"] = "identity";
+      if (body !== null) headers["content-length"] = String(body.length);
 
-    upstream.on("timeout", () => upstream.destroy(new Error("edge timeout")));
-    upstream.on("error", (e) => {
-      console.log(`[model] edge request failed: ${e.message}`);
-      if (!res.headersSent) {
-        res.writeHead(502, { "Content-Type": "application/json" });
+      const client = target.protocol === "https:" ? https : http;
+      const upstream = client.request(
+        target,
+        { method: req.method, headers, timeout: 15 * 60_000 },
+        (up) => {
+          const out = {};
+          for (const [k, v] of Object.entries(up.headers)) {
+            if (!["connection", "keep-alive", "transfer-encoding"].includes(k.toLowerCase())) {
+              out[k] = v;
+            }
+          }
+          res.writeHead(up.statusCode || 502, out);
+          // Straight pipe: nothing here may buffer, or token-by-token output
+          // would arrive as one blob at the end of the response.
+          up.pipe(res);
+        },
+      );
+
+      upstream.on("timeout", () => upstream.destroy(new Error("edge timeout")));
+      upstream.on("error", (e) => {
+        console.log(`[model] upstream request failed: ${e.message}`);
+        if (!res.headersSent) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              type: "error",
+              error: { type: "upstream_error", message: e.message },
+            }),
+          );
+        } else {
+          res.destroy();
+        }
+      });
+
+      if (body === null) req.pipe(upstream);
+      else upstream.end(body);
+    };
+
+    if (!sigv4) {
+      forward(null);
+      return;
+    }
+
+    const chunks = [];
+    let total = 0;
+    let aborted = false;
+    req.on("data", (c) => {
+      if (aborted) return;
+      total += c.length;
+      if (total > SHIM_MAX_BODY_BYTES) {
+        aborted = true;
+        res.writeHead(413, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
             type: "error",
-            error: { type: "upstream_error", message: e.message },
+            error: { type: "request_too_large", message: "request body too large" },
           }),
         );
-      } else {
-        res.destroy();
+        req.destroy();
+        return;
       }
+      chunks.push(c);
     });
-
-    // The request body is streamed through unread — the shim has no reason to
-    // inspect it, and the edge is what authorizes the requested model.
-    req.pipe(upstream);
+    req.on("end", () => {
+      if (!aborted) forward(Buffer.concat(chunks));
+    });
+    req.on("error", () => {
+      aborted = true;
+    });
   });
 
   server.requestTimeout = 0;
@@ -282,7 +403,7 @@ function applyModelSpec(spec) {
     if (spec.small_fast_model)
       lines.push(`export ANTHROPIC_SMALL_FAST_MODEL=${shq(spec.small_fast_model)}`);
     // keep the container's baked-in (Bedrock) alias steering
-  } else if (backend === "gateway") {
+  } else if (backend === "gateway" || backend === "agentcore_gateway") {
     // No credential is written here, and the upstream gateway's address is not
     // even known to this container: the spec arrives with base_url and
     // secret_name stripped. Claude Code is pointed at the loopback shim, which

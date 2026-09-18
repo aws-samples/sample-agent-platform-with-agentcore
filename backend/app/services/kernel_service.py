@@ -133,12 +133,17 @@ class KernelService:
             payload["memory"] = memory
         if model:
             # per-invocation model routing (see model_config_service.resolve)
-            if model.get("backend") == "gateway":
-                # The gateway key stays in llm-edge. Mint a grant scoped to this
-                # invocation's session and strip the routing fields, so the
-                # kernel receives an endpoint and a token instead of a key it
-                # could fetch itself. An async run has no refresh channel and
-                # may execute for hours, so its grant is given matching life.
+            if model.get("backend") in ("gateway", "agentcore_gateway"):
+                # No upstream credential reaches the kernel either way: the
+                # litellm path keeps the key in llm-edge, the AgentCore path
+                # keeps it in the gateway's token vault. Mint a grant scoped to
+                # this invocation's session and strip the routing fields, so
+                # the kernel receives an endpoint plus a session credential
+                # rather than something it could spend elsewhere. An async run
+                # has no refresh channel and may execute for hours, so its
+                # grant is given matching life — for the AgentCore path that
+                # requires the caller role's MaxSessionDuration to cover it,
+                # otherwise AssumeRole refuses and this call fails closed.
                 creds = llm_credentials_service.mint(
                     sid,
                     user,
@@ -151,9 +156,10 @@ class KernelService:
                         "result": "",
                         "raw": {
                             "error": (
-                                "gateway model routing is unavailable: the "
-                                "llm-edge service is not deployed "
-                                "(set enable_llm_edge)"
+                                "gateway model routing is unavailable: deploy "
+                                "llm-edge (enable_llm_edge) for the litellm "
+                                "backend, or set the AgentCore gateway caller "
+                                "role for the agentcore_gateway backend"
                             )
                         },
                     }

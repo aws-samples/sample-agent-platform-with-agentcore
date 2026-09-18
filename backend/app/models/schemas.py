@@ -9,7 +9,7 @@ class SessionCreateRequest(BaseModel):
     mcp_server_ids: list[str] = Field(default_factory=list, max_length=10)
     skill_ids: list[str] = Field(default_factory=list, max_length=10)
     # "" = platform default backend; otherwise a backend from the model config
-    model_backend: str = Field(default="", pattern="^(|bedrock|litellm)$")
+    model_backend: str = Field(default="", pattern="^(|bedrock|litellm|agentcore_gateway)$")
     model: str = Field(default="", max_length=200)
 
 
@@ -118,7 +118,7 @@ class AgentPublishRequest(BaseModel):
     skill_names: list[str] = Field(default_factory=list, max_length=10)
     memory_id: str = ""
     # "" = platform default backend; otherwise a backend from the model config
-    model_backend: str = Field(default="", pattern="^(|bedrock|litellm)$")
+    model_backend: str = Field(default="", pattern="^(|bedrock|litellm|agentcore_gateway)$")
     model: str = Field(default="", max_length=200)
 
 
@@ -204,12 +204,12 @@ class ModelBackendPatch(BaseModel):
 
 
 class ModelConfigUpdate(BaseModel):
-    default_backend: str | None = Field(default=None, pattern="^(bedrock|litellm)$")
+    default_backend: str | None = Field(default=None, pattern="^(bedrock|litellm|agentcore_gateway)$")
     backends: dict[str, ModelBackendPatch] | None = None
 
 
 class ModelTestRequest(BaseModel):
-    backend: str = Field(pattern="^(bedrock|litellm)$")
+    backend: str = Field(pattern="^(bedrock|litellm|agentcore_gateway)$")
     model: str = Field(default="", max_length=200)
 
 

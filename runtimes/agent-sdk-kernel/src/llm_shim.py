@@ -16,6 +16,14 @@ this container, and not after the invocation ends.
 Per-invocation registration is also what makes concurrent runs safe: two agents
 routed to different backends each get their own local token, so neither can
 borrow the other's grant.
+
+Two upstream shapes are supported, decided by the grant the platform delivers:
+
+- ``llm-edge``: a bearer token plus the session id, which the edge re-reads its
+  own grant from.
+- ``agentcore_gateway``: STS credentials tagged with the session id, which this
+  shim SigV4-signs each request with. Claude Code cannot sign, which is exactly
+  why the signing has to happen here rather than in the CLI subprocess.
 """
 
 from __future__ import annotations
@@ -62,12 +70,53 @@ _DROP_RESPONSE_HEADERS = {
     "content-length",
 }
 
+# On the SigV4 path a client-supplied x-amz-* header would either be folded
+# into the signature or contradict it, so the client never gets to set one.
+_SIGV4_RESERVED_PREFIX = "x-amz-"
+
+
+def _sign_sigv4(grant: dict, method: str, url: str, body: bytes) -> dict:
+    """Return the SigV4 headers for one request against the gateway.
+
+    Only a minimal, deterministic header set is signed (content-type, plus the
+    host and date botocore adds). Everything the caller sent is attached
+    *after* signing: headers outside SignedHeaders do not participate in the
+    signature, so passing Claude Code's ``anthropic-*`` and ``x-stainless-*``
+    headers through cannot invalidate it.
+    """
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    creds = Credentials(
+        grant["access_key_id"],
+        grant["secret_access_key"],
+        grant.get("session_token") or None,
+    )
+    req = AWSRequest(
+        method=method,
+        url=url,
+        data=body,
+        headers={"content-type": "application/json"},
+    )
+    SigV4Auth(
+        creds,
+        str(grant.get("service") or "bedrock-agentcore"),
+        str(grant.get("region") or ""),
+    ).add_auth(req)
+    return dict(req.headers)
+
 
 def register(grant: dict) -> str:
     """Register a platform grant for one invocation; returns the local token to
     put in the CLI subprocess's ANTHROPIC_AUTH_TOKEN."""
-    if not grant or not grant.get("endpoint") or not grant.get("token"):
-        raise ValueError("gateway grant is missing endpoint/token")
+    if not grant or not grant.get("endpoint"):
+        raise ValueError("gateway grant is missing endpoint")
+    if not grant.get("token") and not grant.get("access_key_id"):
+        raise ValueError(
+            "gateway grant carries neither a bearer token (llm-edge) nor STS "
+            "credentials (agentcore_gateway)"
+        )
     local = secrets.token_urlsafe(24)
     with _lock:
         _grants[local] = grant
@@ -122,13 +171,49 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
 
-        headers = {
+        sigv4 = bool(grant.get("access_key_id"))
+        passthrough = {
             k: v
             for k, v in self.headers.items()
             if k.lower() not in _DROP_REQUEST_HEADERS
+            and not (sigv4 and k.lower().startswith(_SIGV4_RESERVED_PREFIX))
         }
-        headers["Authorization"] = f"Bearer {grant['token']}"
-        headers["x-platform-session-id"] = str(grant.get("session_id") or "")
+
+        if sigv4:
+            # Fail fast on a model this session was not routed to. This is an
+            # optimisation, not an authorization boundary: the session's user
+            # is root in this microVM and can bypass the shim. Real enforcement
+            # has to sit outside the container — see the platform's
+            # llm_credentials_service.mint_agentcore docstring.
+            allowed = [str(m) for m in (grant.get("allowed_models") or [])]
+            if allowed and body:
+                try:
+                    requested = str(json.loads(body).get("model") or "")
+                except Exception:  # noqa: BLE001 - non-JSON bodies just pass
+                    requested = ""
+                if requested and requested not in allowed:
+                    self._fail(
+                        403, f"model {requested!r} is not permitted for this session"
+                    )
+                    return
+            headers = _sign_sigv4(
+                grant,
+                self.command,
+                str(grant["endpoint"]).rstrip("/") + self.path,
+                body,
+            )
+            # Anything that took part in the signature must keep the signed
+            # value: the caller's own content-type would otherwise silently
+            # invalidate it.
+            signed = {k.lower() for k in headers}
+            headers.update(
+                {k: v for k, v in passthrough.items() if k.lower() not in signed}
+            )
+        else:
+            headers = passthrough
+            headers["Authorization"] = f"Bearer {grant['token']}"
+            headers["x-platform-session-id"] = str(grant.get("session_id") or "")
+
         headers["Accept-Encoding"] = "identity"
         headers["Content-Length"] = str(len(body))
 
