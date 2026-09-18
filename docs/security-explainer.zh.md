@@ -442,18 +442,27 @@ CLI 子进程，agent 的工具就在那个子进程里执行。
 （内核角色对 `workspaces/*` 零权限，由后端按 session 铸凭证，见第 4 节）。
 模型凭证现在同样遵循。
 
-### 9.2 两个后端
+### 9.2 三个后端
 
-模型调用有两个后端，由治理页的模型控制面按 agent 路由：
+模型调用有三个后端，由治理页的模型控制面按 agent 路由：
 
 - **Bedrock 直连**：以容器的 IAM 角色调用 `bedrock:InvokeModel*`，不存在长期
   密钥，模型 ID 用 `global.` 前缀的跨区推理配置。
-- **LLM 网关（如 LiteLLM）**：容器**不持有网关密钥**。密钥只存在于
+- **LLM 网关（`litellm`，如 LiteLLM）**：容器**不持有网关密钥**。密钥只存在于
   `llm-edge` 这个内部服务的任务角色里（`agent-platform-llm-edge`，全平台唯一
   被授予该密钥读权的主体；运行时角色已不再有此授权）。内核拿到的是一份按
   session 铸出的短期凭证。
+- **AgentCore Gateway（`agentcore_gateway`）**：容器同样不持有上游密钥，而且
+  **平台侧也不持有** —— 上游凭证在网关自己的 token vault 里，因此不需要
+  `llm-edge` 这个中间服务。内核拿到的是一份**打了 session 标签的 STS 凭证**，
+  每个请求由内核 shim 做 SigV4 签名。
+
+两种网关模式的共同点是：容器里没有可在别处兑现的东西。差别只在「谁替容器持有
+上游凭证」和「按会话吊销怎么表达」。
 
 ### 9.3 网关模式的调用链
+
+**`litellm` 模式**
 
 ```
 Claude Code / Agent SDK
@@ -476,24 +485,87 @@ grant 里的上游地址、密钥名、模型白名单，全部由后端在铸�
 `llm-edge` 每次调用都重新读取。**容器上报的任何路由信息都不被采信**，所以租户
 无法通过改请求把自己路由到别的模型或别的上游。
 
+**`agentcore_gateway` 模式**
+
+```
+Claude Code / Agent SDK
+  ANTHROPIC_BASE_URL = http://127.0.0.1:8787   ← 同上，仍是 loopback
+  ANTHROPIC_AUTH_TOKEN = <本次 invocation 的随机 token>
+    ↓
+loopback shim（内核进程内）
+  STS 凭证（AK/SK/SessionToken）只存在于该进程内存
+  按请求做 SigV4 签名；Claude Code 不会签名，这正是签名必须在这里而不是
+  在 CLI 子进程里的原因
+    ↓
+AgentCore Gateway（IAM authorizer，公网端点但只认 SigV4）
+  三层策略同时求值：
+    · caller 角色的身份策略
+    · 铸凭证时附加的 session policy —— 只允许这一个 gateway
+    · 会话结束时写入的标签条件 Deny —— aws:PrincipalTag/session_id
+    ↓
+（可选）REQUEST interceptor：容器外唯一能做「容器内不可信之事」的位置
+    ↓
+上游模型提供方（凭证在网关的 token vault，平台与容器都取不到）
+```
+
+这一模式下「路由不可篡改」由 IAM 与网关配置共同保证：gateway 地址写在凭证块
+里，模型到 target 的映射是网关侧配置。
+
+**部署前置条件（否则 per-session 凭证形同虚设）**：内核角色为了访问 MCP 工具
+网关，已持有 `bedrock-agentcore:InvokeGateway` on `gateway/*`。这个通配同样覆盖
+推理网关，于是 microVM 内的 root 用户可以从 metadata 端点读出内核角色凭证、以
+**角色自身身份**直接调用推理网关 —— 既没有 session 标签可吊销，也没有 session
+policy 可收窄。启用本后端前必须给内核角色加一条针对推理网关 ARN 的显式
+**Deny**（Deny 优先于通配 Allow，工具网关不受影响），见 `docs/permissions.md`
+第 3 节。
+
+**另一条要写明**：IAM 条件看不到请求体，所以**按会话的模型白名单无法表达为
+IAM 条件**。内核 shim 里的那道检查是
+fail-fast 优化而**不是**边界（会话用户在该 microVM 内是 root，可以绕过 shim
+直连网关）。要真正强制，需要网关的 request interceptor，或一个模型一个
+gateway 并用 session policy 枚举资源。白名单无论如何都会记在 grant 上，所以
+决策本身是可审计的。
+
 ### 9.4 可验收的三条
 
 1. 容器的环境变量、文件、进程命令行、Claude Code 会话里，**不存在任何真实
    密钥**。原先放平台级网关 key 的位置现在是字面量 `unused`。
 2. 把容器内一切可获取的材料（环境变量、文件、内存中的 session 凭证、IAM 角色
-   凭证）导出到外部机器，**均不可用**：`llm-edge` 的监听器在 VPC 内网，公网无
-   路由；session 凭证在一小时内过期，且只对该 session 被允许的模型有效。
-3. 在 session 内滥用只能消耗该 session 自己的额度，且归因到具体用户。
+   凭证）导出到外部机器，其可用性是**受限且有时限**的：
+   - `litellm` 模式：`llm-edge` 的监听器在 VPC 内网、公网无路由，凭证出了 VPC
+     即废；grant 在一小时内过期。
+   - `agentcore_gateway` 模式：网关端点在公网，但只接受 SigV4，且凭证被
+     session policy 限死在**一个** gateway 上、并绑定 session 标签；STS 会话
+     ≥15 分钟即到期，会话结束时另有标签条件 Deny 立即生效。
+   两种模式下，**上游模型提供方的真实凭证都不在导出物之内**。
+3. 每次调用可归因到具体 session 与用户。
 
 ### 9.5 残余边界
 
 用户可以在自己的 session 里直接调用那个 loopback 端口来使用模型。这是设计
-预期：这本就是他有权使用的额度，有上限、可归因、随 session 失效。安全团队
-评估时应当把它理解为"用户正常使用自己的配额"，而不是越权。
+预期：这本就是他有权使用的额度，可归因、随 session 失效。安全团队评估时应当
+把它理解为"用户正常使用自己的配额"，而不是越权。
+
+**但"额度"这个词要说准**：平台侧的配额计的是调用次数，不是 token。按用户/团队
+的 **token 额度强制由上游网关按 key 施加**，平台不做 per-user 强制 —— 同一个
+后端下所有 session 共享同一把上游凭证，因此单个 session 有可能占满该凭证的
+TPM。若需要按用户限额，应在上游网关侧按会话签发受限凭证（例如 LiteLLM 的
+per-key `max_budget`），而不是在平台侧另造一套记账。
+
+另一条残余边界：**凭证跨 session 复用挡不住。** 两种网关模式都以 bearer 或
+SigV4 凭证认证，而没有任何机制能证明"发起方确实是该 session"——`llm-edge` 的
+session id 与 token 都来自请求头，AgentCore 的 STS 凭证也可被读出后在别处使用
+（受 session policy 与标签 Deny 约束，但不受"哪个 microVM"约束）。要真正绑定
+需要 microVM 侧的可信证明，AgentCore Runtime 目前不提供。危害有界：同一用户的
+两个 session 之间总额不变，实质风险是**跨模型档位提权**（用被路由到更贵模型的
+会话凭证）与归因失真。
 
 每次调用实际走了哪个后端、哪个模型，记入调用台账（`backend:model` 字段），
-路由变更前后可审计；`llm-edge` 另有结构化日志记录每次调用的 session、用户、
-模型、状态与 token 用量。
+路由变更前后可审计；`litellm` 模式下 `llm-edge` 另有结构化日志记录每次调用的
+session、用户、模型、状态与 token 用量。`agentcore_gateway` 模式下**网关不产出
+token 用量指标或日志**（已实测：开启 vended logs 后逐条日志只含路由决策与 OTel
+关联字段，无 token、无会话维度），因此 token 级归因要么由上游网关提供，要么由
+一个 RESPONSE interceptor 自行累加。
 
 ---
 
@@ -503,7 +575,8 @@ grant 里的上游地址、密钥名、模型白名单，全部由后端在铸�
 |---|---|---|
 | Session 文件、对话历史 | Workspace S3 桶 | 公共访问全阻断、强制 SSL、静态加密、仅两个角色可访问 |
 | 平台记录（session/agent/schedule/台账/审计） | DynamoDB | 静态加密（默认 AWS 拥有密钥，可换 CMK） |
-| LLM 网关 key | Secrets Manager | 加密存储；仅 `llm-edge` 任务角色可读，内核角色无此授权；从不写入镜像，也从不进入任何 session 容器 |
+| LLM 网关 key（`litellm` 模式） | Secrets Manager | 加密存储；仅 `llm-edge` 任务角色可读，内核角色无此授权；从不写入镜像，也从不进入任何 session 容器 |
+| 上游模型凭证（`agentcore_gateway` 模式） | AgentCore Gateway 的 token vault | 平台侧不存储、不可读；由网关在出站时注入。平台只持有一个可 `AssumeRole` 的 caller 角色 ARN |
 | 可选的第三方 MCP key、管理员口令 | Secrets Manager | 加密存储；按密钥名精确授权；容器/Lambda 启动时读取，从不写入镜像 |
 | 内核与平台日志 | CloudWatch Logs | 前缀级授权；平台自有日志组 7 天保留 |
 
@@ -545,10 +618,22 @@ AgentCore 服务侧的数据（session 元数据、Memory 记录等）默认用 
 4. **headless 异步任务的网关凭证寿命较长**。异步运行最长到平台的 8 小时上限，
    且没有续期通道，因此其 grant 的有效期与之匹配（9 小时）而不是 1 小时。影响
    有限：headless 内核没有终端，且该 grant 从不进入 agent 子进程的环境（内核
-   只给子进程一个容器内本地令牌，见第 9.3 节）。
-5. **加密密钥默认为 AWS 托管**：合规要求 CMK 时，S3/DynamoDB/AgentCore 资源
+   只给子进程一个容器内本地令牌，见第 9.3 节）。`agentcore_gateway` 模式下这个
+   时长要求 caller 角色的 `MaxSessionDuration` 覆盖它，否则 `AssumeRole` 会拒绝
+   而调用 fail-closed。
+5. **`agentcore_gateway` 模式下，网关 interceptor 抛出的异常会原样回传给调用方**
+   —— 包含异常消息与**完整堆栈（含源码行）**，且与 `exceptionLevel` 的设置无关
+   （已实测）。调用方就是租户的 microVM。因此 interceptor 必须自己捕获全部异常
+   并返回通用错误，绝不可让异常逸出；尤其是按 AWS 参考实现从 Secrets Manager
+   取凭证的 interceptor，一旦抛错就可能把密钥名或内部 ARN 送到租户面前。
+   相关的正面结论：interceptor 失败时网关是 **fail-closed** 的（请求被拒，不会
+   放行），这一点也已实测。
+6. **`agentcore_gateway` 模式的单次请求有 15 分钟硬上限**（服务配额
+   `Request timeout`，不可调整）。单次模型调用受此约束；流式响应实测 46 秒、
+   3980 帧无断流，距上限有充足余量。
+7. **加密密钥默认为 AWS 托管**：合规要求 CMK 时，S3/DynamoDB/AgentCore 资源
    均可切换，代价是给相关角色增加精确限定到该密钥 ARN 的 KMS 权限。
-6. **所有平台角色都可加权限边界**，保证未来任何代码改动都不能越过边界扩权。
+8. **所有平台角色都可加权限边界**，保证未来任何代码改动都不能越过边界扩权。
 
 另见第 9.5 节：用户可在自己 session 内直接调用 loopback 端口消耗自己的配额，
 这是设计预期而非越权。

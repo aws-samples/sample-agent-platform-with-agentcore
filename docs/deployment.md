@@ -98,6 +98,61 @@ With `enable_llm_edge = false`, selecting the litellm backend makes the platform
 refuse the session with a 503 instead of falling back to handing a container the
 key.
 
+### Option A2 — AgentCore Gateway
+
+Same promise as Option A with one fewer service to run: the upstream provider
+credential lives in the gateway's own token vault, so there is no key on the
+platform side and no `llm-edge` to deploy. A kernel gets STS credentials tagged
+with its session id and signs each request.
+
+1. Create the gateway and its inference target, and note the `/inference` URL.
+   Two settings are not optional:
+
+   - **`metadataConfiguration.allowedRequestHeaders`** must list at least
+     `content-type`, `anthropic-version` and `accept`. Left unset the gateway
+     relays whatever the caller sent — including the caller's own
+     `x-amz-security-token` — and Claude Code's prompt-caching `anthropic-beta`
+     value, which a strict upstream refuses. Once it *is* set, a connector
+     target stops relaying `content-type` unless it is listed.
+   - a **REQUEST interceptor** if the upstream rejects fields Claude Code sends
+     (`context_management` is one). The gateway forwards bodies verbatim, so an
+     interceptor is the only place outside the container to adapt them. It is
+     also where a per-tenant identity would be injected for upstream billing.
+     Interceptors must catch every exception themselves — an escaping one is
+     relayed to the caller with its stack trace.
+
+2. Create the role the backend assumes per session, trusted by the backend's
+   own role, granting `bedrock-agentcore:InvokeGateway` on the gateway ARN and
+   allowing `sts:TagSession`. Its `MaxSessionDuration` must cover the async
+   grant lifetime (9 h) if headless async runs use this backend.
+
+   ```hcl
+   # no dedicated module yet — supply the role ARN you created
+   ```
+
+   ```bash
+   PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN=arn:aws:iam::<acct>:role/<role>
+   ```
+
+3. **Deny the kernel roles direct access to this gateway.** The kernel roles
+   already hold `bedrock-agentcore:InvokeGateway` on `gateway/*` so they can
+   reach MCP tool gateways, and that wildcard would also cover the inference
+   gateway — letting a root user in the microVM call it on the kernel role's own
+   identity, with no session tag to revoke. Add an explicit Deny for the
+   inference gateway's ARN to each kernel role; see permissions.md §3. Without
+   this the per-session credential is decorative.
+
+4. Point the backend at the gateway in the portal: **Governance → Model
+   backends → agentcore_gateway**, setting `base_url` to the `/inference` URL
+   and the model catalog. There is no `secret_name` for this backend.
+
+`scripts/e2e_agentcore_gateway.py` provisions all of the above against a live
+account and asserts the chain end to end, including per-session revocation; it
+is the fastest way to see a working configuration.
+
+With the caller role ARN unset, selecting this backend makes the platform refuse
+the session rather than fall back to a shared credential.
+
 ### Option B — Bedrock direct
 
 Set:

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 PK = "GOV"
 SK = "MODELCONFIG"
 
-BACKEND_NAMES = ("bedrock", "litellm")
+BACKEND_NAMES = ("bedrock", "litellm", "agentcore_gateway")
 
 DEFAULT_CONFIG: dict = {
     "default_backend": "bedrock",
@@ -40,6 +40,18 @@ DEFAULT_CONFIG: dict = {
             "enabled": False,
             "base_url": "",
             "secret_name": "agent-platform/llm-gateway-key",
+            "models": [],
+            "default_model": "",
+            "small_fast_model": "",
+        },
+        # AgentCore Gateway inference target. Unlike litellm there is no
+        # secret_name: the upstream provider credential lives in the gateway's
+        # token vault, so nothing on the platform side ever holds it. base_url
+        # is the gateway's /inference base; the kernel signs SigV4 against it
+        # with per-session credentials rather than presenting a bearer token.
+        "agentcore_gateway": {
+            "enabled": False,
+            "base_url": "",
             "models": [],
             "default_model": "",
             "small_fast_model": "",
@@ -124,22 +136,35 @@ class ModelConfigService:
                 spec["small_fast_model"] = b["small_fast_model"]
             return spec
 
-        # litellm → the kernel's generic Anthropic-compatible gateway mode
+        # Both remaining backends mean "point the kernel at an HTTP endpoint
+        # rather than Bedrock", and they share these two failure modes.
         if not b["base_url"]:
-            raise ValueError("model backend 'litellm' has no base_url configured")
+            raise ValueError(f"model backend {name!r} has no base_url configured")
         if not chosen:
             # without an explicit name the container's baked-in Bedrock model
             # ID would leak into gateway requests — refuse instead
             raise ValueError(
-                "model backend 'litellm' needs a model (set the backend's "
+                f"model backend {name!r} needs a model (set the backend's "
                 "default_model or the agent's model)"
             )
-        spec = {
-            "backend": "gateway",
-            "base_url": b["base_url"],
-            "secret_name": b["secret_name"] or "agent-platform/llm-gateway-key",
-            "model": chosen,
-        }
+        if name == "agentcore_gateway":
+            # SigV4 mode. There is no platform-side secret to name: the
+            # upstream provider credential lives in the gateway's token vault,
+            # and the kernel authenticates as its own session instead of
+            # presenting a shared bearer token.
+            spec = {
+                "backend": "agentcore_gateway",
+                "base_url": b["base_url"],
+                "model": chosen,
+            }
+        else:
+            # litellm → the kernel's generic Anthropic-compatible gateway mode
+            spec = {
+                "backend": "gateway",
+                "base_url": b["base_url"],
+                "secret_name": b["secret_name"] or "agent-platform/llm-gateway-key",
+                "model": chosen,
+            }
         if b["small_fast_model"]:
             spec["small_fast_model"] = b["small_fast_model"]
         # Claude Code's /model picker offers opus/sonnet/haiku aliases that

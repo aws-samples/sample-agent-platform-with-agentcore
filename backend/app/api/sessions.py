@@ -156,11 +156,12 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
             spec = model_config_service.resolve(
                 item.get("model_backend", ""), item.get("model", "")
             )
-            if spec and spec.get("backend") == "gateway":
-                # The gateway key stays in llm-edge. The kernel gets an
-                # endpoint plus a session-scoped token, and the routing fields
-                # are stripped from what the container sees: the edge re-reads
-                # them from the grant, so a container has nothing to forge.
+            if spec and spec.get("backend") in ("gateway", "agentcore_gateway"):
+                # No upstream credential reaches the container in either mode:
+                # litellm keeps the key in llm-edge, AgentCore keeps it in the
+                # gateway's token vault. The kernel gets an endpoint plus a
+                # session-scoped credential, and the routing fields are
+                # stripped from what the container sees.
                 creds = llm_credentials_service.mint(
                     item["runtime_session_id"], user, spec
                 )
@@ -168,8 +169,10 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
                     raise HTTPException(
                         status_code=503,
                         detail=(
-                            "gateway model routing is unavailable: the llm-edge "
-                            "service is not deployed (set enable_llm_edge)"
+                            "gateway model routing is unavailable: deploy "
+                            "llm-edge (enable_llm_edge) for the litellm "
+                            "backend, or set the AgentCore gateway caller role "
+                            "for the agentcore_gateway backend"
                         ),
                     )
                 config["llm_credentials"] = creds

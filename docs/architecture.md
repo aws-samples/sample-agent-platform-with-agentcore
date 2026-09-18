@@ -217,17 +217,18 @@ Claude Code calls it from a terminal or the SDK kernel calls it per-invoke.
 
 ### 2. Model access — LLM gateway first
 
-Both kernels support two model backends:
+Both kernels support three model backends:
 
 | Mode | How | When to use |
 |---|---|---|
 | **Bedrock direct** | `CLAUDE_CODE_USE_BEDROCK=1` + cross-region inference profile (`global.` model ID prefix). Container IAM role; no key of any kind | Simplest path, and there is no model credential to leak |
-| **LLM gateway** | Always per session, never a container default. The gateway key lives only in the `llm-edge` service; a kernel gets a session-scoped grant and reaches the gateway through it (`enable_llm_edge`) | Centralized model governance: allow-lists, budgets, cost attribution per team |
+| **LLM gateway** (`litellm`) | Always per session, never a container default. The gateway key lives only in the `llm-edge` service; a kernel gets a session-scoped grant and reaches the gateway through it (`enable_llm_edge`) | Centralized model governance: allow-lists, budgets, cost attribution per team |
+| **AgentCore Gateway** (`agentcore_gateway`) | Also always per session. The upstream provider credential lives in the gateway's own token vault, so there is no key on the platform side at all and no broker service to run. A kernel gets STS credentials tagged with its session id and SigV4-signs each request (`agentcore_gateway_caller_role_arn`) | The same governance goal with a managed hop instead of `llm-edge`, and per-session revocation expressed as an IAM Deny |
 
-Gateway mode has no container-level configuration on purpose. A session's user
-is root in its microVM and the headless kernel runs agent tools in a
+Neither gateway mode has container-level configuration, on purpose. A session's
+user is root in its microVM and the headless kernel runs agent tools in a
 subprocess, so any credential placed in a kernel container is a credential its
-users have. Reaching the gateway therefore requires a grant the backend mints
+users have. Reaching either gateway therefore requires a grant the backend mints
 per session; see security-explainer.zh.md §9.
 
 The environment sets the **container default**; the model control plane
@@ -489,12 +490,15 @@ a new runtime version automatically).
   (SDK kernel only, and nothing the platform ships needs it, since search
   authenticates with the kernel's own role). The LLM gateway key is
   deliberately **not** among them: it is readable only by the `llm-edge` task
-  role, which no session can enter.
+  role, which no session can enter. With the `agentcore_gateway` backend there
+  is no such key on the platform side at all — the upstream credential lives in
+  the gateway's token vault.
 - No secrets are baked into images; keys are read from Secrets Manager at
   container/Lambda start.
 - The browser and end users hold **no AWS credentials** — all AWS access is
   server-side under the platform's seven IAM roles (an eighth,
-  `agent-platform-llm-edge`, in gateway mode), enumerated in
+  `agent-platform-llm-edge`, in litellm gateway mode; a ninth, the AgentCore
+  Gateway caller role, in `agentcore_gateway` mode), enumerated in
   [permissions.md §1](permissions.md#1-principals-at-a-glance).
 - If your LLM gateway is HTTP-only, traffic from NAT → gateway crosses the
   network unencrypted; put a TLS listener or PrivateLink in front for

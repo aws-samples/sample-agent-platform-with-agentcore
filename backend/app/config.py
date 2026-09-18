@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     # root in.
     llm_edge_url: str = ""
 
+    # Role the backend assumes once per session to mint the kernel's AgentCore
+    # Gateway credentials, tagged with that session's runtime id. Same shape as
+    # workspace_access_role_arn: the kernel role itself has no InvokeGateway
+    # grant, so a container cannot reach the gateway on its own identity.
+    #
+    # The session tag is what makes revocation per-session: ending a session
+    # adds a Deny conditioned on aws:PrincipalTag/session_id, which stops that
+    # session's credentials without touching any other live session's.
+    # Empty = the agentcore_gateway model backend is unavailable and the
+    # backend refuses it rather than falling back to a shared credential.
+    agentcore_gateway_caller_role_arn: str = ""
+
     # EventBridge Scheduler wiring (outputs of the PortalStack). When all of
     # group/lambda/role are set, the scheduler runs in "eventbridge" mode:
     # each platform schedule is mirrored to an EventBridge Scheduler schedule
