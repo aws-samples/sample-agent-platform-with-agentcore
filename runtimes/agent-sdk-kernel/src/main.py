@@ -68,7 +68,9 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
+import time
 
 import boto3
 import llm_shim
@@ -120,6 +122,57 @@ try:
     _tracer = _otel_trace.get_tracer("agent-sdk-kernel")
 except Exception:  # noqa: BLE001
     _tracer = None
+
+
+def _install_snapsafe_id_generator() -> None:
+    """Draw span and trace ids from ``os.urandom`` instead of ``random``.
+
+    AgentCore Runtime platform version V2 starts every new instance by
+    restoring one snapshot taken after startup, so whatever the ``random``
+    module was seeded with at import time is identical in every instance and
+    replays the same sequence. The OTel SDK's default id generators (and
+    ADOT's X-Ray one) draw from that module, which means two agents of the
+    same pipeline run, restored from the same snapshot, would emit identical
+    span ids inside one trace. ``os.urandom`` is fresh entropy after a
+    restore. The generator instance is shared by every tracer the provider
+    has already handed out, so patch it in place rather than replacing it.
+    """
+    if _tracer is None:
+        return
+    try:
+        from opentelemetry.trace import INVALID_SPAN_ID, INVALID_TRACE_ID
+
+        provider = _otel_trace.get_tracer_provider()
+        gen = getattr(provider, "id_generator", None)
+        if gen is None or getattr(gen, "_snapsafe", False):
+            return
+        xray_layout = "xray" in type(gen).__name__.lower()
+
+        def snapsafe_span_id() -> int:
+            while True:
+                span_id = int.from_bytes(os.urandom(8), "big")
+                if span_id != INVALID_SPAN_ID:
+                    return span_id
+
+        def snapsafe_trace_id() -> int:
+            while True:
+                if xray_layout:
+                    # Keep X-Ray's layout: 32-bit epoch seconds + 96 random bits.
+                    trace_id = (int(time.time()) << 96) | int.from_bytes(os.urandom(12), "big")
+                else:
+                    trace_id = int.from_bytes(os.urandom(16), "big")
+                if trace_id != INVALID_TRACE_ID:
+                    return trace_id
+
+        gen.generate_span_id = snapsafe_span_id
+        gen.generate_trace_id = snapsafe_trace_id
+        gen._snapsafe = True
+        logger.info("otel: snapshot-safe id generator installed over %s", type(gen).__name__)
+    except Exception:  # noqa: BLE001
+        logger.exception("otel: could not install snapshot-safe id generator")
+
+
+_install_snapsafe_id_generator()
 
 
 def otel_context(trace_meta: dict | None, session_id: str) -> dict | None:
@@ -669,6 +722,11 @@ async def run_async_task(prompt: str, options: "ClaudeAgentOptions",
 @app.entrypoint
 async def invoke(payload: dict, context) -> dict:
     """Standard AgentCore invocation entrypoint."""
+    # Runtime V2 restores each instance from a shared snapshot, so the
+    # ``random`` module's startup seed is the same everywhere. Reseed from the
+    # OS on every request so libraries that use it (retry jitter, ids) do not
+    # replay one sequence across instances.
+    random.seed()
     prompt = (payload or {}).get("prompt", "").strip()
     if not prompt:
         return {"ok": False, "error": "payload.prompt is required"}
