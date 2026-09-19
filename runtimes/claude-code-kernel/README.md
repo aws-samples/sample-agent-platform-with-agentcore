@@ -28,6 +28,7 @@ terminal connection flow (SigV4 pre-signed WSS URLs).
 | `MCP_RUNTIME_ARN` | | Optional: ARN of an MCP-protocol AgentCore Runtime to expose as tools |
 | `MCP_RUNTIME_REGION` | | Region of that runtime; defaults to `AWS_REGION` |
 | `AWS_REGION` | | Defaults to `us-east-1` |
+| `DISABLE_AUTOUPDATER` | | Baked in as `1`: the image pins the Claude Code version, so a session never spends its first seconds updating a binary that is discarded with the microVM. Bump the version by rebuilding the image |
 
 Gateway mode has no environment variables here on purpose. The session's user is
 root in this microVM, so a credential in this environment is a credential they

@@ -29,6 +29,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# The kernel image pins the Claude Code version; a hosted session must not
+# spend its first seconds (and the microVM's only vCPU) downloading an update
+# that is discarded with the session anyway. Bump the version by rebuilding.
+ENV DISABLE_AUTOUPDATER=1
+
 # awscli: S3 workspace sync + Secrets Manager reads
 # mcp-proxy-for-aws: optional stdio→SigV4 proxy to MCP servers on AgentCore
 # bedrock-agentcore + playwright: AgentCore built-in tools (Code Interpreter /
