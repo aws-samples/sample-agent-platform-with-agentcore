@@ -272,16 +272,19 @@ node /opt/contract-server/main.js &
 NODE_PID=$!
 
 (
+  # Wait for the first warmup to name the session. No time budget here: on
+  # Runtime V2 this container is snapshotted right after /ping turns healthy
+  # and every session restores from that snapshot, so a counter started at
+  # boot would already be part-way through when the session actually begins.
+  # The loop ends when the session id lands or the contract-server exits.
   log_startup "waiting for session ID from AgentCore…"
-  WAIT_COUNT=0
-  while [ ! -f "$SESSION_ID_FILE" ] && [ $WAIT_COUNT -lt 60 ]; do
+  while [ ! -f "$SESSION_ID_FILE" ] && kill -0 "$NODE_PID" 2>/dev/null; do
     sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
   done
 
   SESSION_ID=$(get_session_id)
   if [ "$SESSION_ID" = "shared" ]; then
-    log_startup "WARNING: no session ID after 60s — skipping S3 restore"
+    log_startup "WARNING: contract-server exited before a session ID arrived — skipping S3 restore"
   else
     S3_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${SESSION_ID}"
     log_startup "session: ${SESSION_ID}"
