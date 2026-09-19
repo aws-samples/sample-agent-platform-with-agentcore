@@ -23,8 +23,12 @@ from app.services.governance_service import governance_service
 from app.services.kernel_service import kernel_service
 from app.services.model_config_service import model_config_service
 from app.services.observability_service import observability_service
+from app.services.session_binding import resolve_session_id  # re-exported for the API routes
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["invoke", "invoke_async_and_wait", "resolve_memory_actor",
+           "resolve_session_id", "forward_identity", "IdentityRequired"]
 
 
 class IdentityRequired(Exception):

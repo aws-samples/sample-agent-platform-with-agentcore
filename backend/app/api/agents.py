@@ -102,7 +102,12 @@ def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: Principal = Depen
             source="api",
             target=f"agent:{agent_id}",
             prompt=req.prompt,
-            runtime_session_id=req.session_id,
+            # namespaced under the caller so a client-supplied session_id
+            # cannot land on another tenant's warm microVM (see
+            # resolve_session_id / resolve_memory_actor)
+            runtime_session_id=invocation_service.resolve_session_id(
+                user, req.session_id
+            ),
             # a published agent carries its own memory_id, so the actor ID is
             # all that separates callers' memory lines (see resolve_memory_actor)
             memory_actor_id=invocation_service.resolve_memory_actor(
