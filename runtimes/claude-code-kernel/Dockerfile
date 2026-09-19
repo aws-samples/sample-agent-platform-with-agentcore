@@ -27,11 +27,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code
+# Pass --build-arg CLAUDE_CODE_VERSION=<x.y.z> to pin (and to make a rebuild
+# actually pick up a newer release instead of reusing the cached layer).
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# The kernel image pins the Claude Code version; a hosted session must not
-# spend its first seconds (and the microVM's only vCPU) downloading an update
-# that is discarded with the session anyway. Bump the version by rebuilding.
+# The image owns the Claude Code version; a hosted session must not spend its
+# first seconds (and the microVM's only vCPU) downloading an update that is
+# discarded with the microVM anyway. Bump the version by rebuilding.
 ENV DISABLE_AUTOUPDATER=1
 
 # awscli: S3 workspace sync + Secrets Manager reads
