@@ -313,6 +313,19 @@ Auth modes (backend resolves in this order):
    (`PORTAL_ADMIN_SECRET=agent-platform<suffix>/portal-admin`); its default is
    the unsuffixed one.
 
+   **The session-binding key.** The backend binds every caller-supplied
+   AgentCore session id (and every channel conversation id) to the
+   authenticated tenant with an HMAC under `PLATFORM_SESSION_BINDING_SECRET`,
+   so two callers naming the same id never land on one warm microVM. Terraform
+   generates this key (`random_password.session_binding` in the portal module)
+   and hands it to the backend and entry pods through the chart's Kubernetes
+   Secret; nothing to create by hand. It only has to be stable across replicas
+   and restarts. Rotating it (`terraform taint` the resource, then apply) is
+   safe but ends continuity for every open Debug/channel conversation, which
+   simply start a fresh session on their next turn. Left unset, the backend
+   falls back to a key derived from deployment identifiers; that is fine for a
+   laptop run, not for a shared deployment.
+
 ### Roles (RBAC)
 
 The portal splits into a developer surface (Overview, Dev Workbench,

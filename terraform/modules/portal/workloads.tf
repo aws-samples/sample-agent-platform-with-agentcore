@@ -526,6 +526,18 @@ resource "helm_release" "workload" {
     dependencyToken = var.eks.controllers_ready
   })]
 
+  # Secret values travel base64-encoded straight into the Secret's `data`
+  # (see the chart). The session-binding key must be identical on every
+  # backend/entry replica or a caller's session would resolve differently
+  # depending on which pod answered.
+  set_sensitive = [
+    {
+      name  = "secretEnv.PLATFORM_SESSION_BINDING_SECRET"
+      value = base64encode(random_password.session_binding.result)
+      type  = "string"
+    },
+  ]
+
   # Like the ECS deployment circuit breaker: a rollout whose pods never become
   # ready is rolled back to the previous revision instead of left half-done.
   wait            = true

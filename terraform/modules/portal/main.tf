@@ -108,6 +108,17 @@ resource "random_password" "origin_verify" {
   special = false
 }
 
+# HMAC key the backend uses to bind caller-supplied AgentCore session ids (and
+# channel conversation ids) to the authenticated tenant, so two callers can
+# never share a warm microVM by naming the same id. Only has to be stable across
+# replicas and restarts; rotation ends continuity for every open session
+# (rotation = taint this resource, then roll the backend). Delivered through the
+# chart's Secret, never as a plain env value.
+resource "random_password" "session_binding" {
+  length  = 48
+  special = false
+}
+
 resource "aws_cloudfront_origin_access_control" "frontend" {
   name                              = "agent-platform-frontend${var.name_suffix}"
   origin_access_control_origin_type = "s3"
