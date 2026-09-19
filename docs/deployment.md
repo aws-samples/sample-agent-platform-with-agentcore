@@ -179,14 +179,17 @@ aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id <id> > cur.js
 aws bedrock-agentcore-control update-agent-runtime --agent-runtime-id <id> \
   --agent-runtime-artifact "$(jq -c .agentRuntimeArtifact cur.json)" \
   --role-arn "$(jq -r .roleArn cur.json)" \
-  --network-configuration "$(jq -c .networkConfiguration cur.json)" \
+  --network-configuration "$(jq -c 'del(.networkModeConfig.requireServiceS3Endpoint)' cur.json | jq -c .networkConfiguration)" \
   --protocol-configuration "$(jq -c .protocolConfiguration cur.json)" \
   --lifecycle-configuration "$(jq -c .lifecycleConfiguration cur.json)" \
   --environment-variables "$(jq -c .environmentVariables cur.json)" \
   --platform-version V2
 ```
 
-Later Terraform updates (new image tags) omit the field, which the service
+`requireServiceS3Endpoint` is read-only once a VPC-mode runtime exists (the
+service rejects the update outright if it is present), which is why the
+network block above strips it before replaying. Later Terraform updates (new
+image tags) omit the field, which the service
 treats as "keep the current platform version", so the setting survives. A V2
 create or update prepares the snapshot before the runtime reaches `READY`,
 which takes minutes rather than seconds; the container must answer `/ping`
