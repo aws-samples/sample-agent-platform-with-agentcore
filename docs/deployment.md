@@ -69,7 +69,10 @@ gateway requires a grant the backend mints for one session, because a kernel
 container's user is root inside it and must not hold the gateway key. That grant
 is served by the `llm-edge` service, so gateway mode needs it deployed.
 
-1. Store the gateway API key. Only the `llm-edge` workload role can read it:
+1. Store the gateway API key. Only the `llm-edge` workload role can read it.
+   Use a key scoped to the models you intend to serve (a LiteLLM *virtual
+   key*, not the master key): `llm-edge` only forwards the Anthropic
+   inference routes, but least privilege on the key itself costs nothing.
 
    ```bash
    aws secretsmanager put-secret-value \
@@ -292,6 +295,24 @@ Auth modes (backend resolves in this order):
    manual walkthroughs of each page, see the
    [user guide](user-guide.md).
 
+   **The `portal-admin` secret.** Nothing creates it for you — it holds
+   `{"username","password"}` for a portal admin, and two things read it: this
+   E2E suite, and the schedule-runner Lambda when it delegates a
+   `pipeline:{name}` run to the backend API. Its name is **suffix-aware**,
+   because the credential is a user in *this* stack's Cognito pool and two
+   stacks in one account must not share one:
+
+   ```bash
+   cd terraform
+   aws secretsmanager create-secret \
+     --name "$(terraform output -raw portal_admin_secret_name)" \
+     --secret-string '{"username":"admin","password":"<the admin password>"}'
+   ```
+
+   With a `name_suffix` set, point the E2E suite at the same name
+   (`PORTAL_ADMIN_SECRET=agent-platform<suffix>/portal-admin`); its default is
+   the unsuffixed one.
+
 ### Roles (RBAC)
 
 The portal splits into a developer surface (Overview, Dev Workbench,
@@ -468,7 +489,7 @@ headers.
 | Feed pipeline search stage returns nothing / AccessDenied | The Web Search gateway is missing or unreachable: run `scripts/deploy_websearch_gateway.py`, confirm `/agent-platform/websearch-gateway` exists in SSM (us-east-1), and check the kernel role has `bedrock-agentcore:InvokeGateway` (`InvokeGateways` statement in the runtime module) |
 | Search stage fails with `ValidationException` on `filters` | The connector target is pinned to `1.1.0`, which has no request-level filters — re-run `scripts/deploy_websearch_gateway.py` (it re-pins to `1.2.0`; an omitted version is sticky on update) |
 | Crawl stage reports `crawl_ok: false` for most items | Expected for paywalled or bot-blocked pages — the summary falls back to the search snippet. If it is *every* item, check the `BuiltinTools` grant covers `StartBrowserSession` on `browser/*` |
-| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the `agent-platform/portal-admin` secret exists and the Lambda role's `PortalAdminSecret` grant, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB) |
+| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the secret named by `terraform output -raw portal_admin_secret_name` exists (it is suffix-aware: `agent-platform<suffix>/portal-admin`), that the Lambda's `PLATFORM_PORTAL_ADMIN_SECRET` env and its role's `PortalAdminSecret` grant name that same secret, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB). A `NotAuthorizedException` here means the secret holds another stack's password |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |
 | Memory retrieval returns nothing right after a conversation | Long-term extraction is asynchronous (typically under a minute); raw events are visible immediately on the Memory page |

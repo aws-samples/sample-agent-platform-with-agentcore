@@ -16,15 +16,33 @@ over stdio NDJSON and is served here:
 - ``phase(title)``          → live phase updates + a phase span in the trace.
 
 Fan-out concurrency is capped engine-side (``MAX_FANOUT``): the script may
-fire any number of agent() calls, excess ones queue. The engine never trusts
-the script with AWS access — Node gets no credentials-bearing SDK, only the
-narrow stdio protocol.
+fire any number of agent() calls, excess ones queue.
+
+Trust boundary. A script is arbitrary JavaScript registered by a platform
+administrator, and it runs on the backend pod — the process that holds the
+backend's IRSA role. The engine therefore keeps the script away from that
+role rather than trusting it:
+
+- the Node child gets an allow-listed environment (``PATH``, ``LANG``), never
+  ``AWS_ROLE_ARN`` / ``AWS_WEB_IDENTITY_TOKEN_FILE`` / ``PLATFORM_*``;
+- Node runs under its permission model (``--permission`` or, on Node 20,
+  ``--experimental-permission``): the only readable files are the runner and
+  the script itself, and ``child_process``, ``worker_threads`` and native
+  addons are denied — so the projected IRSA token file and ``/proc/*/environ``
+  are unreachable. The engine refuses to run when the flag is unavailable;
+- when the backend runs as root, the child is switched to the unprivileged
+  ``settings.workflow_runner_user`` account (created by the Dockerfile).
+
+What remains is what the stdio bridge exposes on purpose (governed agent
+calls, workspace-bucket S3 under the engine's caps) plus plain outbound
+network from the pod, which carries no credentials.
 """
 
 import concurrent.futures
 import json
 import logging
 import os
+import pwd
 import shutil
 import subprocess
 import tempfile
@@ -47,11 +65,54 @@ S3_READ_CAP = 2 * 1024 * 1024
 S3_WRITE_CAP = 1 * 1024 * 1024
 S3_LIST_CAP = 200
 LOG_CAP = 200
+# Node permission-model switch, newest spelling first: ``--permission`` is
+# the stable flag (22.13+ / 23.5+); Node 20 only knows the experimental name.
+NODE_PERMISSION_FLAGS = ("--permission", "--experimental-permission")
+# The child sees exactly these variables — nothing that could name a role,
+# a token file, a table or a bucket.
+CHILD_ENV_KEYS = ("PATH", "LANG", "LC_ALL")
 
 
 class WorkflowEngine:
     def __init__(self) -> None:
         self.s3 = boto3.client("s3", region_name=settings.aws_region)
+        self._permission_flags: dict[str, str | None] = {}
+
+    def _permission_flag(self, node: str) -> str | None:
+        """Which permission-model flag this ``node`` accepts (probed once)."""
+        if node not in self._permission_flags:
+            found = None
+            for flag in NODE_PERMISSION_FLAGS:
+                try:
+                    rc = subprocess.run(  # noqa: S603 — fixed argv
+                        [node, flag, "--version"], capture_output=True, timeout=15,
+                    ).returncode
+                except (OSError, subprocess.TimeoutExpired):
+                    rc = 1
+                if rc == 0:
+                    found = flag
+                    break
+            self._permission_flags[node] = found
+        return self._permission_flags[node]
+
+    @staticmethod
+    def _runner_identity() -> dict:
+        """``user``/``group`` kwargs for Popen: drop root for the script host.
+
+        Only meaningful when the backend itself runs as root (the default
+        image does); a non-root backend already is the unprivileged account.
+        A missing account is logged, not fatal — the permission model is the
+        primary barrier, this is the second one.
+        """
+        name = settings.workflow_runner_user
+        if not name or os.geteuid() != 0:
+            return {}
+        try:
+            pw = pwd.getpwnam(name)
+        except KeyError:
+            logger.warning("workflow runner user %r does not exist; scripts run as root", name)
+            return {}
+        return {"user": pw.pw_uid, "group": pw.pw_gid}
 
     @staticmethod
     def _safe_key(key: str) -> str:
@@ -109,6 +170,13 @@ class WorkflowEngine:
         if not node:
             return {"ok": False, "result": None, "logs": [],
                     "error": "node is not available in this environment — pipeline scripts run on the backend (EKS)"}
+        permission_flag = self._permission_flag(node)
+        if not permission_flag:
+            # Fail closed: without the permission model the script could read
+            # the pod's IRSA token file and act as the backend role.
+            return {"ok": False, "result": None, "logs": [],
+                    "error": "node lacks the permission model (Node >= 20 required) — "
+                             "refusing to run pipeline scripts unsandboxed"}
 
         logs: list[str] = []
         state = {"result": None, "error": "", "done": False, "phase": ""}
@@ -118,13 +186,21 @@ class WorkflowEngine:
         with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False, encoding="utf-8") as f:
             f.write(script)
             script_path = f.name
+        # the unprivileged runner account has to be able to read it
+        os.chmod(script_path, 0o644)
 
-        cmd = [node, str(RUNNER), script_path]
+        cmd = [
+            node, permission_flag, "--disable-warning=ExperimentalWarning",
+            f"--allow-fs-read={RUNNER}", f"--allow-fs-read={script_path}",
+            str(RUNNER), script_path,
+        ]
         if args is not None:
             cmd.append(json.dumps(args, ensure_ascii=False))
+        env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
+        env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
         proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8",
+            text=True, encoding="utf-8", env=env, **self._runner_identity(),
         )
 
         def reply(msg_id, value) -> None:

@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     portal_api_url: str = ""
     portal_admin_secret: str = "agent-platform/portal-admin"
 
+    # Unprivileged account the pipeline workflow script host (Node) is
+    # switched to when the backend runs as root (see workflow_engine). The
+    # Dockerfile creates it; empty = keep the backend's own identity.
+    workflow_runner_user: str = "workflow"
+
     # Keys the caller-binding of client-controllable AgentCore session ids
     # (see session_binding). A caller-submitted session_id and a channel
     # conversation id are both folded through an HMAC under this secret so

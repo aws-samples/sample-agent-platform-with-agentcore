@@ -208,7 +208,7 @@ Trust: `lambda.amazonaws.com`.
 | *(S3 `grant_read_write`)* | as backend | `agent-platform-workspaces-*` | **(Phase 5)** Pipeline schedules read staged feeds and write the shortlist. |
 | `AgentCoreInvoke` | `bedrock-agentcore:InvokeAgentRuntime` | `runtime/*` in this account/region | Invoke the target kernel/agent. |
 | `PipelineTraces` | `xray:PutTraceSegments`, `PutTelemetryRecords` | `*` | Trace the fired run (see [§4](#4-wildcard-resource-statements)). |
-| `PortalAdminSecret` | `secretsmanager:GetSecretValue` | `agent-platform/portal-admin-*` only | **(Phase 5)** Pipeline (workflow-script) schedules need Node, which only the backend container has. The Lambda delegates those to the backend API, authenticating as the portal admin. Non-pipeline schedules do not use this. |
+| `PortalAdminSecret` | `secretsmanager:GetSecretValue` | `agent-platform<suffix>/portal-admin*` only — the same name the Lambda's `PLATFORM_PORTAL_ADMIN_SECRET` env carries | **(Phase 5)** Pipeline (workflow-script) schedules need Node, which only the backend container has. The Lambda delegates those to the backend API, authenticating as the portal admin. Non-pipeline schedules do not use this, and the backend task role deliberately has no such grant — it runs pipelines in-process and never needs the credential. |
 
 The Lambda also holds the CloudWatch Logs grant for its own log group
 (`/aws/lambda/agent-platform-schedule-runner`), added implicitly by the CDK

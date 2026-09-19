@@ -249,6 +249,29 @@ HEALTHY="$(aws elbv2 describe-target-health --target-group-arn "$TG_ALB" \
 if [ "${HEALTHY:-0}" -ge 1 ] 2>/dev/null; then ok "alb target group has healthy pod targets ($HEALTHY)"
 else bad "alb target group has healthy pod targets" "healthy count '$HEALTHY'"; fi
 
+# ---- schedule-runner Lambda -------------------------------------------------
+# The runner packages the same service layer as the backend, so it needs the
+# same names passed in. An empty environment leaves it on config.py's defaults —
+# the *unsuffixed* table above all — which is present-and-correct-looking but
+# reads someone else's data. And the admin-secret name has to match the grant
+# on its role, or every pipeline schedule dies on AccessDenied.
+RUNNER_FN="agent-platform-schedule-runner${SUFFIX}"
+RUNNER_ENV="$(aws lambda get-function-configuration --function-name "$RUNNER_FN" \
+  --query 'Environment.Variables' --output json 2>/dev/null)"
+if [ -n "$RUNNER_ENV" ] && [ "$RUNNER_ENV" != "null" ]; then
+  renv() { printf '%s' "$RUNNER_ENV" | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('$1',''))"; }
+  check "runner table matches the deployment" "$TABLE" "$(renv PLATFORM_DYNAMO_TABLE)"
+  check "runner admin secret is suffix-aware" \
+    "agent-platform${SUFFIX}/portal-admin" "$(renv PLATFORM_PORTAL_ADMIN_SECRET)"
+  # Set here and NOT on the backend: it is what selects the pipeline delegation
+  # path, and the backend runs workflow scripts in-process.
+  check "runner delegates pipelines to the portal API" "$PORTAL" "$(renv PLATFORM_PORTAL_API_URL)"
+else
+  bad "schedule-runner has an environment" "no Environment.Variables on $RUNNER_FN"
+fi
+
 ##############################################################################
 printf '\n=== L1 · portal edge (negative assertions) ===\n'
 ##############################################################################

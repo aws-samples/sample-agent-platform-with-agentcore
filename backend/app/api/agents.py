@@ -30,7 +30,10 @@ def list_agents(user: Principal = Depends(get_current_user)):
 
 
 @router.post("")
-def publish_agent(req: AgentPublishRequest, user: str = Depends(get_current_user)):
+def publish_agent(req: AgentPublishRequest, user: Principal = Depends(get_current_user)):
+    """Publish a new agent, or a new version of one the caller published.
+    Re-publishing keeps the agent id, so the name is owned by whoever
+    published it first — another user gets 403, not a silent takeover."""
     try:
         agent = agent_service.publish(
             user=user,
@@ -44,6 +47,8 @@ def publish_agent(req: AgentPublishRequest, user: str = Depends(get_current_user
             model_backend=req.model_backend,
             model=req.model,
         )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     audit_service.record(user, "agent.publish", f"agent:{agent['name']}", f"v{agent['version']}")
@@ -52,7 +57,7 @@ def publish_agent(req: AgentPublishRequest, user: str = Depends(get_current_user
 
 @router.post("/publish-from-session")
 def publish_from_session(
-    req: AgentPublishFromSessionRequest, user: str = Depends(get_current_user)
+    req: AgentPublishFromSessionRequest, user: Principal = Depends(get_current_user)
 ):
     """Self-service publish: read agent.yaml from a Dev Workbench session's
     workspace and publish it as a versioned agent."""
@@ -65,6 +70,8 @@ def publish_from_session(
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     audit_service.record(
