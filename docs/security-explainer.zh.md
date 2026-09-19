@@ -467,6 +467,9 @@ loopback shim（内核进程内）
     ↓
 llm-edge
   凭证 → 反查 grant：是否有效、属于哪个用户/团队、允许哪些模型
+  路由白名单：只放行 POST /v1/messages、POST /v1/messages/count_tokens、
+    GET /v1/models；网关的管理接口（/key/*、/spend/*、/user/*、/model/* 等）
+    以及按路径选模型的兼容接口一律拒绝，请求头也按白名单转发
   注入真实网关密钥，流式转发，记录用量
     ↓
 LiteLLM（VPC 外，经固定 NAT EIP 出网，网关侧做源 IP 白名单）
@@ -474,7 +477,10 @@ LiteLLM（VPC 外，经固定 NAT EIP 出网，网关侧做源 IP 白名单）
 
 grant 里的上游地址、密钥名、模型白名单，全部由后端在铸凭证时写入，
 `llm-edge` 每次调用都重新读取。**容器上报的任何路由信息都不被采信**，所以租户
-无法通过改请求把自己路由到别的模型或别的上游。
+无法通过改请求把自己路由到别的模型或别的上游。同时，网关密钥只会被注入到上述
+三条推理路由上：即使存入 Secrets Manager 的是一把权限过大的网关 key（例如
+LiteLLM 的 master key），session 也无法借它调用网关管理接口给自己签发长期
+key。仍建议存放按模型限定范围的虚拟 key，而不是 master key。
 
 ### 9.4 可验收的三条
 
