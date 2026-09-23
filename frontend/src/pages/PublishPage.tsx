@@ -297,7 +297,7 @@ export default function PublishPage() {
               <StatusBadge status={k.status} />
             </div>
             <p className="text-sm leading-relaxed text-slate-600">{k.description}</p>
-            {k.platform_versions.length > 1 ? (
+            {(k.platform_versions?.length ?? 0) > 1 ? (
               <div className="mt-3 space-y-1">
                 {k.platform_versions.map((v) => (
                   <div key={v.version} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">

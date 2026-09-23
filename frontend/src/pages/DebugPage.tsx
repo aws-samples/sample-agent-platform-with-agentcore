@@ -139,7 +139,7 @@ export default function DebugPage() {
           {isAgent && (
             <p className="mt-1 text-[11px] text-slate-400">
               Published agent — system prompt, tools and memory come from its published config.
-              {sdkKernel && sdkKernel.platform_versions.length > 1 && (
+              {(sdkKernel?.platform_versions?.length ?? 0) > 1 && (
                 <>
                   {' '}Runs on{' '}
                   {targetAgent?.platform_version
