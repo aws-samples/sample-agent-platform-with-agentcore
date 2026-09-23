@@ -59,3 +59,42 @@ variable "runtime_name_suffix" {
   type        = string
   default     = ""
 }
+
+variable "platform_versions" {
+  description = "AgentCore Runtime platform versions to deploy the interactive and headless kernels on. One runtime per kernel per version, same image. V2 is available only in some Regions (see the AgentCore Runtime docs)."
+  type        = list(string)
+  default     = ["V1"]
+
+  validation {
+    condition     = length(var.platform_versions) > 0 && alltrue([for v in var.platform_versions : contains(["V1", "V2"], v)])
+    error_message = "platform_versions must be a non-empty list of \"V1\" and/or \"V2\"."
+  }
+}
+
+variable "default_platform_version" {
+  description = "Platform version used when a session or published agent does not choose one. Must be in platform_versions."
+  type        = string
+  default     = "V1"
+
+  validation {
+    condition     = contains(var.platform_versions, var.default_platform_version)
+    error_message = "default_platform_version must be one of platform_versions."
+  }
+}
+
+variable "mcp_tools_platform_version" {
+  description = "Platform version of the MCP tools runtime (a single runtime: it is a gateway target, not chosen per session)."
+  type        = string
+  default     = "V1"
+
+  validation {
+    condition     = contains(["V1", "V2"], var.mcp_tools_platform_version)
+    error_message = "mcp_tools_platform_version must be \"V1\" or \"V2\"."
+  }
+}
+
+variable "platform_version_python" {
+  description = "Python interpreter for scripts/set_platform_version.py (needs boto3/botocore >= 1.43.98, the first release with platformVersion)."
+  type        = string
+  default     = "python3"
+}

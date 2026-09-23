@@ -1,6 +1,6 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-boto3>=1.40.0
+boto3>=1.43.98  # AgentCore Runtime platformVersion (V1/V2)
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 PyJWT[crypto]>=2.9.0

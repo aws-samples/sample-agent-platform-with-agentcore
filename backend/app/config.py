@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     sdk_runtime_arn: str = ""
     mcp_tools_runtime_arn: str = ""
     runtime_qualifier: str = "DEFAULT"
+    # AgentCore sets platformVersion (V1 = boot per session, V2 = restore from
+    # a snapshot) on the runtime itself, so a kernel offered on both versions
+    # is two runtimes. JSON maps {"V1": arn, "V2": arn}; empty = the single
+    # ARN above serves every session (deployments without the split).
+    interactive_runtime_arns: dict[str, str] = {}
+    sdk_runtime_arns: dict[str, str] = {}
+    # used when a session / published agent does not choose a version
+    default_platform_version: str = "V1"
 
     # S3 bucket where kernels persist per-session workspaces
     workspace_bucket: str = ""
@@ -130,3 +138,53 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+PLATFORM_VERSIONS = ("V1", "V2")
+
+
+def kernel_runtime(kernel: str) -> str:
+    """Session kernel id ("claude-code" | "agent-sdk") -> runtime family."""
+    return "sdk" if kernel == "agent-sdk" else "interactive"
+
+
+def platform_versions(kernel: str) -> list[str]:
+    """Platform versions a kernel ("interactive" | "sdk") is deployed on.
+    Empty when the deployment has no per-version runtimes."""
+    arns = settings.interactive_runtime_arns if kernel == "interactive" else settings.sdk_runtime_arns
+    return [v for v in PLATFORM_VERSIONS if arns.get(v)]
+
+
+def resolve_platform_version(kernel: str, requested: str = "") -> str:
+    """The version a new session / agent should record. ``""`` picks the
+    deployment default; an undeployed version raises ValueError. Returns ""
+    when the deployment has no per-version runtimes (nothing to choose)."""
+    deployed = platform_versions(kernel)
+    if not deployed:
+        if requested:
+            raise ValueError("this deployment offers a single runtime per kernel; platform_version is not selectable")
+        return ""
+    version = requested or settings.default_platform_version
+    if version not in deployed:
+        if requested:
+            raise ValueError(f"platform version {requested} is not deployed for this kernel (have: {', '.join(deployed)})")
+        version = deployed[0]
+    return version
+
+
+def effective_platform_version(kernel: str, platform_version: str = "") -> str:
+    """The version a call actually lands on. Records created before the split
+    carry no version and land on the deployment default; a version that is no
+    longer deployed also falls back to the default rather than failing the
+    session. "" when the deployment has no per-version runtimes."""
+    deployed = platform_versions(kernel)
+    for v in (platform_version, settings.default_platform_version):
+        if v in deployed:
+            return v
+    return deployed[0] if deployed else ""
+
+
+def runtime_arn(kernel: str, platform_version: str = "") -> str:
+    """ARN for a kernel on a platform version (see effective_platform_version)."""
+    arns = settings.interactive_runtime_arns if kernel == "interactive" else settings.sdk_runtime_arns
+    single = settings.interactive_runtime_arn if kernel == "interactive" else settings.sdk_runtime_arn
+    return arns.get(effective_platform_version(kernel, platform_version)) or single

@@ -1,8 +1,8 @@
 # Resource inventory — the five default modules
 
 Every AWS resource the default deployment creates (`terraform apply` with
-`enable_team_auth`/`enable_team_demo`/`enable_llm_edge` off): **120 resource
-blocks** across the five modules — network 11, platform 17, runtime 11, eks 23,
+`enable_team_auth`/`enable_team_demo`/`enable_llm_edge` off): **123 resource
+blocks** across the five modules — network 11, platform 17, runtime 14, eks 23,
 portal 58 — in dependency order. Use it to scope IAM for a deployment role, to
 audit what a stack left behind, or to port the platform onto an in-house IaC
 standard without reverse-engineering `terraform/` — each row names the
@@ -58,7 +58,7 @@ subnet IDs from variables instead.
 | `aws_ecr_repository` | `agent-platform/llm-edge` | Gateway-broker image. Kept **out** of the kernel repo set on purpose: kernel execution roles get pull on every repo in that set, and nothing inside a session container should be able to pull the image of the service that holds the gateway key. The repo exists even with `enable_llm_edge = false` so phase-1 pushes work | same | — |
 | `aws_secretsmanager_secret` + `_version` | `agent-platform/llm-gateway` | LLM gateway API key, read only by the `llm-edge` task role (never by a kernel) | created as a **placeholder** with `ignore_changes` — the real value is set out-of-band | — |
 
-## runtime (11)
+## runtime (14)
 
 | Resource | Name / scope | Purpose | Key configuration | Depends on |
 |---|---|---|---|---|
@@ -66,7 +66,8 @@ subnet IDs from variables instead.
 | `aws_iam_role` + `aws_iam_role_policy` | `agent-platform-sdk-role` | Headless (agent-sdk) kernel role | as above **plus** S3 write limited to the `async_artifact_prefixes` key prefixes (default `feeds/*` — pipeline outputs) and read on `agent-platform/remote-mcp-key*` (for `{{secret:…}}` placeholders in registered MCP targets) | same |
 | `aws_iam_role` + `aws_iam_role_policy` | `agent-platform-mcp-tools-role` | MCP tools kernel role | minimal — the shared `kernel_base` policy only: ECR pull + logs. **No S3, no Secrets Manager, no data-plane actions** | ECR repos |
 | `aws_iam_role` + `aws_iam_role_policy` | `agent-platform-workspace-access` | Assumed by the backend per session, with an inline **session policy** narrowing S3 to `workspaces/{runtimeSessionId}/*` | trusts the backend task role; grants `workspaces/*` that the session policy then narrows — a bug can never widen past `workspaces/*` | — |
-| `aws_bedrockagentcore_agent_runtime` ×3 | `claude_code_kernel` / `agent_sdk_kernel` / `mcp_tools_kernel` | The three kernels | `network_mode = VPC` (private subnets + runtime SG); `server_protocol` HTTP / HTTP / **MCP**; env carries model routing + gateway URL. **AgentCore validates image pull with the execution role at create time** — the runtime must wait on the role *policy*, and IAM propagation makes create-after-put-role-policy racy (the failure reads like a bad image URI) | role policies, ECR images **pushed**, subnets, SG |
+| `aws_bedrockagentcore_agent_runtime` ×3 (+2 per extra platform version) | `claude_code_kernel` / `agent_sdk_kernel` / `mcp_tools_kernel`; with `runtime_platform_versions` including V2, also `claude_code_kernel_v2` / `agent_sdk_kernel_v2` | The three kernels (interactive and headless: one runtime per platform version, same image) | `network_mode = VPC` (private subnets + runtime SG); `server_protocol` HTTP / HTTP / **MCP**; env carries model routing + gateway URL. **AgentCore validates image pull with the execution role at create time** — the runtime must wait on the role *policy*, and IAM propagation makes create-after-put-role-policy racy (the failure reads like a bad image URI) | role policies, ECR images **pushed**, subnets, SG |
+| `terraform_data` ×3 (one per runtime) | `*_platform_version` | Sets each runtime's AgentCore platform version (V1/V2) with a local-exec of `scripts/set_platform_version.py`, since neither the aws provider nor CloudFormation has the field yet | trigger = (runtime id, version); the interpreter (`platform_version_python`) needs botocore >= 1.43.98; V2 takes several minutes to reach READY | the runtime |
 
 ## eks (23)
 

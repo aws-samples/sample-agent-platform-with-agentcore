@@ -58,6 +58,15 @@ service_api_allowed_vpces = [] # e.g. ["vpce-0123456789abcdef0"]
 # eks_node_instance_type   = "m7g.large"
 # eks_node_count           = 3
 
+# --- AgentCore Runtime platform versions ------------------------------------
+# V1 boots each session; V2 restores it from a snapshot (~2 s cold start, higher
+# unit price, subset of Regions). Listing both deploys the interactive and
+# headless kernels twice and lets sessions / published agents pick one.
+# runtime_platform_versions        = ["V1", "V2"]
+# runtime_default_platform_version = "V2"
+# mcp_tools_platform_version       = "V1"
+# platform_version_python          = "python3" # needs botocore >= 1.43.98
+
 # --- deploy staging ---------------------------------------------------------
 # Phase 1 (repos only):   enable_runtime = false, enable_portal = false
 # Phase 2: push images (scripts/build-and-push.sh)
