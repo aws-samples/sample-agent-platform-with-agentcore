@@ -15,7 +15,7 @@ import boto3
 from botocore.auth import SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 
-from app.config import settings
+from app.config import runtime_arn, settings
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class SessionService:
         skill_ids: list[str] | None = None,
         model_backend: str = "",
         model: str = "",
+        platform_version: str = "",
     ) -> dict:
         session_id = str(uuid.uuid4())
         # uuid4 hex is 32 chars; the prefix pushes it past AgentCore's
@@ -63,6 +64,9 @@ class SessionService:
             # model-config change applies to the session's next warmup
             "model_backend": model_backend,
             "model": model,
+            # AgentCore Runtime platform version, fixed at creation: it picks
+            # the runtime, and a runtimeSessionId is scoped to one runtime
+            "platform_version": platform_version,
         }
         self.table.put_item(Item=item)
         return item
@@ -100,7 +104,9 @@ class SessionService:
 
     # ------------------------------------------------- terminal connectivity
 
-    def warmup(self, runtime_session_id: str, config: dict | None = None) -> str:
+    def warmup(
+        self, runtime_session_id: str, config: dict | None = None, platform_version: str = ""
+    ) -> str:
         """Invoke the runtime so AgentCore starts (or reuses) the session's
         container and injects the session ID. ``config`` carries the session's
         MCP/skill attachments, which the kernel applies before Claude Code
@@ -110,7 +116,7 @@ class SessionService:
             payload["config"] = config
         try:
             resp = self.agentcore.invoke_agent_runtime(
-                agentRuntimeArn=settings.interactive_runtime_arn,
+                agentRuntimeArn=runtime_arn("interactive", platform_version),
                 qualifier=settings.runtime_qualifier,
                 runtimeSessionId=runtime_session_id,
                 payload=json.dumps(payload).encode(),
@@ -121,13 +127,15 @@ class SessionService:
             logger.warning("warmup failed: %s", e)
             return "error"
 
-    def generate_presigned_wss_url(self, runtime_session_id: str, expires: int = 300) -> str:
+    def generate_presigned_wss_url(
+        self, runtime_session_id: str, expires: int = 300, platform_version: str = ""
+    ) -> str:
         """SigV4QueryAuth-signed WSS URL for the browser.
 
         Browsers cannot attach custom headers to WebSocket connections, so the
         signature and the runtime session ID both travel in the query string.
         """
-        arn = settings.interactive_runtime_arn
+        arn = runtime_arn("interactive", platform_version)
         region = settings.aws_region
         encoded_arn = quote(arn, safe="")
         host = f"bedrock-agentcore.{region}.amazonaws.com"

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 import boto3
 import yaml
 
-from app.config import settings
+from app.config import resolve_platform_version, settings
 from app.services.ecosystem_service import ecosystem_service
 from app.services.mcp_hub_credentials_service import mcp_hub_credentials_service
 
@@ -68,6 +68,9 @@ class AgentService:
             "memory_id": item.get("memory_id", ""),
             "model_backend": item.get("model_backend", ""),
             "model": item.get("model", ""),
+            # AgentCore Runtime platform version; "" = follow the deployment
+            # default (so a default change moves agents that never chose)
+            "platform_version": item.get("platform_version", ""),
             # MCP hub Actor identity (set when an mcp-hub server is attached).
             # The access key is an identifier — safe to show; the secret key
             # never leaves Secrets Manager, only its name is recorded here.
@@ -149,6 +152,7 @@ class AgentService:
         memory_id: str = "",
         model_backend: str = "",
         model: str = "",
+        platform_version: str = "",
         source: str = "manual",
     ) -> dict:
         """Create or re-publish (version bump) an agent by name."""
@@ -161,6 +165,9 @@ class AgentService:
             # fail the publish, not the future invocation, on a bad reference
             from app.services.model_config_service import model_config_service
             model_config_service.resolve(model_backend, model)
+        if platform_version:
+            # same: an undeployed version fails here, not at invoke time
+            resolve_platform_version("sdk", platform_version)
 
         existing = next((a for a in self.list_agents() if a["name"] == name), None)
         now = _now()
@@ -212,6 +219,7 @@ class AgentService:
             "memory_id": memory_id,
             "model_backend": model_backend,
             "model": model,
+            "platform_version": platform_version,
             "mcp_hub_access_key": mcp_hub_access_key,
             "mcp_hub_secret_name": mcp_hub_secret_name,
             "version": version,
@@ -261,6 +269,7 @@ class AgentService:
             memory_id=str(manifest.get("memory_id", "")),
             model_backend=str(manifest.get("model_backend", "")),
             model=str(manifest.get("model", "")),
+            platform_version=str(manifest.get("platform_version", "")),
             source=f"workspace:{runtime_session_id[:16]}",
         )
 
@@ -302,6 +311,7 @@ class AgentService:
             "memory_id": agent["memory_id"],
             "model_backend": agent["model_backend"],
             "model": agent["model"],
+            "platform_version": agent["platform_version"],
             **cfg,
         }
 

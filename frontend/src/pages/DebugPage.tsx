@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Loader2, Play, RefreshCw, RotateCcw } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
+import { PLATFORM_VERSION_LABEL, PlatformVersionSelect } from '@/components/common/PlatformVersion'
 import {
   api,
   type EcosystemEntry,
   type InvokeResult,
+  type Kernel,
   type MemoryStore,
+  type PlatformVersion,
   type PublishedAgent,
 } from '@/services/api'
 import { getUser } from '@/services/auth'
@@ -27,6 +30,8 @@ export default function DebugPage() {
   const [error, setError] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [agents, setAgents] = useState<PublishedAgent[]>([])
+  const [sdkKernel, setSdkKernel] = useState<Kernel | undefined>()
+  const [platformVersion, setPlatformVersion] = useState<PlatformVersion | ''>('')
   const [mcpOptions, setMcpOptions] = useState<EcosystemEntry[]>([])
   const [selMcp, setSelMcp] = useState<string[]>([])
   const [skillOptions, setSkillOptions] = useState<EcosystemEntry[]>([])
@@ -53,6 +58,10 @@ export default function DebugPage() {
     api.listMcpServers().then(setMcpOptions).catch(() => {})
     api.listSkills().then(setSkillOptions).catch(() => {})
     api.listAgents().then(setAgents).catch(() => {})
+    api
+      .listKernels()
+      .then((ks) => setSdkKernel(ks.find((k) => k.id === 'agent-sdk')))
+      .catch(() => {})
     loadStores()
   }, [])
 
@@ -63,10 +72,11 @@ export default function DebugPage() {
     if (memoryActive && !memoryActor) setMemoryActor(getUser() || '')
   }, [memoryActive]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // switching target invalidates the warm session
+  // switching target or platform version (a different runtime) invalidates
+  // the warm session
   useEffect(() => {
     setSessionId(null)
-  }, [target])
+  }, [target, platformVersion])
 
   const invoke = async () => {
     if (!prompt.trim()) return
@@ -87,6 +97,7 @@ export default function DebugPage() {
             skill_ids: selSkills.length ? selSkills : undefined,
             memory_id: memoryId || undefined,
             memory_actor_id: memoryActor || undefined,
+            platform_version: platformVersion || undefined,
           })
       setSessionId(result.runtime_session_id)
       setHistory((h) => [
@@ -128,7 +139,19 @@ export default function DebugPage() {
           {isAgent && (
             <p className="mt-1 text-[11px] text-slate-400">
               Published agent — system prompt, tools and memory come from its published config.
+              {(sdkKernel?.platform_versions?.length ?? 0) > 1 && (
+                <>
+                  {' '}Runs on{' '}
+                  {targetAgent?.platform_version
+                    ? PLATFORM_VERSION_LABEL[targetAgent.platform_version]
+                    : 'the platform default'}
+                  .
+                </>
+              )}
             </p>
+          )}
+          {!isAgent && (
+            <PlatformVersionSelect kernel={sdkKernel} value={platformVersion} onChange={setPlatformVersion} />
           )}
 
           <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">Prompt</label>

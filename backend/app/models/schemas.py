@@ -11,6 +11,8 @@ class SessionCreateRequest(BaseModel):
     # "" = platform default backend; otherwise a backend from the model config
     model_backend: str = Field(default="", pattern="^(|bedrock|litellm)$")
     model: str = Field(default="", max_length=200)
+    # AgentCore Runtime platform version; "" = deployment default
+    platform_version: str = Field(default="", pattern="^(|V1|V2)$")
 
 
 class SessionResponse(BaseModel):
@@ -26,6 +28,7 @@ class SessionResponse(BaseModel):
     skills: list[str] = []  # attached skill names (display)
     model_backend: str = ""
     model: str = ""
+    platform_version: str = ""  # "" = created before per-version runtimes
 
 
 class ConnectResponse(BaseModel):
@@ -42,6 +45,10 @@ class KernelInfo(BaseModel):
     runtime_arn: str
     status: str
     available: bool
+    # one entry per deployed platform version:
+    # {version, runtime_arn, status, available, platform_version (as AgentCore reports it)}
+    platform_versions: list[dict] = []
+    default_platform_version: str = ""
 
 
 class InvokeRequest(BaseModel):
@@ -55,6 +62,8 @@ class InvokeRequest(BaseModel):
     memory_actor_id: str = Field(default="", max_length=80)
     # replay the last K exchanges of this session on cold start (0 disables)
     memory_last_k_turns: int = Field(default=10, ge=0, le=50)
+    # AgentCore Runtime platform version of the headless kernel; "" = default
+    platform_version: str = Field(default="", pattern="^(|V1|V2)$")
 
 
 class McpServerCreateRequest(BaseModel):
@@ -120,6 +129,9 @@ class AgentPublishRequest(BaseModel):
     # "" = platform default backend; otherwise a backend from the model config
     model_backend: str = Field(default="", pattern="^(|bedrock|litellm)$")
     model: str = Field(default="", max_length=200)
+    # AgentCore Runtime platform version the agent runs on; "" = default.
+    # Pipelines, schedules and channels calling the agent inherit it.
+    platform_version: str = Field(default="", pattern="^(|V1|V2)$")
 
 
 class AgentPublishFromSessionRequest(BaseModel):

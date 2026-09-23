@@ -46,6 +46,7 @@ def publish_agent(req: AgentPublishRequest, user: Principal = Depends(get_curren
             memory_id=req.memory_id,
             model_backend=req.model_backend,
             model=req.model,
+            platform_version=req.platform_version,
         )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

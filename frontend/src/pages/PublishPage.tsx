@@ -15,12 +15,14 @@ import {
   UploadCloud,
 } from 'lucide-react'
 import { Modal, SectionTitle, StatusBadge } from '@/components/common/ui'
+import { PLATFORM_VERSION_LABEL, PlatformVersionSelect, PlatformVersionTag } from '@/components/common/PlatformVersion'
 import {
   api,
   type EcosystemEntry,
   type Kernel,
   type MemoryStore,
   type ModelConfig,
+  type PlatformVersion,
   type PublishedAgent,
   type Session,
 } from '@/services/api'
@@ -60,6 +62,7 @@ export default function PublishPage() {
   const [editMemory, setEditMemory] = useState('')
   const [editBackend, setEditBackend] = useState('')
   const [editModel, setEditModel] = useState('')
+  const [editVersion, setEditVersion] = useState<PlatformVersion | ''>('')
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState('')
   const [mcpOptions, setMcpOptions] = useState<EcosystemEntry[]>([])
@@ -112,6 +115,7 @@ export default function PublishPage() {
     setEditMemory(a.memory_id)
     setEditBackend(a.model_backend || '')
     setEditModel(a.model || '')
+    setEditVersion(a.platform_version || '')
     setEditError('')
   }
 
@@ -130,6 +134,7 @@ export default function PublishPage() {
         memory_id: editMemory,
         model_backend: editBackend,
         model: editModel,
+        platform_version: editVersion,
       })
       setEditing(null)
       setPublished(agent)
@@ -235,6 +240,7 @@ export default function PublishPage() {
                   {a.model_backend}{a.model ? ` · ${a.model.length > 28 ? a.model.slice(0, 28) + '…' : a.model}` : ''}
                 </span>
               )}
+              <PlatformVersionTag version={a.platform_version} />
               <span className="badge bg-slate-100 text-slate-500">{a.max_turns} turns</span>
               {a.mcp_hub_access_key && (
                 <span
@@ -291,10 +297,30 @@ export default function PublishPage() {
               <StatusBadge status={k.status} />
             </div>
             <p className="text-sm leading-relaxed text-slate-600">{k.description}</p>
-            {k.runtime_arn && (
-              <p className="mt-3 truncate rounded-lg bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-500">
-                {k.runtime_arn}
-              </p>
+            {(k.platform_versions?.length ?? 0) > 1 ? (
+              <div className="mt-3 space-y-1">
+                {k.platform_versions.map((v) => (
+                  <div key={v.version} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                    <span className="w-28 shrink-0 text-[11px] font-medium text-slate-600">
+                      {PLATFORM_VERSION_LABEL[v.version]}
+                      {v.version === k.default_platform_version ? ' · default' : ''}
+                    </span>
+                    <span className="truncate font-mono text-[11px] text-slate-500">{v.runtime_arn}</span>
+                    {v.platform_version && v.platform_version !== v.version && (
+                      <span className="badge shrink-0 bg-amber-50 text-amber-700" title="AgentCore reports a different platform version than this runtime is deployed as">
+                        reports {v.platform_version}
+                      </span>
+                    )}
+                    <span className="ml-auto shrink-0"><StatusBadge status={v.status} /></span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              k.runtime_arn && (
+                <p className="mt-3 truncate rounded-lg bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-500">
+                  {k.runtime_arn}
+                </p>
+              )
             )}
           </div>
         ))}
@@ -381,6 +407,14 @@ export default function PublishPage() {
                 ))}
               </select>
             </div>
+
+            {/* pipelines, schedules and channels calling this agent inherit it */}
+            <PlatformVersionSelect
+              kernel={kernels.find((k) => k.id === 'agent-sdk')}
+              value={editVersion}
+              onChange={setEditVersion}
+              allowDefault
+            />
 
             {mcpOptions.length > 0 && (
               <>
