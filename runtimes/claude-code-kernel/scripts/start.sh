@@ -241,12 +241,23 @@ cat >> /root/.bash_profile << 'AUTOSTART'
 source /root/.bashrc 2>/dev/null || true
 if [ -z "$CLAUDE_STARTED" ] && [ -n "$PS1" ]; then
   export CLAUDE_STARTED=1
+  # Between the browser attaching and `claude` taking the tty, the shell is in
+  # cooked mode with echo on. tmux has already switched to the alternate
+  # screen, and xterm.js turns wheel/trackpad scrolling in an alternate screen
+  # into arrow-key sequences, so any scroll during this wait would be echoed
+  # back as a wall of ^[[A^[[B. On Runtime V2 the wait is visible (restore
+  # and claude start only after the first connect), so: hide echo, show one
+  # status line, and flush whatever queued up before handing over the tty.
+  stty -echo 2>/dev/null || true
+  printf '\r\033[2K  Restoring workspace and starting Claude Code…'
   # Wait for the S3 restore to finish so Claude Code sees the full workspace
   WAIT=0
   while [ ! -f /tmp/.restore-done ] && [ $WAIT -lt 30 ]; do
     sleep 1
     WAIT=$((WAIT + 1))
   done
+  python3 -c 'import sys,termios; termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)' 2>/dev/null || true
+  printf '\r\033[2K'
   # Per-session model routing (written by contract-server from the warmup
   # payload's config.model). Overrides the container's baked-in model env for
   # this session's Claude Code only. Also applies on every reconnect, since
@@ -257,11 +268,15 @@ if [ -z "$CLAUDE_STARTED" ] && [ -n "$PS1" ]; then
   # ttyd spawns a new shell per WebSocket client, so a browser reconnect (or
   # a dormant-session resume) starts a fresh `claude` process. Continue the
   # previous conversation when transcripts exist — locally or restored from S3.
+  # Echo stays off while node loads the claude bundle (several seconds on a
+  # freshly restored microVM); claude switches the tty to raw mode itself and
+  # restores what it found on exit, so turn echo back on for the plain shell.
   if find /root/.claude/projects -name '*.jsonl' -size +0c 2>/dev/null | head -1 | grep -q .; then
     claude --continue || claude
   else
     claude
   fi
+  stty echo 2>/dev/null || true
 fi
 AUTOSTART
 
@@ -272,16 +287,19 @@ node /opt/contract-server/main.js &
 NODE_PID=$!
 
 (
+  # Wait for the first warmup to name the session. No time budget here: on
+  # Runtime V2 this container is snapshotted right after /ping turns healthy
+  # and every session restores from that snapshot, so a counter started at
+  # boot would already be part-way through when the session actually begins.
+  # The loop ends when the session id lands or the contract-server exits.
   log_startup "waiting for session ID from AgentCore…"
-  WAIT_COUNT=0
-  while [ ! -f "$SESSION_ID_FILE" ] && [ $WAIT_COUNT -lt 60 ]; do
+  while [ ! -f "$SESSION_ID_FILE" ] && kill -0 "$NODE_PID" 2>/dev/null; do
     sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
   done
 
   SESSION_ID=$(get_session_id)
   if [ "$SESSION_ID" = "shared" ]; then
-    log_startup "WARNING: no session ID after 60s — skipping S3 restore"
+    log_startup "WARNING: contract-server exited before a session ID arrived — skipping S3 restore"
   else
     S3_PATH="s3://${S3_BUCKET}/${S3_PREFIX}/${SESSION_ID}"
     log_startup "session: ${SESSION_ID}"
