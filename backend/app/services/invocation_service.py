@@ -15,7 +15,7 @@ import time
 
 import boto3
 
-from app.config import settings
+from app.config import effective_platform_version, settings
 from app.context import IDENTITY_PLACEHOLDER, get_caller_token
 from app.services.agent_service import agent_service
 from app.services.ecosystem_service import ecosystem_service
@@ -105,8 +105,11 @@ def _resolve_target(
     memory_id: str,
     mcp_server_ids: list[str] | None,
     skill_ids: list[str] | None,
+    platform_version: str = "",
 ) -> dict:
-    """Expand a target into kernel payload pieces (shared by sync + async)."""
+    """Expand a target into kernel payload pieces (shared by sync + async).
+    A published agent's own platform version wins over ``platform_version``
+    (which only raw-kernel callers pass)."""
     label = target
     mcp_servers: list[dict] = []
     skills: list[dict] = []
@@ -119,6 +122,7 @@ def _resolve_target(
         memory_id = memory_id or cfg["memory_id"]
         mcp_servers, skills = cfg["mcp_servers"], cfg["skills"]
         model_backend, model = cfg["model_backend"], cfg["model"]
+        platform_version = cfg.get("platform_version") or platform_version
     elif mcp_server_ids or skill_ids:
         cfg = ecosystem_service.resolve_session_config(
             mcp_server_ids or [], skill_ids or []
@@ -130,7 +134,19 @@ def _resolve_target(
     model_spec = model_config_service.resolve(model_backend, model)
     return {"label": label, "system": system, "max_turns": max_turns,
             "memory_id": memory_id, "mcp_servers": mcp_servers, "skills": skills,
-            "model_spec": model_spec}
+            "model_spec": model_spec,
+            "platform_version": effective_platform_version("sdk", platform_version)}
+
+
+def _with_platform_version(trace: dict | None, platform_version: str) -> dict | None:
+    """Stamp the runtime's platform version on the trace attributes, so spans
+    (and their cost) can be split by V1/V2."""
+    if not trace or not platform_version:
+        return trace
+    return {
+        **trace,
+        "attributes": {**(trace.get("attributes") or {}), "agent.platform_version": platform_version},
+    }
 
 
 def _with_model(trace: dict | None, model_label: str) -> dict | None:
@@ -171,6 +187,7 @@ def invoke(
     ref: str = "",
     model_spec: dict | None = None,
     trace: dict | None = None,
+    platform_version: str = "",
 ) -> dict:
     """Run one governed, recorded invocation. Raises ``QuotaExceeded`` /
     ``SourceDisabled`` (governance) and ``KeyError`` (unknown agent target).
@@ -179,12 +196,15 @@ def invoke(
     for the kernel (see kernel_service.invoke_sdk_kernel)."""
 
     # -------- resolve the target into kernel payload pieces --------
-    cfg = _resolve_target(target, system, max_turns, memory_id, mcp_server_ids, skill_ids)
+    cfg = _resolve_target(
+        target, system, max_turns, memory_id, mcp_server_ids, skill_ids, platform_version
+    )
     label, system, memory_id = cfg["label"], cfg["system"], cfg["memory_id"]
+    platform_version = cfg["platform_version"]
     mcp_servers, skills = forward_identity(cfg["mcp_servers"]), cfg["skills"]
     model_spec = model_spec if model_spec is not None else cfg["model_spec"]
     model_label = f"{model_spec['backend']}:{model_spec.get('model', '')}" if model_spec else ""
-    trace = _with_model(trace, model_label)
+    trace = _with_platform_version(_with_model(trace, model_label), platform_version)
 
     # -------- governance: policy + quota (counts the call) --------
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
@@ -212,6 +232,7 @@ def invoke(
             model=model_spec,
             user=user,
             trace=trace,
+            platform_version=platform_version,
         )
     except Exception as e:
         observability_service.record(
@@ -224,6 +245,7 @@ def invoke(
             error=str(e),
             ref=ref,
             model=model_label,
+            platform_version=platform_version,
         )
         raise
 
@@ -241,6 +263,7 @@ def invoke(
         error="" if result.get("ok") else str(result.get("raw", {}))[:300],
         ref=ref,
         model=model_label,
+        platform_version=platform_version,
     )
     return result
 
@@ -274,7 +297,10 @@ def invoke_async_and_wait(
     cfg = _resolve_target(target, system, max_turns, "", None, None)
     cfg["mcp_servers"] = forward_identity(cfg["mcp_servers"])
     spec = cfg["model_spec"]
-    trace = _with_model(trace, f"{spec['backend']}:{spec.get('model', '')}" if spec else "")
+    trace = _with_platform_version(
+        _with_model(trace, f"{spec['backend']}:{spec.get('model', '')}" if spec else ""),
+        cfg["platform_version"],
+    )
     effective_turns = governance_service.check_and_count(user, source, cfg["max_turns"])
 
     s3 = boto3.client("s3", region_name=settings.aws_region)
@@ -301,6 +327,7 @@ def invoke_async_and_wait(
             async_output={"bucket": settings.workspace_bucket, "key": output_key},
             user=user,
             trace=trace,
+            platform_version=cfg["platform_version"],
         )
         out["runtime_session_id"] = accept.get("runtime_session_id", "")
         if not (accept.get("ok") and accept.get("raw", {}).get("accepted")):
@@ -339,5 +366,6 @@ def invoke_async_and_wait(
         error=out["error"],
         ref=ref,
         model=f"{spec['backend']}:{spec.get('model', '')}" if spec else "",
+        platform_version=cfg["platform_version"],
     )
     return out

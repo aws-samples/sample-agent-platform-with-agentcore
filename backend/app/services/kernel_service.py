@@ -8,7 +8,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ConnectionClosedError, EndpointConnectionError
 
-from app.config import settings
+from app.config import platform_versions, runtime_arn, settings
 from app.services.llm_credentials_service import llm_credentials_service
 
 logger = logging.getLogger(__name__)
@@ -62,31 +62,56 @@ class KernelService:
                 "name": "Claude Code (interactive)",
                 "kind": "interactive",
                 "description": "Full Claude Code CLI in a cloud workspace with a browser terminal; files persist to S3.",
-                "runtime_arn": settings.interactive_runtime_arn,
+                "runtime": "interactive",
             },
             {
                 "id": "agent-sdk",
                 "name": "Claude Agent SDK (headless)",
                 "kind": "headless",
                 "description": "Clean agent kernel behind the standard /invocations contract for API consumers.",
-                "runtime_arn": settings.sdk_runtime_arn,
+                "runtime": "sdk",
             },
         ]
         for k in kernels:
-            k["status"] = self._runtime_status(k["runtime_arn"])
+            family = k.pop("runtime")
+            k["runtime_arn"] = runtime_arn(family)
+            k["status"], _ = self._runtime_info(k["runtime_arn"])
             k["available"] = k["status"] == "READY"
+            versions = platform_versions(family)
+            k["default_platform_version"] = (
+                settings.default_platform_version
+                if settings.default_platform_version in versions
+                else (versions[0] if versions else "")
+            )
+            k["platform_versions"] = []
+            for v in versions:
+                arn = runtime_arn(family, v)
+                status, reported = self._runtime_info(arn)
+                k["platform_versions"].append(
+                    {
+                        "version": v,
+                        "runtime_arn": arn,
+                        "status": status,
+                        "available": status == "READY",
+                        # what AgentCore reports: differs from ``version`` only
+                        # if the runtime was switched out of band
+                        "platform_version": reported,
+                    }
+                )
         return kernels
 
-    def _runtime_status(self, runtime_arn: str) -> str:
+    def _runtime_info(self, runtime_arn: str) -> tuple[str, str]:
+        """(status, platformVersion) of a runtime. platformVersion is "" when
+        this botocore predates the field (it drops unknown response members)."""
         if not runtime_arn:
-            return "NOT_CONFIGURED"
+            return "NOT_CONFIGURED", ""
         try:
             runtime_id = runtime_arn.rsplit("/", 1)[-1]
             resp = self.control.get_agent_runtime(agentRuntimeId=runtime_id)
-            return resp.get("status", "UNKNOWN")
+            return resp.get("status", "UNKNOWN"), resp.get("platformVersion") or ""
         except Exception as e:
             logger.warning("get_agent_runtime failed for %s: %s", runtime_arn, e)
-            return "UNKNOWN"
+            return "UNKNOWN", ""
 
     def invoke_sdk_kernel(
         self,
@@ -101,6 +126,7 @@ class KernelService:
         async_output: dict | None = None,
         user: str = "",
         trace: dict | None = None,
+        platform_version: str = "",
     ) -> dict:
         """Proxy an invocation to the headless kernel.
 
@@ -117,8 +143,11 @@ class KernelService:
         / baggage request headers (AgentCore Observability picks them up so
         the kernel's spans join the caller's trace), and a copy goes in the
         payload for the kernel to tag its spans with the attributes.
+        ``platform_version`` picks the runtime (V1/V2); "" = the default.
+        A reused runtime_session_id only stays warm on the same version.
         """
-        if not settings.sdk_runtime_arn:
+        target_arn = runtime_arn("sdk", platform_version)
+        if not target_arn:
             return {"ok": False, "result": "", "raw": {"error": "sdk_runtime_arn not configured"}}
 
         sid = runtime_session_id or f"dbg-{uuid.uuid4().hex}{uuid.uuid4().hex[:8]}"
@@ -179,7 +208,7 @@ class KernelService:
 
         def _invoke():
             return self.agentcore.invoke_agent_runtime(
-                agentRuntimeArn=settings.sdk_runtime_arn,
+                agentRuntimeArn=target_arn,
                 qualifier=settings.runtime_qualifier,
                 runtimeSessionId=sid,
                 payload=json.dumps(payload).encode(),

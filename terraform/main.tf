@@ -56,16 +56,20 @@ module "runtime" {
   source = "./modules/runtime"
   count  = var.enable_runtime ? 1 : 0
 
-  private_subnet_ids      = module.network.private_subnet_ids
-  runtime_sg_id           = module.network.runtime_sg_id
-  kernel_repos            = module.platform.kernel_repos
-  workspace_bucket        = module.platform.workspace_bucket
-  kernel_tags             = local.kernel_tags
-  model_env               = local.model_env
-  async_artifact_prefixes = var.async_artifact_prefixes
-  agent_observability     = var.agent_observability
-  name_suffix             = var.name_suffix
-  runtime_name_suffix     = local.runtime_suffix
+  private_subnet_ids         = module.network.private_subnet_ids
+  runtime_sg_id              = module.network.runtime_sg_id
+  kernel_repos               = module.platform.kernel_repos
+  workspace_bucket           = module.platform.workspace_bucket
+  kernel_tags                = local.kernel_tags
+  model_env                  = local.model_env
+  async_artifact_prefixes    = var.async_artifact_prefixes
+  agent_observability        = var.agent_observability
+  platform_versions          = var.runtime_platform_versions
+  default_platform_version   = var.runtime_default_platform_version
+  mcp_tools_platform_version = var.mcp_tools_platform_version
+  platform_version_python    = var.platform_version_python
+  name_suffix                = var.name_suffix
+  runtime_name_suffix        = local.runtime_suffix
 }
 
 # The cluster every platform container runs on. Created whenever a module
@@ -146,6 +150,9 @@ module "portal" {
   interactive_runtime_arn   = module.runtime[0].interactive_runtime_arn
   sdk_runtime_arn           = module.runtime[0].sdk_runtime_arn
   mcp_tools_runtime_arn     = module.runtime[0].mcp_tools_runtime_arn
+  interactive_runtime_arns  = module.runtime[0].interactive_runtime_arns
+  sdk_runtime_arns          = module.runtime[0].sdk_runtime_arns
+  default_platform_version  = var.runtime_default_platform_version
   workspace_access_role_arn = module.runtime[0].workspace_access_role_arn
   oidc_issuer               = var.oidc_issuer
   oidc_client_id            = var.oidc_client_id

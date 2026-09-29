@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.dependencies import get_current_user
-from app.config import settings
+from app.config import kernel_runtime, resolve_platform_version, settings
 from app.models.schemas import (
     ArtifactContent,
     ArtifactFile,
@@ -45,6 +45,7 @@ def _to_response(item: dict) -> SessionResponse:
         skills=item.get("attached_skill_names", []),
         model_backend=item.get("model_backend", ""),
         model=item.get("model", ""),
+        platform_version=item.get("platform_version", ""),
     )
 
 
@@ -105,6 +106,14 @@ def create_session(req: SessionCreateRequest, user: str = Depends(get_current_us
             ecosystem_service.resolve_session_config(req.mcp_server_ids, req.skill_ids)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+    # The platform version is fixed for the session's life: AgentCore scopes a
+    # runtimeSessionId to one runtime, and each version is its own runtime.
+    try:
+        platform_version = resolve_platform_version(
+            kernel_runtime(req.kernel), req.platform_version
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     item = session_service.create_session(
         user,
         req.name,
@@ -113,6 +122,7 @@ def create_session(req: SessionCreateRequest, user: str = Depends(get_current_us
         req.skill_ids,
         req.model_backend,
         req.model,
+        platform_version,
     )
     # denormalize names for display
     cfg = _session_config(item) or {"mcp_servers": [], "skills": []}
@@ -203,8 +213,13 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
                 ),
             }
 
-    status = session_service.warmup(item["runtime_session_id"], config or None)
-    wss_url = session_service.generate_presigned_wss_url(item["runtime_session_id"])
+    platform_version = item.get("platform_version", "")
+    status = session_service.warmup(
+        item["runtime_session_id"], config or None, platform_version
+    )
+    wss_url = session_service.generate_presigned_wss_url(
+        item["runtime_session_id"], platform_version=platform_version
+    )
     session_service.set_status(user, session_id, "active")
     return ConnectResponse(wss_url=wss_url, expires_in=300, runtime_status=status)
 

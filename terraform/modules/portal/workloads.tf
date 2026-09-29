@@ -436,6 +436,9 @@ locals {
       PLATFORM_INTERACTIVE_RUNTIME_ARN   = var.interactive_runtime_arn
       PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
       PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
+      PLATFORM_INTERACTIVE_RUNTIME_ARNS  = jsonencode(var.interactive_runtime_arns)
+      PLATFORM_SDK_RUNTIME_ARNS          = jsonencode(var.sdk_runtime_arns)
+      PLATFORM_DEFAULT_PLATFORM_VERSION  = var.default_platform_version
       PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
       PLATFORM_LLM_EDGE_URL              = var.llm_edge_url
       # Scoped to the portal's own origin. The API sits behind the same

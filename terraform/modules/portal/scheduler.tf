@@ -177,14 +177,17 @@ resource "aws_lambda_function" "schedule_runner" {
   # the wrong secret.
   environment {
     variables = {
-      PLATFORM_AWS_REGION              = local.region
-      PLATFORM_DYNAMO_TABLE            = var.platform_table.name
-      PLATFORM_WORKSPACE_BUCKET        = var.workspace_bucket.name
-      PLATFORM_INTERACTIVE_RUNTIME_ARN = var.interactive_runtime_arn
-      PLATFORM_SDK_RUNTIME_ARN         = var.sdk_runtime_arn
-      PLATFORM_MCP_TOOLS_RUNTIME_ARN   = var.mcp_tools_runtime_arn
-      PLATFORM_PORTAL_API_URL          = "https://${aws_cloudfront_distribution.portal.domain_name}"
-      PLATFORM_PORTAL_ADMIN_SECRET     = local.portal_admin_secret
+      PLATFORM_AWS_REGION               = local.region
+      PLATFORM_DYNAMO_TABLE             = var.platform_table.name
+      PLATFORM_WORKSPACE_BUCKET         = var.workspace_bucket.name
+      PLATFORM_INTERACTIVE_RUNTIME_ARN  = var.interactive_runtime_arn
+      PLATFORM_SDK_RUNTIME_ARN          = var.sdk_runtime_arn
+      PLATFORM_MCP_TOOLS_RUNTIME_ARN    = var.mcp_tools_runtime_arn
+      PLATFORM_INTERACTIVE_RUNTIME_ARNS = jsonencode(var.interactive_runtime_arns)
+      PLATFORM_SDK_RUNTIME_ARNS         = jsonencode(var.sdk_runtime_arns)
+      PLATFORM_DEFAULT_PLATFORM_VERSION = var.default_platform_version
+      PLATFORM_PORTAL_API_URL           = "https://${aws_cloudfront_distribution.portal.domain_name}"
+      PLATFORM_PORTAL_ADMIN_SECRET      = local.portal_admin_secret
     }
   }
 

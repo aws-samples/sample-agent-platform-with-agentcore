@@ -346,3 +346,27 @@ variable "name_suffix" {
     error_message = "name_suffix must be lowercase alphanumerics/hyphens (it is embedded in bucket and repo names)."
   }
 }
+
+variable "runtime_platform_versions" {
+  description = "AgentCore Runtime platform versions to deploy the interactive and headless kernels on (one runtime per kernel per version). V2 restores each session from a snapshot: faster, steadier cold starts at a higher unit price; available only in some Regions."
+  type        = list(string)
+  default     = ["V1"]
+}
+
+variable "runtime_default_platform_version" {
+  description = "Platform version for sessions and published agents that do not pick one. Must be in runtime_platform_versions."
+  type        = string
+  default     = "V1"
+}
+
+variable "mcp_tools_platform_version" {
+  description = "Platform version of the single MCP tools runtime."
+  type        = string
+  default     = "V1"
+}
+
+variable "platform_version_python" {
+  description = "Python interpreter Terraform uses to run scripts/set_platform_version.py (needs botocore >= 1.43.98)."
+  type        = string
+  default     = "python3"
+}

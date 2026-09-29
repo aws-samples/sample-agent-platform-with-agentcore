@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.config import resolve_platform_version
 from app.dependencies import Principal, get_current_user
 from app.models.schemas import InvokeRequest, InvokeResponse, KernelInfo
 from app.services import invocation_service
@@ -18,6 +19,10 @@ def list_kernels(user: str = Depends(get_current_user)):
 
 @router.post("/agent-sdk/invoke", response_model=InvokeResponse)
 def invoke_sdk_kernel(req: InvokeRequest, user: Principal = Depends(get_current_user)):
+    try:
+        platform_version = resolve_platform_version("sdk", req.platform_version)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         return invocation_service.invoke(
             user=user,
@@ -42,6 +47,7 @@ def invoke_sdk_kernel(req: InvokeRequest, user: Principal = Depends(get_current_
                 user, req.memory_actor_id
             ),
             memory_last_k_turns=req.memory_last_k_turns,
+            platform_version=platform_version,
         )
     except (QuotaExceeded, SourceDisabled) as e:
         raise HTTPException(status_code=429, detail=str(e))

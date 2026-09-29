@@ -2,7 +2,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { FileText, Loader2, Plus, RefreshCw, Square, Trash2, TerminalSquare } from 'lucide-react'
 import { Modal, SectionTitle, StatusBadge } from '@/components/common/ui'
 import WebTerminal from '@/components/terminal/WebTerminal'
-import { api, type ArtifactFile, type EcosystemEntry, type ModelConfig, type Session } from '@/services/api'
+import { PlatformVersionSelect, PlatformVersionTag } from '@/components/common/PlatformVersion'
+import {
+  api,
+  type ArtifactFile,
+  type EcosystemEntry,
+  type Kernel,
+  type ModelConfig,
+  type PlatformVersion,
+  type Session,
+} from '@/services/api'
 
 export default function WorkbenchPage() {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -18,6 +27,8 @@ export default function WorkbenchPage() {
   const [modelCfg, setModelCfg] = useState<ModelConfig | null>(null)
   const [selBackend, setSelBackend] = useState('')
   const [selModel, setSelModel] = useState('')
+  const [kernel, setKernel] = useState<Kernel | undefined>()
+  const [selVersion, setSelVersion] = useState<PlatformVersion | ''>('')
 
   const [active, setActive] = useState<Session | null>(null)
   const [wssUrl, setWssUrl] = useState<string | null>(null)
@@ -48,6 +59,10 @@ export default function WorkbenchPage() {
     api.listMcpServers().then(setMcpOptions).catch(() => {})
     api.listSkills().then(setSkillOptions).catch(() => {})
     api.getModelConfig().then(setModelCfg).catch(() => {})
+    api
+      .listKernels()
+      .then((ks) => setKernel(ks.find((k) => k.id === 'claude-code')))
+      .catch(() => {})
   }
 
   // model options for the chosen backend ('' = platform default backend)
@@ -60,13 +75,22 @@ export default function WorkbenchPage() {
   const handleCreate = async () => {
     setCreating(true)
     try {
-      const s = await api.createSession(newName, 'claude-code', selMcp, selSkills, selBackend, selModel)
+      const s = await api.createSession(
+        newName,
+        'claude-code',
+        selMcp,
+        selSkills,
+        selBackend,
+        selModel,
+        selVersion,
+      )
       setCreateOpen(false)
       setNewName('')
       setSelMcp([])
       setSelSkills([])
       setSelBackend('')
       setSelModel('')
+      setSelVersion('')
       await refresh()
       await handleConnect(s)
     } catch (e) {
@@ -168,9 +192,12 @@ export default function WorkbenchPage() {
               }`}
               onClick={() => handleConnect(s)}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <p className="truncate text-sm font-semibold text-slate-900">{s.name}</p>
-                <StatusBadge status={s.status} />
+                <div className="flex shrink-0 items-center gap-1">
+                  <PlatformVersionTag version={s.platform_version} />
+                  <StatusBadge status={s.status} />
+                </div>
               </div>
               <p className="mt-1 font-mono text-[11px] text-slate-400">{s.session_id.slice(0, 8)}</p>
               <p className="mt-1 text-[11px] text-slate-400">Claude Code · created {new Date(s.created_at).toLocaleString()}</p>
@@ -352,6 +379,9 @@ export default function WorkbenchPage() {
         <p className="mt-1 text-xs text-slate-400">
           Backends and model catalogs come from Governance → Model backends; the choice applies on every connect.
         </p>
+
+        {/* fixed for the session's life: each version is its own runtime */}
+        <PlatformVersionSelect kernel={kernel} value={selVersion} onChange={setSelVersion} />
 
         {mcpOptions.length > 0 && (
           <>
