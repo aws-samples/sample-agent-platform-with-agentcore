@@ -175,10 +175,19 @@ export interface Channel {
   token?: string
 }
 
+export interface EvalScoring {
+  method: 'json_exact' | 'llm_judge'
+  output_field: string
+  rubric: string
+}
+
 export interface EvalDataset {
   id: string
   name: string
   description: string
+  scenario: string
+  scoring: EvalScoring
+  synthetic: boolean
   cases: { prompt: string; expected: string }[]
   created_by: string
   created_at: string
@@ -188,7 +197,12 @@ export interface EvalRun {
   id: string
   dataset_id: string
   dataset_name: string
+  scenario: string
+  scoring: EvalScoring
+  synthetic: boolean
   target: string
+  agent_version: number | null
+  system_prompt: string
   status: string
   started_by: string
   started_at: string
@@ -201,6 +215,10 @@ export interface EvalRun {
     pass: boolean
     score: number
     reason: string
+    predicted_label?: string
+    expected_label?: string
+    predicted_value?: string
+    expected_value?: string
   }[]
   passed: number
   total: number
@@ -542,10 +560,17 @@ export const api = {
 
   // Evaluation
   listEvalDatasets: () => request<EvalDataset[]>('/api/v1/evals/datasets'),
-  createEvalDataset: (body: { name: string; description?: string; cases: { prompt: string; expected: string }[] }) =>
+  createEvalDataset: (body: {
+    name: string
+    description?: string
+    scenario?: string
+    scoring?: EvalScoring
+    synthetic?: boolean
+    cases: { prompt: string; expected: string }[]
+  }) =>
     request<EvalDataset>('/api/v1/evals/datasets', { method: 'POST', body: JSON.stringify(body) }),
   deleteEvalDataset: (id: string) => request<{ ok: boolean }>(`/api/v1/evals/datasets/${id}`, { method: 'DELETE' }),
-  listEvalRuns: () => request<EvalRun[]>('/api/v1/evals/runs'),
+  listEvalRuns: (limit = 20) => request<EvalRun[]>(`/api/v1/evals/runs?limit=${limit}`),
   getEvalRun: (id: string) => request<EvalRun>(`/api/v1/evals/runs/${id}`),
   startEvalRun: (body: { dataset_id: string; target: string }) =>
     request<EvalRun>('/api/v1/evals/runs', { method: 'POST', body: JSON.stringify(body) }),

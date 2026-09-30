@@ -77,6 +77,16 @@ MCP URL, a plain streamable-HTTP URL) or a skill is a registry write: portal UI,
 API call, or a new entry in `seed_data.py`. No mechanism changes, nothing to
 rebuild.
 
+### Add an application-effect dashboard scenario — data only
+
+Create an Evaluation dataset with a custom `scenario` name and `scoring`
+configuration. Use `json_exact` with an `output_field` (including a dotted
+field such as `decision.intent`) for deterministic classification, or
+`llm_judge` with a business rubric for answer quality. Once the dataset runs,
+Observability discovers the scenario and charts its actual results. See
+[docs/observability.md](docs/observability.md#application-effect-dashboard)
+for an API example and the code touch points for adding a new scoring method.
+
 ### Add an integration *kind* — a known multi-file change
 
 The registry classifies each MCP entry by `kind` (`agentcore-runtime` |

@@ -1,11 +1,11 @@
-"""Evaluation: fixed task suites scored by an LLM judge.
+"""Evaluation: fixed task suites with dataset-selected scoring.
 
 Datasets (``PK=EVAL``) hold up to :data:`MAX_CASES` cases inline — each a
 prompt plus free-text expectation. A *run* executes every case against a
-chosen target (kernel or published agent) through the invocation pipeline,
-then asks the same headless kernel to act as a strict judge, scoring each
-answer against the expectation. Runs (``PK=EVALRUN``) update progressively so
-the portal can poll while a run executes in the background.
+chosen target (kernel or published agent) through the invocation pipeline.
+JSON field datasets use deterministic exact-match scoring; other datasets ask
+the same headless kernel to act as a strict judge. Runs (``PK=EVALRUN``) update
+progressively so the portal can poll while a run executes in the background.
 
 Judging with the platform's own kernel keeps the sample dependency-free; the
 judge system prompt pins the output to a JSON verdict for parsing.
@@ -47,14 +47,63 @@ def _parse_verdict(text: str) -> dict:
     if match:
         try:
             v = json.loads(match.group(0))
+            if not isinstance(v, dict) or not isinstance(v.get("pass"), bool):
+                raise ValueError("judge pass must be a boolean")
             return {
-                "pass": bool(v.get("pass")),
+                "pass": v["pass"],
                 "score": max(0, min(10, int(v.get("score", 0)))),
                 "reason": str(v.get("reason", ""))[:300],
             }
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
     return {"pass": False, "score": 0, "reason": f"unparseable judge output: {text[:120]}"}
+
+
+def _default_scoring(scenario: str) -> dict:
+    # Existing datasets predate scoring configuration.
+    return {
+        "method": "json_exact" if scenario == "classification" else "llm_judge",
+        "output_field": "category",
+        "rubric": "",
+    }
+
+
+def _parse_json_field(text: str, field: str) -> str:
+    """Read one bounded dotted field from a JSON object returned by the agent."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE).strip()
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return ""
+    for part in field.split("."):
+        if not isinstance(value, dict):
+            return ""
+        value = value.get(part)
+    return value.strip()[:120] if isinstance(value, str) else ""
+
+
+def _parse_category(text: str) -> str:
+    """Compatibility helper for the original classifier contract."""
+    return _parse_json_field(text, "category")
+
+
+def _validated_scoring(scenario: str, scoring: dict | None) -> dict:
+    config = {**_default_scoring(scenario), **(scoring or {})}
+    if config["method"] not in ("json_exact", "llm_judge"):
+        raise ValueError("unknown scoring method")
+    if not isinstance(config["output_field"], str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,3}", config["output_field"]
+    ):
+        raise ValueError("invalid scoring output_field")
+    if not isinstance(config["rubric"], str) or len(config["rubric"]) > 1000:
+        raise ValueError("invalid scoring rubric")
+    return {
+        "method": config["method"],
+        "output_field": config["output_field"],
+        "rubric": config["rubric"],
+    }
 
 
 class EvalService:
@@ -74,6 +123,9 @@ class EvalService:
             "id": item["SK"].partition("#")[2],
             "name": item.get("name", ""),
             "description": item.get("description", ""),
+            "scenario": item.get("scenario", "general"),
+            "scoring": item.get("scoring") or _default_scoring(item.get("scenario", "general")),
+            "synthetic": bool(item.get("synthetic", False)),
             "cases": item.get("cases", []),
             "created_by": item.get("created_by", ""),
             "created_at": item.get("created_at", ""),
@@ -90,7 +142,14 @@ class EvalService:
             reverse=True,
         )
 
-    def create_dataset(self, *, user: str, name: str, description: str, cases: list[dict]) -> dict:
+    def create_dataset(
+        self, *, user: str, name: str, description: str,
+        cases: list[dict], scenario: str = "general", synthetic: bool = False,
+        scoring: dict | None = None,
+    ) -> dict:
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,47}", scenario):
+            raise ValueError("invalid evaluation scenario")
+        scoring = _validated_scoring(scenario, scoring)
         cleaned = [
             {"prompt": str(c.get("prompt", ""))[:2000], "expected": str(c.get("expected", ""))[:1000]}
             for c in cases[:MAX_CASES]
@@ -103,6 +162,9 @@ class EvalService:
             "SK": f"DS#{uuid.uuid4().hex[:12]}",
             "name": name[:120] or "dataset",
             "description": description[:400],
+            "scenario": scenario,
+            "scoring": scoring,
+            "synthetic": synthetic,
             "cases": cleaned,
             "created_by": user,
             "created_at": _now(),
@@ -125,7 +187,12 @@ class EvalService:
             "id": item.get("run_id", ""),
             "dataset_id": item.get("dataset_id", ""),
             "dataset_name": item.get("dataset_name", ""),
+            "scenario": item.get("scenario", "general"),
+            "scoring": item.get("scoring") or _default_scoring(item.get("scenario", "general")),
+            "synthetic": bool(item.get("synthetic", False)),
             "target": item.get("target", ""),
+            "agent_version": int(item["agent_version"]) if item.get("agent_version") is not None else None,
+            "system_prompt": item.get("system_prompt", ""),
             "status": item.get("status", ""),
             "started_by": item.get("started_by", ""),
             "started_at": item.get("started_at", ""),
@@ -176,13 +243,28 @@ class EvalService:
             raise KeyError("dataset not found")
         run_id = uuid.uuid4().hex[:12]
         sk = f"{_now()}#{run_id}"
+        agent_version = None
+        system_prompt = ""
+        if target.startswith("agent:"):
+            from app.services.agent_service import agent_service
+
+            agent = agent_service.get_agent(target.partition(":")[2])
+            if not agent:
+                raise KeyError("agent not found")
+            agent_version = agent["version"]
+            system_prompt = agent["system_prompt"]
         item = {
             "PK": PK_RUN,
             "SK": sk,
             "run_id": run_id,
             "dataset_id": dataset_id,
             "dataset_name": ds.get("name", ""),
+            "scenario": ds.get("scenario", "general"),
+            "scoring": ds.get("scoring") or _default_scoring(ds.get("scenario", "general")),
+            "synthetic": bool(ds.get("synthetic", False)),
             "target": target,
+            "agent_version": agent_version,
+            "system_prompt": system_prompt,
             "status": "running",
             "started_by": user,
             "started_at": _now(),
@@ -194,18 +276,30 @@ class EvalService:
         # fire-and-forget; progress lands in DDB. Requires a running event
         # loop, so the API route calling this must be ``async def`` (sync
         # routes run in a threadpool thread with no loop).
-        task = asyncio.get_running_loop().create_task(self._execute(sk, user, ds, target))
+        task = asyncio.get_running_loop().create_task(
+            self._execute(sk, user, ds, target, agent_version=agent_version)
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return self._run_public(item)
 
-    async def _execute(self, sk: str, user: str, ds: dict, target: str) -> None:
+    async def _execute(
+        self, sk: str, user: str, ds: dict, target: str, agent_version: int | None = None,
+    ) -> None:
         from app.services.invocation_service import invoke  # avoid import cycle
 
         run_id = sk.partition("#")[2]
+        scenario = ds.get("scenario", "general")
+        scoring = ds.get("scoring") or _default_scoring(scenario)
         results: list[dict] = []
         try:
             for idx, case in enumerate(ds.get("cases", [])):
+                if agent_version is not None:
+                    from app.services.agent_service import agent_service
+
+                    current = agent_service.get_agent(target.partition(":")[2])
+                    if not current or current["version"] != agent_version:
+                        raise RuntimeError("agent version changed during evaluation")
                 answer_res = await asyncio.to_thread(
                     invoke,
                     user=user,
@@ -214,35 +308,68 @@ class EvalService:
                     prompt=case["prompt"],
                     ref=f"eval:{run_id}",
                 )
+                if agent_version is not None:
+                    current = agent_service.get_agent(target.partition(":")[2])
+                    if not current or current["version"] != agent_version:
+                        raise RuntimeError("agent version changed during evaluation")
                 answer = (answer_res.get("result") or "").strip()
 
-                judge_prompt = (
-                    f"Task prompt:\n{case['prompt']}\n\n"
-                    f"Expected outcome:\n{case['expected'] or '(none given — judge general correctness)'}\n\n"
-                    f"Candidate answer:\n{answer or '(empty answer)'}"
-                )
-                judge_res = await asyncio.to_thread(
-                    invoke,
-                    user=user,
-                    source="eval",
-                    target="agent-sdk",
-                    prompt=judge_prompt,
-                    system=JUDGE_SYSTEM,
-                    max_turns=1,
-                    ref=f"eval-judge:{run_id}",
-                )
-                verdict = _parse_verdict(judge_res.get("result") or "")
-                results.append(
-                    {
-                        "case": idx,
-                        "prompt": case["prompt"][:200],
-                        "expected": case["expected"][:200],
-                        "answer": answer[:500],
-                        "pass": verdict["pass"],
-                        "score": verdict["score"],
-                        "reason": verdict["reason"],
+                if scoring["method"] == "json_exact":
+                    predicted = (
+                        _parse_json_field(answer, scoring["output_field"])
+                        if answer_res.get("ok") else ""
+                    )
+                    expected = case["expected"].strip()
+                    passed = bool(predicted) and predicted == expected
+                    verdict = {
+                        "pass": passed,
+                        "score": 10 if passed else 0,
+                        "reason": (
+                            f"{scoring['output_field']} matches expected value" if passed else
+                            "agent invocation failed" if not answer_res.get("ok") else
+                            f"invalid or missing {scoring['output_field']} in JSON output" if not predicted else
+                            f"expected {expected}, got {predicted}"
+                        ),
                     }
-                )
+                elif not answer_res.get("ok"):
+                    predicted = ""
+                    verdict = {"pass": False, "score": 0, "reason": "agent invocation failed"}
+                else:
+                    predicted = ""
+                    judge_prompt = (
+                        f"Task prompt:\n{case['prompt']}\n\n"
+                        f"Expected outcome:\n{case['expected'] or '(none given — judge general correctness)'}\n\n"
+                        f"Evaluation rubric:\n{scoring.get('rubric') or '(use expected outcome)'}\n\n"
+                        f"Candidate answer:\n{answer or '(empty answer)'}"
+                    )
+                    judge_res = await asyncio.to_thread(
+                        invoke,
+                        user=user,
+                        source="eval",
+                        target="agent-sdk",
+                        prompt=judge_prompt,
+                        system=JUDGE_SYSTEM,
+                        max_turns=1,
+                        ref=f"eval-judge:{run_id}",
+                    )
+                    verdict = (
+                        _parse_verdict(judge_res.get("result") or "")
+                        if judge_res.get("ok")
+                        else {"pass": False, "score": 0, "reason": "judge invocation failed"}
+                    )
+                row = {
+                    "case": idx,
+                    "prompt": case["prompt"],
+                    "expected": case["expected"],
+                    "answer": answer[:8000],
+                    "pass": verdict["pass"],
+                    "score": verdict["score"],
+                    "reason": verdict["reason"],
+                }
+                if scoring["method"] == "json_exact":
+                    row["predicted_value"] = predicted
+                    row["expected_value"] = case["expected"].strip()
+                results.append(row)
                 self._update_run(
                     sk,
                     results=results,

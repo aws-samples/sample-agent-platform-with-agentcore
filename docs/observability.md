@@ -153,3 +153,77 @@ correlated by `spanId`; the kernel's stdout lines in the same group also carry
 - Business counters that only the workflow engine knows (funnel counts per
   phase) are still application-side; publish them as EMF metrics in the same
   `bedrock-agentcore` namespace to put them on the same dashboard.
+
+## Application-effect dashboard
+
+The portal's **Observability** page reads evaluation runs and displays
+application outcomes separately from execution health. It discovers scenario
+tabs from the datasets that have actually run; no scenario name is built into
+the dashboard. Each dataset selects one of two scoring methods:
+
+- **`json_exact`** reads a configured string field from the agent's JSON
+  response (for example `category` or `decision.intent`) and compares it
+  exactly with the case's expected value. The dashboard counts expected and
+  actual values, exact-match rate, invalid outputs and failures. It makes no
+  judge-model call.
+- **`llm_judge`** scores each answer against the case's expectation and an
+  optional dataset rubric. The dashboard shows pass rate, mean score,
+  low-score cases, full answers and reasons. Judge scores are screening
+  signals; calibrate them against a small human-reviewed set before treating
+  them as a quality target.
+
+Users can create a custom scenario and choose its scoring contract in the
+**Evaluation** page. The equivalent API request is:
+
+```json
+{
+  "name": "claims-routing-v1",
+  "scenario": "claims-routing",
+  "scoring": {"method": "json_exact", "output_field": "decision.intent", "rubric": ""},
+  "cases": [{"prompt": "I need a refund for order A", "expected": "refund"}]
+}
+```
+
+The agent must then return a JSON object with `decision.intent`. A new
+scenario appears in Observability when its first evaluation run starts.
+For an LLM-judged scenario, use `method = llm_judge` and set `rubric` to the
+business-specific judging criteria. The original `classification` and
+`support` datasets still work without a `scoring` field.
+
+This is the no-code extension path. For a new scoring algorithm, extend
+`EvalScoringConfig` in `backend/app/models/schemas.py`, the scoring dispatch
+in `backend/app/services/eval_service.py`, and the method selector in
+`frontend/src/pages/EvalPage.tsx`. The dashboard draws a value distribution
+for exact JSON scoring and a score breakdown for judge scoring. A custom
+algorithm may also need a corresponding dashboard component. The platform
+does not execute arbitrary user-uploaded evaluator code.
+
+Each run captures the published agent's version and configured system prompt
+at start, together with the case prompts and actual answers. A version change
+while a run is executing fails the run so it cannot be presented as a
+single-version comparison. The dashboard compares completed runs of the
+**same dataset** and flags a drop in pass rate. This is an offline benchmark:
+the general invocation ledger still stores only a 200-character user-prompt
+preview and execution metrics. It has no automatic business label or
+production-conversation quality score.
+
+To generate results without customer data, run the synthetic benchmark against
+a **deployed** portal:
+
+```bash
+PORTAL_URL=https://<your-portal> \
+PORTAL_TOKEN=<admin-bearer-token> \
+python3 scripts/run_observability_demo.py
+```
+
+For local open-auth development, omit `PORTAL_TOKEN`. The script publishes a
+classifier and a support agent, creates two reusable synthetic datasets,
+starts real AgentCore invocations, waits for scored results, and checks that
+the case calls landed in the invocation ledger. Re-running bumps the agents'
+versions and adds comparable runs to the same datasets. It does not fabricate
+predictions, answers, scores, token usage, latency, or cost. Model calls incur
+the platform's normal charges and quota.
+
+The page stays empty until runs actually return results. A workspace with no
+portal URL or AWS credentials can build and test the feature but cannot make
+claims about CloudWatch trace delivery or measured agent quality.
