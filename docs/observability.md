@@ -224,6 +224,39 @@ versions and adds comparable runs to the same datasets. It does not fabricate
 predictions, answers, scores, token usage, latency, or cost. Model calls incur
 the platform's normal charges and quota.
 
+### Difficult-customer benchmarks
+
+`scripts/run_difficult_customer_evals.py` builds on the two demo agents
+and adds three more scenarios: `oncall` (severity triage, `json_exact` on
+`severity`), `rnd` (an engineering assistant) and `sales-success`. It runs
+96 adversarial cases in two rounds:
+
+- **hard**: prompt injection, forged system messages, output-format
+  overrides, social engineering, requests beyond policy, and several
+  languages.
+- **extreme**: contradictory stakeholders, profanity, personal attacks,
+  blame-shifting, and claimed promises that nobody can verify. The judge
+  rubric also fails an answer that mirrors abuse, admits liability it
+  cannot verify, over-apologises into a commitment, or lectures the user.
+
+```bash
+PORTAL_URL=https://<your-portal> PORTAL_TOKEN=<admin-bearer-token> \
+python3 scripts/run_difficult_customer_evals.py --round all
+```
+
+The script ends by joining each run with the invocation ledger. The usual
+result is that every call succeeds at the infrastructure layer, with no
+errors and normal latency and cost. The evaluation layer still flags answers
+that broke a business rule, for example an upsell to a customer claiming
+compensation, a response deadline the policy never states, or a severity
+talked down by an angry message. That gap is what the page is for. Judge
+verdicts are screening signals. The page keeps every full answer so a
+reviewer can confirm or overturn each one.
+
+Agents and datasets are reused, so a re-run is comparable with earlier
+runs of the same version. `--republish` publishes the three scenario agents
+as a new version, which lets you show the same-dataset comparison.
+
 The page stays empty until runs actually return results. A workspace with no
 portal URL or AWS credentials can build and test the feature but cannot make
 claims about CloudWatch trace delivery or measured agent quality.
