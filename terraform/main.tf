@@ -237,6 +237,56 @@ resource "aws_vpc_endpoint" "service_entry" {
   }
 }
 
+# AgentCore Gateway interface endpoint. With private DNS on, every
+# *.gateway.bedrock-agentcore.<region> name resolved inside this VPC lands on
+# the endpoint ENIs, so runtimes reach their gateways (MCP tools today, the
+# agentcore_gateway model backend once enabled) without leaving the VPC and
+# without any URL change. The policy narrows the endpoint to InvokeGateway
+# on this account's gateways; Principal stays "*" because the team gateway
+# authorizes with CUSTOM_JWT, which endpoint policies cannot match on.
+data "aws_caller_identity" "current" {}
+
+resource "aws_security_group" "gateway_vpce" {
+  count = var.enable_gateway_vpce ? 1 : 0
+
+  name        = "agent-platform-gateway-vpce${var.name_suffix}"
+  description = "AgentCore Gateway interface endpoint - HTTPS from inside the VPC"
+  vpc_id      = module.network.vpc_id
+
+  ingress {
+    description = "HTTPS from the platform VPC"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr_block]
+  }
+}
+
+resource "aws_vpc_endpoint" "agentcore_gateway" {
+  count = var.enable_gateway_vpce ? 1 : 0
+
+  vpc_id              = module.network.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock-agentcore.gateway"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.network.private_subnet_ids
+  security_group_ids  = [aws_security_group.gateway_vpce[0].id]
+  private_dns_enabled = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "bedrock-agentcore:InvokeGateway"
+      Resource  = "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/*"
+    }]
+  })
+
+  tags = {
+    Name = "agent-platform-agentcore-gateway${var.name_suffix}"
+  }
+}
+
 module "mcp_hub_demo" {
   source = "./modules/mcp_hub_demo"
   count  = local.mcp_hub_demo_on ? 1 : 0

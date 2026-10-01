@@ -49,6 +49,10 @@ oidc_issuer = ""
 # Caller interface-VPC-endpoint IDs for the private service-entry API.
 service_api_allowed_vpces = [] # e.g. ["vpce-0123456789abcdef0"]
 
+# AgentCore Gateway interface endpoint (private DNS) in the platform VPC, so
+# runtime -> gateway calls stay off the NAT path. ~3 AZ x endpoint-hour.
+# enable_gateway_vpce = true
+
 # --- EKS --------------------------------------------------------------------
 # The containers run on a dedicated EKS cluster in the platform VPC (Graviton
 # managed node group, IRSA). Narrow the API endpoint to your operators' egress

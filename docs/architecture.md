@@ -304,6 +304,13 @@ AgentCore Runtime ENIs → private subnets → NAT Gateway (Elastic IP) → inte
   allow-list.
 - `NetworkConfiguration` is not create-only: an existing runtime can be switched
   between PUBLIC and VPC without changing its ARN.
+- Optional `enable_gateway_vpce` adds an AgentCore Gateway interface endpoint
+  (`com.amazonaws.<region>.bedrock-agentcore.gateway`, private DNS on). Calls
+  from runtimes to any gateway in the account (MCP tool gateways, and the
+  `agentcore_gateway` model backend) then stay inside the VPC instead of
+  leaving through the NAT, with no URL change. The endpoint policy allows
+  only `InvokeGateway` on this account's gateways; `Principal` stays `*`
+  because JWT-authorized gateways cannot be matched on an IAM principal.
 
 ### 4. Backend control plane (`backend/`)
 
