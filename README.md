@@ -14,19 +14,31 @@ It shows how a platform team can offer two hosting models behind one portal:
   `/invocations` contract.
 
 Both kernels route model traffic through a configurable **LLM gateway**
-(e.g. LiteLLM) with a **fixed egress IP** (VPC mode + NAT Gateway), so the
-platform works in enterprises that enforce model allow-lists, budgets and
-source-IP restrictions. The gateway key lives in a platform-side service and
-**never enters a session container** — a session's user is root in its own
-microVM, so a kernel gets a short-lived, per-session grant rather than a
-credential. Direct Bedrock access (cross-region inference) is supported as an
+(e.g. LiteLLM), so the platform works in enterprises that enforce model
+allow-lists, budgets and cost attribution. The gateway key **never enters a
+session container** — a session's user is root in its own microVM, so a
+kernel gets a short-lived, per-session grant rather than a credential. Two
+ways to get there:
+
+- **AgentCore Gateway in front of LiteLLM** (`agentcore_gateway`,
+  recommended). The LiteLLM key lives in AgentCore Identity's token vault, so
+  the platform holds no key and runs no broker service. Kernels SigV4-sign
+  with per-session STS credentials (revoked by an IAM Deny on the session
+  tag); runtime → gateway can stay on PrivateLink and gateway → LiteLLM on a
+  managed VPC Lattice path, so LiteLLM needs no public endpoint.
+  [How it works](docs/architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
+- **`llm-edge`** (`litellm`). A platform-side service holds the key and
+  forwards session-scoped calls; runtimes egress through a NAT Gateway with a
+  **fixed EIP** you can put on the gateway's source-IP allow-list.
+
+Direct Bedrock access (cross-region inference) is supported as an
 alternative.
 
 ![portal overview](docs/images/portal-overview.png)
 
 <!-- ?v= bumps the URL so GitHub's image cache serves the current diagram
      instead of a stale copy at the same path. Bump it whenever the SVG changes. -->
-![architecture](docs/images/architecture.svg?v=3)
+![architecture](docs/images/architecture.svg?v=4)
 
 The hero diagram above is the map; two focused diagrams zoom into the parts
 that carry the security story: the
@@ -35,7 +47,10 @@ that carry the security story: the
 traffic) and the
 [customer-owned MCP hub chains](docs/images/mcp-hub-chains.svg)
 (how production applications and the Dev Workbench reach a self-hosted tool
-backend with per-application HMAC signatures and a forwarded user token).
+backend with per-application HMAC signatures and a forwarded user token). A third, the
+[agentcore_gateway model path](docs/images/agentcore-gateway-litellm.svg),
+shows how a kernel reaches a private LiteLLM through AgentCore Gateway over
+PrivateLink and VPC Lattice.
 
 ## What's inside
 
@@ -46,7 +61,7 @@ backend with per-application HMAC signatures and a forwarded user token).
 │   └── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
 ├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry, workflow engine
 ├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Gateway, Channels, Memory, Observability, Eval, Workflow, Governance
-├── services/                 # llm-edge (sole holder of the gateway key) + the optional Keycloak IdP and team APIs
+├── services/                 # llm-edge (key holder for the `litellm` backend) + the optional Keycloak IdP and team APIs
 ├── terraform/                # Terraform (the maintained path): network, platform resources, AgentCore runtimes, EKS, portal hosting + scheduler engine
 ├── infrastructure/           # CDK (Python): the legacy ECS Fargate variant of the same stacks, kept for reference
 ├── deploy-cli/               # AWS-CLI-only deployment port for accounts that cannot run Terraform or CDK
@@ -151,24 +166,27 @@ cp terraform.tfvars.example terraform.tfvars   # then edit
 terraform init
 terraform apply -var enable_runtime=false -var enable_portal=false
 
-# 2. Store your LLM gateway key (skip for Bedrock direct or AgentCore Gateway).
-#    Readable only by the llm-edge service; it never enters a kernel container.
-#    Gateway mode also needs enable_llm_edge=true — see docs/deployment.md §2,
-#    which also covers the agentcore_gateway backend (no key on this side).
+# 2. Model backend. Pick one (docs/deployment.md §2):
+#    - agentcore_gateway: create the AgentCore Gateway + LiteLLM inference
+#      target and the per-session caller role (Option A2). No key on this side;
+#      set enable_gateway_vpce = true to keep runtime -> gateway on PrivateLink.
+#    - litellm via llm-edge: enable_llm_edge = true and store the key, which is
+#      readable only by llm-edge and never enters a kernel container:
 aws secretsmanager put-secret-value \
   --secret-id agent-platform/llm-gateway-key \
   --secret-string '{"api_key":"sk-..."}'
+#    - Bedrock direct: nothing to store.
 
 # 3. Build & push the images (ARM64)
 ../scripts/build-and-push.sh
 
-# 4. Allow-list the NAT EIP on your LLM gateway, then create the AgentCore
+# 4. (llm-edge only) allow-list the NAT EIP on your LLM gateway. Then create the AgentCore
 #    runtimes (VPC mode, fixed egress IP), the EKS cluster and the portal
 terraform apply               # or: run backend + frontend locally, see docs/deployment.md
 ../scripts/deploy-frontend.sh
 ```
 
-The containers (backend, llm-edge, and the optional Keycloak + team APIs) run
+The containers (backend, llm-edge if enabled, and the optional Keycloak + team APIs) run
 on a dedicated EKS cluster with Graviton nodes; every pod authenticates to AWS
 through IRSA and carries its own security group. The CDK stacks in
 `infrastructure/` are the legacy ECS Fargate variant, kept for reference.
