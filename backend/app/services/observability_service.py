@@ -55,6 +55,7 @@ class ObservabilityService:
         error: str = "",
         ref: str = "",
         model: str = "",
+        platform_version: str = "",
     ) -> None:
         """Append an invocation record. Never raises."""
         try:
@@ -73,6 +74,9 @@ class ObservabilityService:
                 "ref": ref,  # schedule/channel/eval-run id, when applicable
                 # "backend:model" routing actually used, "" = container default
                 "model": model,
+                # AgentCore Runtime platform version the call ran on (V1/V2
+                # are priced differently); "" = single-runtime deployment
+                "platform_version": platform_version,
             }
             if duration_ms is not None:
                 item["duration_ms"] = int(duration_ms)

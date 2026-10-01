@@ -11,7 +11,6 @@ calls with the same conversation land on the same warm microVM and keep
 context.
 """
 
-import hashlib
 import hmac
 import logging
 import re
@@ -22,6 +21,7 @@ from datetime import datetime, timezone
 import boto3
 
 from app.config import settings
+from app.services.session_binding import derive_channel_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +166,11 @@ class ChannelService:
         runtime_session_id = None
         memory_actor_id = ""
         if conversation_id:
-            digest = hashlib.sha256(f"{channel_id}:{conversation_id}".encode()).hexdigest()
-            runtime_session_id = f"chn-{digest[:44]}"  # ≥33 chars for AgentCore
+            # Keyed with the platform binding secret: the public channel_id is
+            # in the webhook URL, so an unkeyed digest of channel_id +
+            # conversation_id would let anyone compute this session id offline
+            # and land on the conversation's warm microVM.
+            runtime_session_id = derive_channel_session_id(channel_id, conversation_id)
             # One memory line per conversation (not per channel): the actor is
             # channel-scoped so equal conversation_ids on different channels
             # don't share memory.

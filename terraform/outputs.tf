@@ -51,6 +51,14 @@ output "mcp_tools_runtime_arn" {
   value = try(module.runtime[0].mcp_tools_runtime_arn, null)
 }
 
+output "interactive_runtime_arns" {
+  value = try(module.runtime[0].interactive_runtime_arns, null)
+}
+
+output "sdk_runtime_arns" {
+  value = try(module.runtime[0].sdk_runtime_arns, null)
+}
+
 output "workspace_access_role_arn" {
   value = try(module.runtime[0].workspace_access_role_arn, null)
 }
@@ -107,6 +115,10 @@ output "schedule_runner_function" {
 
 output "schedule_dlq_url" {
   value = try(module.portal[0].schedule_dlq_url, null)
+}
+
+output "portal_admin_secret_name" {
+  value = try(module.portal[0].portal_admin_secret_name, null)
 }
 
 output "service_entry_api_url" {

@@ -169,7 +169,12 @@ env = {
   "PLATFORM_SCHEDULER_ROLE_ARN": "$SCHED_ROLE",
   "PLATFORM_SCHEDULER_DLQ_ARN": "$DLQ_ARN",
   "PLATFORM_SERVICE_ENTRY_SECRET_NAME": "$ENTRY_SECRET",
-  "PLATFORM_PORTAL_API_URL": "https://$DIST_DOMAIN",
+  # NB: no PLATFORM_PORTAL_API_URL here. That variable is what puts a process
+  # on the pipeline *delegation* path (schedule_service._run_pipeline); the
+  # backend has Node and runs workflow scripts in-process, so setting it here
+  # made the backend delegate to itself — and then fail, because only the
+  # runner role carries the portal-admin secret grant. It belongs on the
+  # schedule-runner Lambda, which is where it is set below.
 }
 print(json.dumps({
   "name": "backend", "image": image, "replicas": 2, "port": 8000,
@@ -187,5 +192,34 @@ PY
 workload_install backend portal /tmp/backend-values.yaml "$SVC_SG"
 save BACKEND_NAMESPACE portal
 save BACKEND_DEPLOYMENT backend
+
+# ------------------------------------------------------------------ schedule-runner env
+# 50-portal-app.sh creates the Lambda, but its environment cannot be filled in
+# there: PLATFORM_PORTAL_API_URL needs the distribution domain, which does not
+# exist until this phase. Without this the runner falls back to config.py
+# defaults — the *unsuffixed* table name above all — so a suffixed deployment's
+# schedules read the wrong table.
+#
+# PLATFORM_PORTAL_ADMIN_SECRET must be passed explicitly: config.py defaults to
+# the unsuffixed name while the runner role is granted the suffixed one, so
+# leaving it out means AccessDenied on every pipeline schedule.
+if [ -n "${SCHEDULE_FN:-}" ]; then
+  python3 - > /tmp/runner-env.json <<PY
+import json
+print(json.dumps({"Variables": {
+  "PLATFORM_AWS_REGION": "$AWS_REGION",
+  "PLATFORM_DYNAMO_TABLE": "$TABLE",
+  "PLATFORM_WORKSPACE_BUCKET": "$WORKSPACE_BUCKET",
+  "PLATFORM_INTERACTIVE_RUNTIME_ARN": "$INTERACTIVE_RUNTIME_ARN",
+  "PLATFORM_SDK_RUNTIME_ARN": "$SDK_RUNTIME_ARN",
+  "PLATFORM_MCP_TOOLS_RUNTIME_ARN": "$MCP_TOOLS_RUNTIME_ARN",
+  "PLATFORM_PORTAL_API_URL": "https://$DIST_DOMAIN",
+  "PLATFORM_PORTAL_ADMIN_SECRET": "agent-platform${SUFFIX}/portal-admin",
+}}))
+PY
+  aws lambda update-function-configuration --function-name "$SCHEDULE_FN" \
+    --environment file:///tmp/runner-env.json >/dev/null
+  log "schedule-runner env set (table, runtime ARNs, portal API, admin secret)"
+fi
 
 log "cloudfront+eks done — portal will be https://$DIST_DOMAIN"

@@ -1,9 +1,20 @@
+# Per-platform-version runtime ARNs ({V1 = arn, V2 = arn}); the backend
+# routes each session / published agent to one of them.
+output "interactive_runtime_arns" {
+  value = { for v, r in aws_bedrockagentcore_agent_runtime.interactive : v => r.agent_runtime_arn }
+}
+
+output "sdk_runtime_arns" {
+  value = { for v, r in aws_bedrockagentcore_agent_runtime.sdk : v => r.agent_runtime_arn }
+}
+
+# The default version's runtime, for consumers that know one ARN per kernel.
 output "interactive_runtime_arn" {
-  value = aws_bedrockagentcore_agent_runtime.interactive.agent_runtime_arn
+  value = aws_bedrockagentcore_agent_runtime.interactive[var.default_platform_version].agent_runtime_arn
 }
 
 output "sdk_runtime_arn" {
-  value = aws_bedrockagentcore_agent_runtime.sdk.agent_runtime_arn
+  value = aws_bedrockagentcore_agent_runtime.sdk[var.default_platform_version].agent_runtime_arn
 }
 
 output "mcp_tools_runtime_arn" {

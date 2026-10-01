@@ -13,7 +13,12 @@ export interface Session {
   skills: string[]
   model_backend: string // '' = platform default
   model: string
+  platform_version: PlatformVersion | '' // '' = created before per-version runtimes
 }
+
+/** AgentCore Runtime platform version: V1 boots each session, V2 restores
+ * it from a snapshot (faster cold start, higher unit price). */
+export type PlatformVersion = 'V1' | 'V2'
 
 export interface EcosystemEntry {
   id: string
@@ -42,6 +47,15 @@ export interface Kernel {
   runtime_arn: string
   status: string
   available: boolean
+  // one entry per deployed platform version; empty = single-runtime deployment
+  platform_versions: {
+    version: PlatformVersion
+    runtime_arn: string
+    status: string
+    available: boolean
+    platform_version: string // as AgentCore reports it
+  }[]
+  default_platform_version: PlatformVersion | ''
 }
 
 export interface Identity {
@@ -117,6 +131,7 @@ export interface PublishedAgent {
   memory_id: string
   model_backend: string // '' = platform default
   model: string
+  platform_version: PlatformVersion | '' // '' = platform default
   // MCP hub Actor identity ('' unless an mcp-hub server is attached).
   // The access key identifies this agent to the hub — register it there.
   mcp_hub_access_key: string
@@ -430,6 +445,7 @@ export const api = {
     skillIds: string[] = [],
     modelBackend = '',
     model = '',
+    platformVersion: PlatformVersion | '' = '',
   ) =>
     request<Session>('/api/v1/sessions', {
       method: 'POST',
@@ -440,6 +456,7 @@ export const api = {
         skill_ids: skillIds,
         model_backend: modelBackend,
         model,
+        platform_version: platformVersion,
       }),
     }),
   connectSession: (id: string) => request<ConnectInfo>(`/api/v1/sessions/${id}/connect`),
@@ -458,6 +475,7 @@ export const api = {
     skill_ids?: string[]
     memory_id?: string
     memory_actor_id?: string
+    platform_version?: PlatformVersion | ''
   }) =>
     request<InvokeResult>('/api/v1/kernels/agent-sdk/invoke', {
       method: 'POST',
@@ -476,6 +494,7 @@ export const api = {
     memory_id?: string
     model_backend?: string
     model?: string
+    platform_version?: PlatformVersion | ''
   }) => request<PublishedAgent>('/api/v1/agents', { method: 'POST', body: JSON.stringify(body) }),
   publishAgentFromSession: (sessionId: string) =>
     request<PublishedAgent>('/api/v1/agents/publish-from-session', {

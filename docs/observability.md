@@ -121,6 +121,14 @@ correlated by `spanId`; the kernel's stdout lines in the same group also carry
   if that is a concern.
 - **Only the headless kernel is instrumented, and only its observability
   variant.** The interactive kernel and the MCP tools kernel run without ADOT.
+- **Span ids are drawn from `os.urandom`, not `random`.** AgentCore Runtime
+  platform version V2 restores every instance from one snapshot, so the
+  `random` module's seed is shared by all of them and the OTel SDK's default
+  id generators (including ADOT's X-Ray one) would hand two parallel agents
+  of the same run identical span ids. `main.py` patches the provider's
+  generator at startup (`_install_snapsafe_id_generator`); the log line
+  `otel: snapshot-safe id generator installed` confirms it took effect. Keep
+  it if you change the entrypoint.
 
 ## Enabling it
 

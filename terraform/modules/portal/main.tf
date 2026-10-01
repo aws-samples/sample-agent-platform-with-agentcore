@@ -6,6 +6,14 @@ data "aws_region" "current" {}
 locals {
   account = data.aws_caller_identity.current.account_id
   region  = data.aws_region.current.region
+
+  # Portal-admin credential the schedule-runner Lambda signs in with to
+  # delegate pipeline runs. Created out-of-band by the operator (like the
+  # gateway key), so there is no resource to reference — but the name is
+  # suffix-aware like every other platform secret, because the credential is a
+  # user in *this* stack's Cognito pool. Two stacks in one account each need
+  # their own.
+  portal_admin_secret = "agent-platform${var.name_suffix}/portal-admin"
 }
 
 # ------------------------------- auth --------------------------------------
@@ -96,6 +104,17 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "frontend" {
 # Value for the x-origin-verify header (see the API origin below). Not a
 # credential a human ever handles — rotation = taint this resource.
 resource "random_password" "origin_verify" {
+  length  = 48
+  special = false
+}
+
+# HMAC key the backend uses to bind caller-supplied AgentCore session ids (and
+# channel conversation ids) to the authenticated tenant, so two callers can
+# never share a warm microVM by naming the same id. Only has to be stable across
+# replicas and restarts; rotation ends continuity for every open session
+# (rotation = taint this resource, then roll the backend). Delivered through the
+# chart's Secret, never as a plain env value.
+resource "random_password" "session_binding" {
   length  = 48
   special = false
 }

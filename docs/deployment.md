@@ -69,7 +69,10 @@ gateway requires a grant the backend mints for one session, because a kernel
 container's user is root inside it and must not hold the gateway key. That grant
 is served by the `llm-edge` service, so gateway mode needs it deployed.
 
-1. Store the gateway API key. Only the `llm-edge` workload role can read it:
+1. Store the gateway API key. Only the `llm-edge` workload role can read it.
+   Use a key scoped to the models you intend to serve (a LiteLLM *virtual
+   key*, not the master key): `llm-edge` only forwards the Anthropic
+   inference routes, but least privilege on the key itself costs nothing.
 
    ```bash
    aws secretsmanager put-secret-value \
@@ -214,6 +217,42 @@ Cognito, the scheduler engine and the private service-entry API. Budget about
 Outputs: `interactive_runtime_arn`, `sdk_runtime_arn`, `portal_url`,
 `kubeconfig_command`.
 
+**Runtime platform version.** AgentCore Runtime has two platform versions.
+V1 (the default) boots the container for every new session; V2 boots it once,
+snapshots the healthy process and restores that snapshot per session, which
+makes cold starts flat (about 2 s regardless of image size, versus 5 to 30 s
+on V1 for images the size of these kernels) and reclaims idle memory after
+120 s instead of billing the session's peak until it ends. The kernels are
+written to be restore-safe (per-request entropy, no start-up timers that
+assume a fresh boot; see `docs/observability.md` for the span-id detail). The
+Terraform provider, CloudFormation and CDK cannot set `platformVersion` yet,
+so the switch is one out-of-band call per runtime after the first apply:
+
+```bash
+aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id <id> > cur.json
+# replay the current configuration and add --platform-version V2
+aws bedrock-agentcore-control update-agent-runtime --agent-runtime-id <id> \
+  --agent-runtime-artifact "$(jq -c .agentRuntimeArtifact cur.json)" \
+  --role-arn "$(jq -r .roleArn cur.json)" \
+  --network-configuration "$(jq -c 'del(.networkModeConfig.requireServiceS3Endpoint)' cur.json | jq -c .networkConfiguration)" \
+  --protocol-configuration "$(jq -c .protocolConfiguration cur.json)" \
+  --lifecycle-configuration "$(jq -c .lifecycleConfiguration cur.json)" \
+  --environment-variables "$(jq -c .environmentVariables cur.json)" \
+  --platform-version V2
+```
+
+`requireServiceS3Endpoint` is read-only once a VPC-mode runtime exists (the
+service rejects the update outright if it is present), which is why the
+network block above strips it before replaying. Later Terraform updates (new
+image tags) omit the field, which the service
+treats as "keep the current platform version", so the setting survives. A V2
+create or update prepares the snapshot before the runtime reaches `READY`,
+which takes minutes rather than seconds; the container must answer `/ping`
+within 120 s of start. V2 is regional (us-east-1, us-east-2, us-west-2,
+eu-west-1, ap-northeast-1 at launch) and its per-unit rates are higher than
+V1's; it pays off when sessions spend most of their life idle (pipeline
+agents), less so for a terminal someone uses continuously.
+
 To roll out a new image build, push with a new tag, set it in
 `terraform.tfvars` (`image_tag`, or a per-image override such as
 `backend_image_tag`) and apply again. Runtimes get a new version with the
@@ -346,6 +385,37 @@ Auth modes (backend resolves in this order):
    named test resources, asserts 20 checks and cleans up after itself. For
    manual walkthroughs of each page, see the
    [user guide](user-guide.md).
+
+   **The `portal-admin` secret.** Nothing creates it for you — it holds
+   `{"username","password"}` for a portal admin, and two things read it: this
+   E2E suite, and the schedule-runner Lambda when it delegates a
+   `pipeline:{name}` run to the backend API. Its name is **suffix-aware**,
+   because the credential is a user in *this* stack's Cognito pool and two
+   stacks in one account must not share one:
+
+   ```bash
+   cd terraform
+   aws secretsmanager create-secret \
+     --name "$(terraform output -raw portal_admin_secret_name)" \
+     --secret-string '{"username":"admin","password":"<the admin password>"}'
+   ```
+
+   With a `name_suffix` set, point the E2E suite at the same name
+   (`PORTAL_ADMIN_SECRET=agent-platform<suffix>/portal-admin`); its default is
+   the unsuffixed one.
+
+   **The session-binding key.** The backend binds every caller-supplied
+   AgentCore session id (and every channel conversation id) to the
+   authenticated tenant with an HMAC under `PLATFORM_SESSION_BINDING_SECRET`,
+   so two callers naming the same id never land on one warm microVM. Terraform
+   generates this key (`random_password.session_binding` in the portal module)
+   and hands it to the backend and entry pods through the chart's Kubernetes
+   Secret; nothing to create by hand. It only has to be stable across replicas
+   and restarts. Rotating it (`terraform taint` the resource, then apply) is
+   safe but ends continuity for every open Debug/channel conversation, which
+   simply start a fresh session on their next turn. Left unset, the backend
+   falls back to a key derived from deployment identifiers; that is fine for a
+   laptop run, not for a shared deployment.
 
 ### Roles (RBAC)
 
@@ -523,7 +593,7 @@ headers.
 | Feed pipeline search stage returns nothing / AccessDenied | The Web Search gateway is missing or unreachable: run `scripts/deploy_websearch_gateway.py`, confirm `/agent-platform/websearch-gateway` exists in SSM (us-east-1), and check the kernel role has `bedrock-agentcore:InvokeGateway` (`InvokeGateways` statement in the runtime module) |
 | Search stage fails with `ValidationException` on `filters` | The connector target is pinned to `1.1.0`, which has no request-level filters — re-run `scripts/deploy_websearch_gateway.py` (it re-pins to `1.2.0`; an omitted version is sticky on update) |
 | Crawl stage reports `crawl_ok: false` for most items | Expected for paywalled or bot-blocked pages — the summary falls back to the search snippet. If it is *every* item, check the `BuiltinTools` grant covers `StartBrowserSession` on `browser/*` |
-| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the `agent-platform/portal-admin` secret exists and the Lambda role's `PortalAdminSecret` grant, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB) |
+| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the secret named by `terraform output -raw portal_admin_secret_name` exists (it is suffix-aware: `agent-platform<suffix>/portal-admin`), that the Lambda's `PLATFORM_PORTAL_ADMIN_SECRET` env and its role's `PortalAdminSecret` grant name that same secret, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB). A `NotAuthorizedException` here means the secret holds another stack's password |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |
 | Memory retrieval returns nothing right after a conversation | Long-term extraction is asynchronous (typically under a minute); raw events are visible immediately on the Memory page |
@@ -532,7 +602,10 @@ headers.
 | Backend pods `Running` but never `Ready`; the ALB target group shows no healthy targets | kubelet probes and the ALB reach the pod through its own security groups: check the portal service group admits the cluster security group (probes) and the ALB group on 8000, and that `aws-node` runs with `POD_SECURITY_GROUP_ENFORCING_MODE=strict` + `DISABLE_TCP_EARLY_DEMUX=true` (`kubectl -n kube-system describe ds aws-node`) |
 | Backend pod logs show `AccessDenied` / `Not authorized to perform sts:AssumeRoleWithWebIdentity` | IRSA wiring: the service account must carry the `eks.amazonaws.com/role-arn` annotation and the role's trust must name the cluster's OIDC provider with `sub = system:serviceaccount:portal:backend` (and `:entry`). `kubectl -n portal describe sa backend`; `terraform output eks_oidc_provider_arn` |
 | Runtime never becomes READY | Check `/aws/bedrock-agentcore/runtimes/*` CloudWatch logs; usually a container boot error |
+| Runtime update sits in `UPDATING` for minutes, or a second update returns `ConflictException` | Expected on platform version V2: the service boots the container and snapshots it before the version is ready. Wait for `READY` (or a `*_FAILED` status) before the next change |
+| V2 create/update fails with a health-check error | The container did not answer `/ping` within 120 s of start. The kernels here are healthy within seconds; a new base image that does heavy work before listening on 8080 would trip this |
 | First invoke very slow | Expected: cold start provisions a microVM and restores the S3 workspace |
+| Workbench terminal shows `connected` but the screen is black for ~10 s and fills with `^[[A^[[B` when you scroll | The shell has the tty (cooked mode, echo on) until `claude` starts; xterm.js sends wheel events as arrow keys in tmux's alternate screen and the shell echoes them. On V2 this window is visible because the restore and the `claude` start both begin at the first connect. Image `v23+` hides echo, prints a status line and flushes typeahead; if you still see it, the running image predates that. Also make sure the kernel image carries `DISABLE_AUTOUPDATER=1` and was built with a current `--build-arg CLAUDE_CODE_VERSION=<x.y.z>` (the npm layer is otherwise served from the build cache): an outdated pinned `claude` spends the first seconds of every session downloading an update that is thrown away with the microVM |
 | Invoke fails with `RuntimeClientError: Runtime initialization time exceeded … 120s` | VPC-mode image pull is blocked: layers download from S3 (`prod-<region>-starport-layer-bucket`), so the runtime subnets need an S3 gateway-endpoint route **and** the runtime SG needs `443 → S3 prefix list` egress — outbound rules that only reference endpoint SGs silently drop it. The runtime showing READY proves nothing here: that's a control-plane check, the pull happens at session start. See permissions.md §10 |
 | Runtime log group has only zero-byte `otel-*`/`spans` streams, no `[start.sh]` lines | The container never started (see above), or `logs` egress from the runtime SG is blocked — fix logs first, stdout is the only window into `start.sh` |
 | Portal `connect` dies at the front door (408/504) and no session appears | Often a *derivative* of a container-init failure: warmup blocks on the cold start until whatever sits in front times out first. Reproduce with a direct CLI invoke (payload `{"action":"warmup"}`, `runtimeSessionId` ≥33 chars) to get the real error. Heuristic: a hang means network, an instant error means IAM |

@@ -160,6 +160,44 @@ routes traffic to `0.0.0.0:8000/mcp` (stateless streamable-HTTP, FastMCP). It
 exposes three mock "internal tools" (`lookup_employee`, `search_knowledge_base`,
 `create_ticket`) standing in for real corporate integrations.
 
+#### Platform versions (V1 / V2)
+
+AgentCore Runtime has two platform versions. V1 boots every session from the
+image; V2 boots once, snapshots the initialized environment, and restores each
+new session from that snapshot: cold starts stay around two seconds regardless
+of image size or concurrency, idle memory is reclaimed, and the unit price is
+higher. Which one pays off depends on the workload (a short pipeline call with a
+long idle tail tends to favour V2, a long-lived interactive terminal may not),
+so the platform offers both side by side instead of picking one.
+
+`platformVersion` is a property of the **runtime itself**, separate from runtime
+versions and endpoints, so one runtime cannot serve both. With
+`runtime_platform_versions = ["V1", "V2"]` the interactive and headless kernels
+each get two runtimes running the same image (`claude_code_kernel` /
+`claude_code_kernel_v2`, `agent_sdk_kernel` / `agent_sdk_kernel_v2`). The choice
+is made per workload and recorded where the other routing choices live:
+
+- **Workbench session**: picked at creation ("Startup" in the new-session dialog)
+  and fixed for the session's life. A `runtimeSessionId` belongs to one runtime,
+  so switching would mean a new microVM anyway; the S3 workspace carries over.
+- **Published agent**: set on the agent (or left on "Platform default", which
+  follows `runtime_default_platform_version`). Pipelines, schedules and channels
+  calling the agent inherit it.
+- **Debug console, raw kernel**: picked per call.
+
+Every invocation record and the trace attributes (`agent.platform_version`)
+carry the version the call ran on, so cost can be split by version. The MCP
+tools kernel stays a single runtime (`mcp_tools_platform_version`): it is a
+gateway target, not chosen per session.
+
+V2 restores a snapshot, which changes how kernel code must behave: randomness
+and timestamps computed at startup are identical across restored instances, and
+timers that assume a fresh boot start from the snapshot's clock. A kernel has to
+draw per-request entropy and must not bake start-up state into later requests;
+see the AgentCore guide on optimizing agents for V2 before putting a kernel on
+it. V2 is available in a subset of Regions; the Terraform defaults deploy V1
+only.
+
 ### Ecosystem: MCP servers + skills (Phase 2)
 
 - **Registry** — DynamoDB (`PK=ECOSYSTEM`) holds MCP server entries
@@ -299,7 +337,8 @@ free.
   attachments by name, memory binding, turn budget) served by the shared
   headless kernel. The self-service path reads `agent.yaml` from a Dev
   Workbench session's S3 workspace; republishing the same name bumps the
-  version and keeps history. Config-only publishing means instant rollout and
+  version and keeps history (only the publisher or an administrator may do
+  so — the id, and everything bound to it, survives a republish). Config-only publishing means instant rollout and
   no per-agent runtime; image-based custom kernels remain the CDK path.
 - **Scheduler** (`schedule_service.py`) — schedules in DynamoDB, fired by
   **Amazon EventBridge Scheduler**: the backend mirrors every schedule into a
@@ -397,7 +436,13 @@ the Claude Code Workflow tool) and registered as a named platform *pipeline*.
   governed invocation pipeline (quota → invoke → ledger), and
   `s3read/s3write/s3list` are confined to the workspace bucket by the backend.
   This keeps a workflow's trust model equivalent to a CI pipeline definition:
-  it is code, but its only I/O is the metered bridge.
+  it is code, but its only I/O is the metered bridge. The subprocess is also
+  kept away from the backend's own identity: it gets an allow-listed
+  environment (no `AWS_*` / `PLATFORM_*`), runs under Node's permission model
+  with read access to the runner and the script only (no `child_process`,
+  workers or addons, so the pod's IRSA token file is unreachable) and, when
+  the backend runs as root, as the unprivileged `workflow` account. The
+  engine refuses to run scripts on a Node without the permission model.
 - **Feed layer** — retrieval is the AgentCore-managed **Web Search** connector
   behind a gateway of the platform's own (registry kind `agentcore-gateway`,
   SigV4 with the kernel's role), and page bodies are read with the **Browser**

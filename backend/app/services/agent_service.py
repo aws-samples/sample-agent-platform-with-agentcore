@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 import boto3
 import yaml
 
-from app.config import settings
+from app.config import resolve_platform_version, settings
 from app.services.ecosystem_service import ecosystem_service
 from app.services.mcp_hub_credentials_service import mcp_hub_credentials_service
 
@@ -68,6 +68,9 @@ class AgentService:
             "memory_id": item.get("memory_id", ""),
             "model_backend": item.get("model_backend", ""),
             "model": item.get("model", ""),
+            # AgentCore Runtime platform version; "" = follow the deployment
+            # default (so a default change moves agents that never chose)
+            "platform_version": item.get("platform_version", ""),
             # MCP hub Actor identity (set when an mcp-hub server is attached).
             # The access key is an identifier — safe to show; the secret key
             # never leaves Secrets Manager, only its name is recorded here.
@@ -78,6 +81,7 @@ class AgentService:
             "created_by": item.get("created_by", ""),
             "created_at": item.get("created_at", ""),
             "updated_at": item.get("updated_at", ""),
+            "updated_by": item.get("updated_by", item.get("created_by", "")),
             "history": item.get("history", []),
         }
 
@@ -148,6 +152,7 @@ class AgentService:
         memory_id: str = "",
         model_backend: str = "",
         model: str = "",
+        platform_version: str = "",
         source: str = "manual",
     ) -> dict:
         """Create or re-publish (version bump) an agent by name."""
@@ -160,18 +165,35 @@ class AgentService:
             # fail the publish, not the future invocation, on a bad reference
             from app.services.model_config_service import model_config_service
             model_config_service.resolve(model_backend, model)
+        if platform_version:
+            # same: an undeployed version fails here, not at invoke time
+            resolve_platform_version("sdk", platform_version)
 
         existing = next((a for a in self.list_agents() if a["name"] == name), None)
         now = _now()
         if existing:
+            # Names are global, but re-publishing keeps the agent's id — and
+            # every channel, schedule, eval and API caller bound to that id.
+            # Only the publisher (or an administrator) may replace what runs
+            # behind it; anyone else republishing the same name would take
+            # the agent over. Ownership stays with the original publisher
+            # even when an administrator pushes a new version.
+            owner = existing.get("created_by", "")
+            if str(user) != owner and not getattr(user, "is_admin", False):
+                raise PermissionError(
+                    f"agent '{name}' is published by another user; choose a different name"
+                )
             agent_id = existing["id"]
             version = existing["version"] + 1
-            history = ([{"version": existing["version"], "at": existing["updated_at"], "by": existing["created_by"]}]
+            history = ([{"version": existing["version"], "at": existing["updated_at"],
+                         "by": existing.get("updated_by") or owner}]
                        + list(existing.get("history", [])))[:MAX_HISTORY]
             created_at = existing["created_at"]
+            created_by = owner or str(user)
         else:
             agent_id = uuid.uuid4().hex[:12]
             version, history, created_at = 1, [], now
+            created_by = str(user)
 
         # An mcp-hub attachment makes this agent an application in the hub's
         # eyes, so publish is where its Actor credentials come to exist —
@@ -197,13 +219,15 @@ class AgentService:
             "memory_id": memory_id,
             "model_backend": model_backend,
             "model": model,
+            "platform_version": platform_version,
             "mcp_hub_access_key": mcp_hub_access_key,
             "mcp_hub_secret_name": mcp_hub_secret_name,
             "version": version,
             "source": source,
-            "created_by": user,
+            "created_by": created_by,
             "created_at": created_at,
             "updated_at": now,
+            "updated_by": str(user),
             "history": history,
         }
         self.table.put_item(Item=item)
@@ -245,6 +269,7 @@ class AgentService:
             memory_id=str(manifest.get("memory_id", "")),
             model_backend=str(manifest.get("model_backend", "")),
             model=str(manifest.get("model", "")),
+            platform_version=str(manifest.get("platform_version", "")),
             source=f"workspace:{runtime_session_id[:16]}",
         )
 
@@ -286,6 +311,7 @@ class AgentService:
             "memory_id": agent["memory_id"],
             "model_backend": agent["model_backend"],
             "model": agent["model"],
+            "platform_version": agent["platform_version"],
             **cfg,
         }
 

@@ -436,6 +436,9 @@ locals {
       PLATFORM_INTERACTIVE_RUNTIME_ARN   = var.interactive_runtime_arn
       PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
       PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
+      PLATFORM_INTERACTIVE_RUNTIME_ARNS  = jsonencode(var.interactive_runtime_arns)
+      PLATFORM_SDK_RUNTIME_ARNS          = jsonencode(var.sdk_runtime_arns)
+      PLATFORM_DEFAULT_PLATFORM_VERSION  = var.default_platform_version
       PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
       PLATFORM_LLM_EDGE_URL              = var.llm_edge_url
       # Scoped to the portal's own origin. The API sits behind the same
@@ -525,6 +528,18 @@ resource "helm_release" "workload" {
     targetGroups    = each.value.target_groups
     dependencyToken = var.eks.controllers_ready
   })]
+
+  # Secret values travel base64-encoded straight into the Secret's `data`
+  # (see the chart). The session-binding key must be identical on every
+  # backend/entry replica or a caller's session would resolve differently
+  # depending on which pod answered.
+  set_sensitive = [
+    {
+      name  = "secretEnv.PLATFORM_SESSION_BINDING_SECRET"
+      value = base64encode(random_password.session_binding.result)
+      type  = "string"
+    },
+  ]
 
   # Like the ECS deployment circuit breaker: a rollout whose pods never become
   # ready is rolled back to the previous revision instead of left half-done.

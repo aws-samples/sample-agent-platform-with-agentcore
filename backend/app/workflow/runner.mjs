@@ -106,10 +106,14 @@ const args = process.argv[3] ? JSON.parse(process.argv[3]) : undefined
 
 // Security note: executing the script IS the feature — a workflow is code by
 // design, same trust model as CI pipeline definitions. Scripts can only be
-// registered through the Cognito-authenticated portal API, and this shim runs
-// them in a short-lived subprocess whose only I/O is the stdio bridge above
-// (agent calls stay governed/metered by the platform; S3 access is confined
-// to the workspace bucket by the backend).
+// registered through the admin-only portal API, and the engine runs this shim
+// in a short-lived subprocess whose only I/O is the stdio bridge above (agent
+// calls stay governed/metered by the platform; S3 access is confined to the
+// workspace bucket by the backend). The subprocess is not trusted with the
+// backend's identity: workflow_engine starts it with an allow-listed
+// environment, under Node's permission model (fs read limited to this file
+// and the script; no child_process/workers/addons) and as an unprivileged
+// user — so `import('node:fs')` cannot reach the pod's IRSA token file.
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 // nosemgrep: javascript.lang.security.audit.detect-eval-with-expression
 const fn = new AsyncFunction(

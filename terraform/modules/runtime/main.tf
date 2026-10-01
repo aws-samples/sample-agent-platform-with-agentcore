@@ -2,8 +2,17 @@
 #
 # All run in VPC mode so egress leaves via the network module's fixed-EIP NAT
 # Gateway (docs/architecture.md — Networking).
+#
+# Platform versions: AgentCore sets platformVersion (V1 = boot per session,
+# V2 = restore from a snapshot) on the runtime itself, not on its versions or
+# endpoints, so one runtime cannot serve both. The interactive and headless
+# kernels therefore get one runtime per entry in var.platform_versions, running
+# the same image; the backend picks the runtime per session / published agent.
+# V1 keeps the original runtime names, V2 runtimes carry a `_v2` suffix.
 
 locals {
+  version_name_suffix = { V1 = "", V2 = "_v2" }
+
   # Neither the gateway address nor the name of its secret is passed to a
   # kernel any more. Both used to be here so the container could fetch the key
   # itself at startup; a session's user is root in that container, so that put a
@@ -32,7 +41,9 @@ locals {
 # ------------------------ interactive kernel -------------------------------
 
 resource "aws_bedrockagentcore_agent_runtime" "interactive" {
-  agent_runtime_name = "claude_code_kernel${var.runtime_name_suffix}"
+  for_each = toset(var.platform_versions)
+
+  agent_runtime_name = "claude_code_kernel${local.version_name_suffix[each.key]}${var.runtime_name_suffix}"
   description        = "Interactive Claude Code kernel with browser web terminal"
   role_arn           = aws_iam_role.interactive.arn
 
@@ -68,7 +79,9 @@ resource "aws_bedrockagentcore_agent_runtime" "interactive" {
 # ------------------------- headless kernel ---------------------------------
 
 resource "aws_bedrockagentcore_agent_runtime" "sdk" {
-  agent_runtime_name = "agent_sdk_kernel${var.runtime_name_suffix}"
+  for_each = toset(var.platform_versions)
+
+  agent_runtime_name = "agent_sdk_kernel${local.version_name_suffix[each.key]}${var.runtime_name_suffix}"
   description        = "Headless Claude Agent SDK kernel behind the /invocations contract"
   role_arn           = aws_iam_role.sdk.arn
 

@@ -86,6 +86,20 @@ variable "mcp_tools_runtime_arn" {
   type = string
 }
 
+variable "interactive_runtime_arns" {
+  description = "Interactive kernel runtime ARN per AgentCore platform version ({V1 = arn, V2 = arn})."
+  type        = map(string)
+}
+
+variable "sdk_runtime_arns" {
+  description = "Headless kernel runtime ARN per AgentCore platform version."
+  type        = map(string)
+}
+
+variable "default_platform_version" {
+  type = string
+}
+
 variable "workspace_access_role_arn" {
   type = string
 }
