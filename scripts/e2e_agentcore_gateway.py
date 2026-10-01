@@ -8,8 +8,8 @@ authentication chain is exercised as deployed:
     Claude Code subprocess          per-invocation loopback token
         -> llm_shim (kernel)        SigV4 over per-session STS credentials
         -> AgentCore Gateway        IAM authorizer + session policy
-        -> bedrock-mantle           gateway's own execution role
-        -> Anthropic model
+        -> LiteLLM /v1/messages     API key injected from the token vault
+        -> the upstream model LiteLLM routes to
 
 Nothing in the chain is stubbed. The only simulation is the microVM itself:
 the shim runs in this process instead of inside AgentCore Runtime, which is
@@ -32,12 +32,19 @@ Asserts:
 
 Usage:  python3 scripts/e2e_agentcore_gateway.py [--region us-east-1] [--keep]
 
+Configuration is by environment: LITELLM_ENDPOINT and
+LITELLM_CREDENTIAL_PROVIDER_ARN are required; LITELLM_ALLOWED_MODELS,
+LITELLM_CHAIN_MODEL and LITELLM_PATHS have defaults. For a LiteLLM that is not reachable from
+the internet, set LITELLM_ROUTING_DOMAIN (an internal ALB's DNS name),
+LITELLM_VPC_ID, LITELLM_SUBNET_IDS and LITELLM_LATTICE_SG_IDS: the target then
+gets a managed VPC Lattice private endpoint and the gateway never leaves AWS's
+network on the way to LiteLLM.
+
 Requires: credentials able to create IAM roles, an AgentCore Gateway and a
 DynamoDB table, plus the `claude` CLI on PATH. Everything it creates is torn
 down unless --keep is passed.
 """
 import argparse
-import io
 import json
 import os
 import secrets
@@ -47,7 +54,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import zipfile
 
 import boto3
 from botocore.exceptions import ClientError
@@ -56,52 +62,77 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAIL: list[str] = []
 SUFFIX = secrets.token_hex(4)
 
-# A gateway REQUEST interceptor. V4 needs one anyway — that is where the
-# tenant identity used for LiteLLM's per-end-user billing gets injected from a
-# verified JWT claim, which the client cannot forge. Body adaptation rides
-# along in the same function: Claude Code sends first-party-only fields that
-# the bedrock-mantle passthrough refuses outright ("400 context_management:
-# Extra inputs are not permitted"), and the gateway forwards bodies verbatim,
-# so there is nowhere else outside the container to drop them. A LiteLLM
-# upstream configured with drop_params absorbs the same class of mismatch.
-INTERCEPTOR_SRC = '''
-import base64, json
+# The gateway target routes to this LiteLLM deployment. Overridable so a fork
+# can point at a staging instance, but the default is the one Prod-LiteLLM
+# already runs on this account.
+# The gateway target routes to this LiteLLM deployment, and this API-key
+# credential provider holds the LiteLLM virtual key. Both are required. The
+# provider is created out of band (AWS Console: AgentCore -> Identity -> API
+# key credential providers) so a live key never lands in this script or its
+# logs; the e2e's job is to prove the provider ARN and the target wiring work
+# end to end.
+LITELLM_ENDPOINT = os.environ.get("LITELLM_ENDPOINT", "")
+LITELLM_CREDENTIAL_PROVIDER_ARN = os.environ.get("LITELLM_CREDENTIAL_PROVIDER_ARN", "")
 
-# Fields Claude Code sends that the strict Anthropic-on-Bedrock passthrough
-# rejects. Dropping them is lossy (prompt caching, server-side context
-# management) and deliberately explicit rather than a blanket filter.
-DROP_TOP_LEVEL = ("context_management",)
+# The list of models the virtual key permits. The gateway target refuses any
+# model outside this set at its own layer, and LiteLLM refuses it at the key
+# layer — either check is enough on its own, both layers are here on purpose
+# so a misconfiguration surfaces immediately rather than at the far end.
+LITELLM_ALLOWED_MODELS = [
+    m.strip()
+    for m in os.environ.get(
+        "LITELLM_ALLOWED_MODELS",
+        "claude-opus-5-5,claude-sonnet-5-5,gpt-6-astra,kimi-k3",
+    ).split(",")
+    if m.strip()
+]
 
-def lambda_handler(event, context):
-    req = event["http"]["gatewayRequest"]
-    raw = base64.b64decode(req.get("body") or b"")
-    try:
-        body = json.loads(raw) if raw else {}
-    except Exception:
-        return {"interceptorOutputVersion": "1.0",
-                "http": {"transformedGatewayRequest": req}}
-    dropped = [k for k in DROP_TOP_LEVEL if k in body]
-    for k in dropped:
-        body.pop(k, None)
-    if dropped:
-        print("dropped unsupported fields: " + ",".join(dropped))
-    new = json.dumps(body).encode()
-    # Only the fields being changed go back. Echoing the whole gatewayRequest
-    # (httpMethod/path included) is rejected with "Received invalid response
-    # from interceptor", and the body must stay base64 — a JSON object is
-    # rejected the same way, even though the MCP examples in the docs use one.
-    hdrs = dict(req.get("headers") or {})
-    hdrs["Content-Length"] = str(len(new))
-    return {
-        "interceptorOutputVersion": "1.0",
-        "http": {
-            "transformedGatewayRequest": {
-                "headers": hdrs,
-                "body": base64.b64encode(new).decode(),
-            }
-        },
-    }
-'''
+# Private path to LiteLLM. When LITELLM_ROUTING_DOMAIN is set the target gets a
+# managed VPC Lattice private endpoint: AgentCore places resource-gateway ENIs
+# in these subnets and connects to the routing domain (an internal ALB), while
+# TLS SNI / Host stay on LITELLM_ENDPOINT's name so the ALB's public cert
+# matches. Unset, the target dials LITELLM_ENDPOINT over the internet.
+LITELLM_ROUTING_DOMAIN = os.environ.get("LITELLM_ROUTING_DOMAIN", "")
+LITELLM_VPC_ID = os.environ.get("LITELLM_VPC_ID", "")
+LITELLM_SUBNET_IDS = [
+    s.strip() for s in os.environ.get("LITELLM_SUBNET_IDS", "").split(",") if s.strip()
+]
+LITELLM_LATTICE_SG_IDS = [
+    s.strip() for s in os.environ.get("LITELLM_LATTICE_SG_IDS", "").split(",") if s.strip()
+]
+
+# Inbound paths the target accepts. The gateway does no protocol translation:
+# it matches path + model, swaps in the API key and relays the body (and the
+# SSE stream) verbatim, so whether a given model works on a given path is
+# LiteLLM's call. Every allowed model is declared on every path here and the
+# [protocol-matrix] probe reports what LiteLLM actually serves.
+LITELLM_PATHS = [
+    p.strip()
+    for p in os.environ.get(
+        "LITELLM_PATHS", "/v1/messages,/v1/chat/completions,/v1/responses"
+    ).split(",")
+    if p.strip()
+]
+
+# The one used for the [chain] / multi-turn / revoke / failfast steps, which
+# drive the real Claude Code CLI and therefore need an Anthropic-native model.
+LITELLM_CHAIN_MODEL = os.environ.get("LITELLM_CHAIN_MODEL", "claude-sonnet-5-5")
+
+# Anything in the allowed set but not the chain model gets exercised by the
+# lightweight [multimodel] smoke: one /v1/messages "hi" per model, no CLI, no
+# tools. That is where any Anthropic-to-OpenAI protocol translation LiteLLM
+# does for gpt-* / kimi-* is stressed.
+LITELLM_SMOKE_MODELS = [
+    m for m in LITELLM_ALLOWED_MODELS if m != LITELLM_CHAIN_MODEL
+]
+
+# No REQUEST interceptor. Claude Code sends first-party-only fields
+# (context_management today) that LiteLLM's Bedrock adapter rejects; the
+# LiteLLM model entries carry `drop_params: true` so LiteLLM strips them. An
+# interceptor Lambda could do the same at the gateway, but every model call
+# then pays a synchronous Lambda hop and the request body is capped by
+# Lambda's 6 MB invoke payload (about 4.5 MB of JSON after base64), which a
+# long Claude Code session can reach.
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -126,16 +157,11 @@ class Fixture:
         self.sts = boto3.client("sts")
         self.ddb = boto3.client("dynamodb", region_name=region)
         self.acc = boto3.client("bedrock-agentcore-control", region_name=region)
-        self.lam = boto3.client("lambda", region_name=region)
-        self.logs = boto3.client("logs", region_name=region)
         self.account = self.sts.get_caller_identity()["Account"]
         self.gw_role = f"e2e-acgw-exec-{SUFFIX}"
         self.caller_role = f"e2e-acgw-caller-{SUFFIX}"
-        self.icept_role = f"e2e-acgw-icept-{SUFFIX}"
-        self.icept_fn = f"e2e-acgw-icept-{SUFFIX}"
         self.table = f"e2e-acgw-{SUFFIX}"
         self.gateways: list[str] = []
-        self.icept_arn = ""
 
     # -- helpers ----------------------------------------------------------
 
@@ -143,13 +169,76 @@ class Fixture:
         """The role this script runs as, so the caller role can trust it.
 
         In production the trusting principal is the backend's IRSA role; here
-        it is whatever identity is running the test.
+        it is whatever identity is running the test. SSO reserved roles
+        (``arn:aws:iam::<acct>:role/AWSReservedSSO_*``) cannot be used as an
+        AssumeRole *Principal* — IAM refuses the trust policy with
+        MalformedPolicyDocument — so for those we widen to the account root.
+        That is safe here because the role lives for the length of one run.
         """
         arn = self.sts.get_caller_identity()["Arn"]
         if ":assumed-role/" in arn:
             name = arn.split(":assumed-role/")[1].split("/")[0]
+            if name.startswith("AWSReservedSSO_"):
+                return f"arn:aws:iam::{self.account}:root"
             return f"arn:aws:iam::{self.account}:role/{name}"
         return arn
+
+    def _gw_role_policy(self) -> dict:
+        """Policy for the gateway execution role.
+
+        The one capability needed is retrieving the outbound API key (the
+        LiteLLM virtual key) from AgentCore Identity's token vault during a
+        request; without the GetResourceApiKey / secretsmanager
+        grants the gateway returns 400 "Failed to fetch outbound api key.
+        Failed to get workload identity token" and every call — chain,
+        scoping, revoke — surfaces the same error.
+        """
+        vault = f"arn:aws:bedrock-agentcore:{self.region}:{self.account}"
+        provider_name = LITELLM_CREDENTIAL_PROVIDER_ARN.rsplit("/", 1)[-1]
+        return {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    # Two actions, one resource set. GetWorkloadAccessToken
+                    # is the first hop the gateway makes: it exchanges its
+                    # execution role for a workload-scoped token, which it
+                    # then presents to GetResourceApiKey to unwrap the
+                    # LiteLLM key. Without the first action the docs' policy
+                    # is not sufficient — this is the exact failure mode we
+                    # observed as "Failed to get workload identity token"
+                    # despite GetResourceApiKey being granted.
+                    "Sid": "AgentCoreApiKeyTokenVaultDefault",
+                    "Effect": "Allow",
+                    "Action": [
+                        "bedrock-agentcore:GetWorkloadAccessToken",
+                        "bedrock-agentcore:GetResourceApiKey",
+                    ],
+                    "Resource": [
+                        f"{vault}:token-vault/default",
+                        f"{vault}:workload-identity-directory/default",
+                        f"{vault}:workload-identity-directory/default/"
+                        "workload-identity/*",
+                    ],
+                },
+                {
+                    "Sid": "AgentCoreApiKeyTokenVaultPerKey",
+                    "Effect": "Allow",
+                    "Action": "bedrock-agentcore:GetResourceApiKey",
+                    "Resource": LITELLM_CREDENTIAL_PROVIDER_ARN,
+                },
+                {
+                    "Sid": "AgentCoreApiKeySecret",
+                    "Effect": "Allow",
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Resource": (
+                        f"arn:aws:secretsmanager:{self.region}:"
+                        f"{self.account}:secret:"
+                        f"bedrock-agentcore-identity!default/apikey/"
+                        f"{provider_name}-*"
+                    ),
+                },
+            ],
+        }
 
     def _role(self, name: str, trust: dict, policy: dict, max_session: int = 3600) -> str:
         try:
@@ -187,56 +276,6 @@ class Fixture:
         self.ddb.get_waiter("table_exists").wait(TableName=self.table)
         print(f"  table  {self.table}")
 
-        # -- interceptor Lambda (created first: the gateway references it) ---
-        lrole = self._role(
-            self.icept_role,
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Principal": {"Service": "lambda.amazonaws.com"},
-                        "Action": "sts:AssumeRole",
-                    }
-                ],
-            },
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Action": [
-                            "logs:CreateLogGroup",
-                            "logs:CreateLogStream",
-                            "logs:PutLogEvents",
-                        ],
-                        "Resource": "*",
-                    }
-                ],
-            },
-        )
-        time.sleep(12)
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("lambda_function.py", INTERCEPTOR_SRC)
-        self.icept_arn = self.lam.create_function(
-            FunctionName=self.icept_fn,
-            Runtime="python3.12",
-            Role=lrole,
-            Handler="lambda_function.lambda_handler",
-            Code={"ZipFile": buf.getvalue()},
-            Timeout=15,
-            MemorySize=256,
-            Description="temporary: e2e_agentcore_gateway request interceptor",
-        )["FunctionArn"]
-        for _ in range(20):
-            if self.lam.get_function(FunctionName=self.icept_fn)["Configuration"][
-                "State"
-            ] == "Active":
-                break
-            time.sleep(3)
-        print(f"  lambda {self.icept_fn} (REQUEST interceptor)")
-
         gw_trust = {
             "Version": "2012-10-17",
             "Statement": [
@@ -248,45 +287,16 @@ class Fixture:
                 }
             ],
         }
-        gw_arn_role = self._role(
-            self.gw_role,
-            gw_trust,
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Action": ["bedrock:*", "bedrock-mantle:*"],
-                        "Resource": "*",
-                    },
-                    {
-                        # Scoped to the one interceptor, per the gateway
-                        # interceptor security guidance.
-                        "Effect": "Allow",
-                        "Action": "lambda:InvokeFunction",
-                        "Resource": self.icept_arn,
-                    },
-                ],
-            },
-        )
+        # The gateway execution role must reach AgentCore Identity's token
+        # vault so the LiteLLM API key can be fetched and injected into
+        # outbound requests.
+        gw_policy = self._gw_role_policy()
+        gw_arn_role = self._role(self.gw_role, gw_trust, gw_policy)
         print(f"  role   {self.gw_role} (gateway execution)")
 
         # Two gateways: the session credential is scoped to the first, and the
         # second exists only to prove the scoping actually bites.
         for label in ("primary", "decoy"):
-            extra: dict = {}
-            if label == "primary":
-                extra["interceptorConfigurations"] = [
-                    {
-                        "interceptor": {"lambda": {"arn": self.icept_arn}},
-                        "interceptionPoints": ["REQUEST"],
-                        # Required in the billing configuration so the
-                        # interceptor can read the verified JWT it derives the
-                        # tenant identity from; kept on here so the shape under
-                        # test matches the one V4 actually deploys.
-                        "inputConfiguration": {"passRequestHeaders": True},
-                    }
-                ]
             g = self.acc.create_gateway(
                 name=f"e2e-{label}-{SUFFIX}",
                 roleArn=gw_arn_role,
@@ -294,7 +304,6 @@ class Fixture:
                 authorizerType="AWS_IAM",
                 exceptionLevel="DEBUG",
                 description="temporary: e2e_agentcore_gateway",
-                **extra,
             )
             self.gateways.append(g["gatewayId"])
             print(f"  gateway {g['gatewayId']} ({label})")
@@ -303,44 +312,84 @@ class Fixture:
                 if self.acc.get_gateway(gatewayIdentifier=gid)["status"] != "CREATING":
                     break
                 time.sleep(4)
-        # IAM propagation before the connector's model-discovery call.
+        # IAM propagation before the gateway's first outbound.
         time.sleep(15)
         for gid in self.gateways:
             t = self.acc.create_gateway_target(
                 gatewayIdentifier=gid,
-                name="bedrock",
+                name="litellm",
+                # An inference *provider* target rather than the built-in
+                # bedrock-mantle connector: the gateway forwards Anthropic
+                # Messages requests to our LiteLLM deployment, and LiteLLM
+                # keeps its multi-provider routing (Bedrock Anthropic today,
+                # OpenAI / Gemini tomorrow) exactly as it does for every other
+                # client. What this backend gives up in return is the
+                # llm-edge pod — one fewer service on the platform side, no
+                # provider key living anywhere in our EKS.
                 targetConfiguration={
-                    "inference": {"connector": {"source": {"connectorId": "bedrock-mantle"}}}
+                    "inference": {
+                        "provider": {
+                            "endpoint": LITELLM_ENDPOINT,
+                            "operations": [
+                                {
+                                    "path": path,
+                                    # The models named here are what a caller
+                                    # is *allowed* to route to; the shim
+                                    # additionally fail-fasts against the
+                                    # per-session allowlist minted by the
+                                    # backend.
+                                    "models": [
+                                        {"model": m}
+                                        for m in LITELLM_ALLOWED_MODELS
+                                    ],
+                                }
+                                for path in LITELLM_PATHS
+                            ],
+                        }
+                    }
                 },
+                # An API_KEY provider held in AgentCore Identity's token vault
+                # substitutes the caller's Authorization header on the way
+                # out, so a container never sees the LiteLLM key. The
+                # provider is created out of band (Console) and referenced by
+                # ARN; see LITELLM_CREDENTIAL_PROVIDER_ARN at the top.
+                credentialProviderConfigurations=[
+                    {
+                        "credentialProviderType": "API_KEY",
+                        "credentialProvider": {
+                            "apiKeyCredentialProvider": {
+                                "providerArn": LITELLM_CREDENTIAL_PROVIDER_ARN,
+                                "credentialLocation": "HEADER",
+                                "credentialParameterName": "Authorization",
+                                # No trailing space: the gateway inserts the
+                                # separator itself. "Bearer " goes out as
+                                # "Bearer  <key>" and LiteLLM rejects it.
+                                "credentialPrefix": "Bearer",
+                            }
+                        },
+                    }
+                ],
                 # Curating headers here is the AgentCore-side counterpart of
                 # llm-edge's FORWARD_HEADERS allowlist, and it is not optional:
-                #
-                #  - left unset, the gateway relays whatever the caller sent,
-                #    including the caller's own x-amz-security-token; and
-                #  - Claude Code advertises a prompt-caching beta that this
-                #    upstream rejects outright ("400 Unexpected value(s)
-                #    `prompt-caching-scope-...` for the `anthropic-beta`
-                #    header"), so anthropic-beta has to be dropped for the
-                #    bedrock-mantle connector. A LiteLLM upstream accepts it,
-                #    and would be allowlisted instead.
-                #
-                # content-type has to be listed explicitly: once
-                # allowedRequestHeaders is set, a connector target stops
-                # relaying it and the upstream answers "400 Expected request
-                # with `Content-Type: application/json`". (A provider target
-                # supplies it itself, which is why this is easy to miss.)
+                # left unset the gateway relays whatever the caller sent,
+                # including the caller's own x-amz-security-token. LiteLLM
+                # accepts anthropic-beta (so Claude Code's prompt-caching
+                # advertisement passes through), unlike the bedrock-mantle
+                # connector, which is the one payoff of not routing through
+                # that connector. content-type has to be listed explicitly:
+                # once allowedRequestHeaders is set, a connector-style target
+                # stops relaying it.
                 metadataConfiguration={
                     "allowedRequestHeaders": [
                         "content-type",
                         "anthropic-version",
+                        "anthropic-beta",
                         "accept",
                     ]
                 },
-                credentialProviderConfigurations=[
-                    {"credentialProviderType": "GATEWAY_IAM_ROLE"}
-                ],
+                **self._private_endpoint(),
             )
-            for _ in range(50):
+            for _ in range(90):
                 st = self.acc.get_gateway_target(
                     gatewayIdentifier=gid, targetId=t["targetId"]
                 )
@@ -348,6 +397,8 @@ class Fixture:
                     break
                 time.sleep(4)
             print(f"  target  {gid} -> {st['status']} {st.get('statusReasons', '')}")
+            for r in st.get("privateEndpointManagedResources") or []:
+                print(f"          private endpoint {r.get('domain')} via {r.get('resourceGatewayArn')}")
             if st["status"] != "READY":
                 raise SystemExit("inference target did not become READY")
 
@@ -383,6 +434,25 @@ class Fixture:
         # scoping assertion tests the session policy and not this role.
         time.sleep(12)
 
+    def _private_endpoint(self) -> dict:
+        """Top-level privateEndpoint kwarg for create_gateway_target, if any.
+
+        It sits beside targetConfiguration, not inside inference.provider.
+        The first target creation in an account also creates the
+        AWSServiceRoleForBedrockAgentCoreGatewayNetwork service-linked role.
+        """
+        if not LITELLM_ROUTING_DOMAIN:
+            return {}
+        mvr = {
+            "vpcIdentifier": LITELLM_VPC_ID,
+            "subnetIds": LITELLM_SUBNET_IDS,
+            "endpointIpAddressType": "IPV4",
+            "routingDomain": LITELLM_ROUTING_DOMAIN,
+        }
+        if LITELLM_LATTICE_SG_IDS:
+            mvr["securityGroupIds"] = LITELLM_LATTICE_SG_IDS
+        return {"privateEndpoint": {"managedVpcResource": mvr}}
+
     def base_url(self, which: int = 0) -> str:
         gid = self.gateways[which]
         return (
@@ -402,21 +472,20 @@ class Fixture:
                     self.acc.delete_gateway_target(
                         gatewayIdentifier=gid, targetId=t["targetId"]
                     )
-                time.sleep(6)
+                # A target with a private endpoint takes tens of seconds to
+                # release its Lattice association; the gateway refuses
+                # deletion until the target is gone.
+                for _ in range(40):
+                    if not self.acc.list_gateway_targets(
+                        gatewayIdentifier=gid
+                    ).get("items"):
+                        break
+                    time.sleep(5)
                 self.acc.delete_gateway(gatewayIdentifier=gid)
                 print(f"  deleted gateway {gid}")
             except Exception as e:  # noqa: BLE001
                 print(f"  gateway {gid}: {str(e)[:100]}")
-        try:
-            self.lam.delete_function(FunctionName=self.icept_fn)
-            print(f"  deleted lambda {self.icept_fn}")
-        except Exception as e:  # noqa: BLE001
-            print(f"  lambda: {str(e)[:100]}")
-        try:
-            self.logs.delete_log_group(logGroupName=f"/aws/lambda/{self.icept_fn}")
-        except Exception:  # noqa: BLE001
-            pass
-        for name in (self.caller_role, self.gw_role, self.icept_role):
+        for name in (self.caller_role, self.gw_role):
             for pol in self.iam.list_role_policies(RoleName=name).get(
                 "PolicyNames", []
             ):
@@ -442,9 +511,13 @@ class Fixture:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
-    ap.add_argument("--model", default="claude-haiku-4-5")
+    ap.add_argument("--model", default=LITELLM_CHAIN_MODEL)
     ap.add_argument("--keep", action="store_true", help="leave AWS resources behind")
     args = ap.parse_args()
+
+    if not (LITELLM_ENDPOINT and LITELLM_CREDENTIAL_PROVIDER_ARN):
+        print("set LITELLM_ENDPOINT (https://...) and LITELLM_CREDENTIAL_PROVIDER_ARN")
+        return 2
 
     if not any(
         os.access(os.path.join(p, "claude"), os.X_OK)
@@ -653,6 +726,42 @@ def main() -> int:
             ),
             ",".join(paths),
         )
+
+        if LITELLM_SMOKE_MODELS:
+            step(
+                "[multimodel] one /v1/messages 'hi' per non-chain model on the "
+                "virtual key — sanity-checks LiteLLM's protocol handling for "
+                "each upstream, no CLI, no tools"
+            )
+            # A fresh grant whose allowed_models covers every model the vk
+            # permits, so the shim's fail-fast doesn't shadow LiteLLM's
+            # protocol result. mint_agentcore accepts an explicit models list.
+            sid_mm = f"ses-{secrets.token_hex(20)}"
+            grant_mm = svc.mint_agentcore(
+                sid_mm, "alice", spec, team="team-alpha",
+                models=LITELLM_ALLOWED_MODELS,
+            )
+            token_mm = llm_shim.register(grant_mm) if grant_mm else ""
+            # A 200 confirms end-to-end for that model; a non-200 is a data
+            # point about how Anthropic Messages format survives LiteLLM's
+            # translation to the upstream — for gpt-* / kimi-* against
+            # /v1/messages this is not guaranteed to be lossless. Reported
+            # inline; the [chain] step is what a green run is judged on.
+            for m in LITELLM_SMOKE_MODELS:
+                if not token_mm:
+                    print(f"    {m}: could not mint a smoke grant")
+                    continue
+                code, body = shim_call(
+                    token_mm,
+                    {
+                        "model": m,
+                        "max_tokens": 8,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                verdict = "ok" if code == 200 else "fail"
+                print(f"    {verdict:>4}  {m:20} HTTP {code}  {body[:90]}")
+            svc.revoke_agentcore(sid_mm)
 
         step("[failfast] shim refuses a model this session was not routed to")
         code, body = shim_call(local_token, {"model": "claude-opus-4-7", "max_tokens": 8,
