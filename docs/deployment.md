@@ -112,6 +112,10 @@ multi-provider routing, cost accounting and model catalog exactly as it does
 for every other client — this option changes only how our platform reaches
 LiteLLM, not what LiteLLM does behind it.
 
+How each hop works, including the VPC Lattice private path and its 350-second
+idle limit, is drawn and explained in
+[architecture.md](architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
+
 1. **Mint a LiteLLM virtual key** scoped to the models this backend will
    serve. The Prod-LiteLLM master key stays where it is; the key stored in
    the vault below is the virtual one, so a revocation there does not touch

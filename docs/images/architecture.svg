@@ -329,7 +329,7 @@
 <circle cx="185" cy="806" r="5" fill="#0F766E"/><text x="195" y="810" font-size="10.5" fill="#5A6B7B">reply ←</text>
 <circle cx="264" cy="806" r="5" fill="#0369A1"/><text x="274" y="810" font-size="10.5" fill="#5A6B7B">tools/memory</text>
 <circle cx="378" cy="806" r="5" fill="#15803D"/><text x="388" y="810" font-size="10.5" fill="#5A6B7B">scheduling</text>
-<text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ per-session grant → llm-edge → ⑤ NAT egress → LLM gateway · EventBridge Scheduler → Lambda fires schedules (retries + DLQ) · workspace + conversation resume from S3</text>
+<text x="40" y="832" font-size="10" fill="#5A6B7B">① portal → ② REST /api/v1 → ③ InvokeAgentRuntime (warmup) → ④ per-session grant → llm-edge → ⑤ NAT egress → LLM gateway (or via AgentCore Gateway: agentcore-gateway-litellm.svg) · Scheduler → Lambda (retries + DLQ) · workspace + conversation resume from S3</text>
 <text x="40" y="850" font-size="10" fill="#5A6B7B">machine callers enter via a private SigV4 API Gateway (per-channel caller allowlist · optional robot SSO token) into a data-plane twin of the backend (management routes not mounted) · AgentCore Memory = last-10-turn replay + cross-session recall · detail: data-plane-split.svg + mcp-hub-chains.svg</text>
 
 <path class="flow" d="M 1240.0 300.0 L 1240.0 540.0 L 1367.0 540.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>

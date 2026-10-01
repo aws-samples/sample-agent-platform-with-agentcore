@@ -285,6 +285,54 @@ variables (clearing families the catalog lacks). This keeps Claude Code's
 it, a gateway session would inherit the container's baked-in Bedrock profile
 IDs, which the gateway rejects.
 
+#### How the `agentcore_gateway` backend reaches a private LiteLLM
+
+![agentcore_gateway backend in front of a private LiteLLM](images/agentcore-gateway-litellm.svg)
+
+Every hop is inside AWS; neither the gateway nor LiteLLM needs a public
+endpoint, and no LiteLLM key exists anywhere on the platform side.
+
+1. **Kernel → shim.** Claude Code (or the Agent SDK) points
+   `ANTHROPIC_BASE_URL` at the kernel's loopback shim with a per-invocation
+   local token. The shim holds the session's STS credential — minted by the
+   backend at connect via `AssumeRole` with a `session_id` tag and a session
+   policy that allows `InvokeGateway` on this one gateway — and SigV4-signs
+   each request. Revoking a session is an IAM Deny conditioned on that tag.
+2. **Runtime → gateway over PrivateLink.** With `enable_gateway_vpce` the
+   platform VPC has a `bedrock-agentcore.gateway` interface endpoint with
+   private DNS, so the gateway's normal URL resolves to endpoint ENIs and the
+   call never touches the NAT.
+3. **Gateway: match, swap, relay.** The IAM authorizer checks the signature
+   and session policy. The inference *provider* target matches the request
+   path (`/v1/messages`, `/v1/chat/completions` or `/v1/responses` — the
+   only three it accepts) and the body's `model` against its declared
+   models, replaces `Authorization` with the LiteLLM virtual key held in
+   AgentCore Identity's token vault, and relays the body and the SSE stream
+   **verbatim**. The gateway translates nothing; which model works on which
+   path is LiteLLM's decision.
+4. **Gateway → LiteLLM over VPC Lattice.** The target's top-level
+   `privateEndpoint.managedVpcResource` makes AgentCore place a VPC Lattice
+   resource gateway (ENIs plus a security group you choose) in the LiteLLM
+   VPC's subnets. Two names do two jobs:
+   - `provider.endpoint` (`https://<name>`) is the name on the ALB's
+     **publicly trusted** certificate. It is sent as TLS SNI and `Host`, so
+     the handshake succeeds; it needs no public DNS record.
+   - `routingDomain` is the **internal ALB's DNS name**: where Lattice
+     actually connects.
+5. **ALB → LiteLLM.** The internal ALB terminates TLS and forwards to the
+   LiteLLM pods. `drop_params` on the LiteLLM model entries strips the
+   first-party-only fields Claude Code sends (`context_management`), which
+   is why no gateway interceptor is needed (one would also cap request
+   bodies at about 4.5 MB, Lambda's invoke payload after base64).
+
+**The one limit that changes client behaviour:** VPC Lattice closes a TCP
+connection that carries no data for **350 seconds** (VPC Lattice quotas,
+"Connection idle time per connection for VPC Lattice resources"), and the
+gateway does not report it — a non-streaming call whose response takes
+longer simply never returns. Streaming keeps bytes on the wire and is not
+affected (a 10-minute stream completes). Claude Code and the SDK kernel
+always stream; other clients on this path must too.
+
 The gateway pattern is why **networking matters** (next section): enterprise
 gateways typically enforce source-IP allow-lists.
 
