@@ -59,7 +59,8 @@ create their own roles in `terraform/modules/team_auth` and
 | 5 | **`agent-platform-backend-task`** | `portal` module | The EKS cluster's OIDC provider via **IRSA** — only the `backend` and `entry` service accounts in the `portal` namespace | The control-plane API on EKS: session routing, invoking runtimes, memory/scheduler/eval management, minting workspace credentials. |
 | 6 | **`agent-platform-schedule-runner`** | `portal` module (CDK: `PortalStack/ScheduleRunner`) | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
 | 7 | **`agent-platform-scheduler`** | `portal` module (CDK: `PortalStack/SchedulerRole`) | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
-| 8 | **`agent-platform-llm-edge`** — *gateway mode only* | `llm_edge` module | The cluster's OIDC provider via **IRSA** — only the `edge` service account in the `llm-edge` namespace | The gateway broker. Holds exactly two grants: `secretsmanager:GetSecretValue` on the gateway key (the **only** principal that has it) and `dynamodb:GetItem` on the platform table for per-session token lookup — no `Query`, no `Scan`, nothing else. |
+| 8 | **`agent-platform-llm-edge`** — *litellm gateway mode only* | `llm_edge` module | The cluster's OIDC provider via **IRSA** — only the `edge` service account in the `llm-edge` namespace | The gateway broker. Holds exactly two grants: `secretsmanager:GetSecretValue` on the gateway key (the **only** principal that has it) and `dynamodb:GetItem` on the platform table for per-session token lookup — no `Query`, no `Scan`, nothing else. |
+| 9 | **AgentCore Gateway caller role** — *`agentcore_gateway` mode only* | supplied by the operator (`agentcore_gateway_caller_role_arn`); no module yet | The **backend role**, which must also be allowed `sts:TagSession` | The identity a *session* borrows. Holds one grant: `bedrock-agentcore:InvokeGateway` on the gateway ARN. The backend assumes it once per session with a session tag (`session_id`) and a session policy narrowing it to a single gateway, so the credentials a container ends up holding are strictly weaker than the role. Session revocation is an inline Deny on this role conditioned on `aws:PrincipalTag/session_id`, which is why the backend also needs `iam:PutRolePolicy`/`DeleteRolePolicy` on it. |
 
 The single most important property for a security review: **the browser and
 end users never hold AWS credentials.** All AWS access is server-side under
@@ -90,7 +91,23 @@ tools role (#3) carries **only** the first three rows:
 | `Skills` / `SkillsList` | `s3:GetObject`; `s3:ListBucket` conditioned on `s3:prefix` | `skills/*` in the workspace bucket only | Mount skill packages before the agent starts. Read-only. |
 | *(no LLM gateway secret grant)* | — | — | Deliberately absent. A kernel role is reachable from inside the session it serves (root shell in the Dev Workbench microVM; agent tools in the headless kernel's CLI subprocess), so a kernel that can read the gateway key is a kernel whose users have it. Only `agent-platform-llm-edge` holds that read; kernels reach the gateway through it with a per-session grant. |
 | `InvokeMcpRuntimes` | `bedrock-agentcore:InvokeAgentRuntime` | `runtime/mcp_tools_kernel-*` and its `runtime-endpoint/*` only | Kernels reach the AgentCore-hosted MCP server through `mcp-proxy-for-aws`, which SigV4-signs with this role. Scoped to the MCP runtime name — **not** all runtimes. |
-| `InvokeGateways` | `bedrock-agentcore:InvokeGateway` | `gateway/*` in this account, in both the platform's region and `us-east-1` | Kernels reach registry entries of kind `agentcore-gateway` (SigV4 through `mcp-proxy-for-aws`) — the feed pipelines' managed Web Search connector is one. Gateway IDs are generated at deploy time, so this is scoped by account+region rather than to a single gateway; `us-east-1` is listed explicitly because the Web Search connector is offered only there. |
+| `InvokeGateways` | `bedrock-agentcore:InvokeGateway` | `gateway/*` in this account, in both the platform's region and `us-east-1` | Kernels reach registry entries of kind `agentcore-gateway` (SigV4 through `mcp-proxy-for-aws`) — the feed pipelines' managed Web Search connector is one. Gateway IDs are generated at deploy time, so this is scoped by account+region rather than to a single gateway; `us-east-1` is listed explicitly because the Web Search connector is offered only there. **⚠ Using the `agentcore_gateway` model backend requires narrowing this** — see the note below. |
+
+> **Prerequisite for the `agentcore_gateway` model backend.** The `InvokeGateways`
+> statement above is a wildcard over `gateway/*`, which would also cover the
+> *inference* gateway. That defeats the point of minting per-session credentials:
+> a root user in the microVM can read the kernel role from the metadata endpoint
+> and call the inference gateway on the role's own identity, with no session tag
+> to revoke and no session policy to narrow it. Before enabling that backend, add
+> an explicit **Deny** on the kernel roles for the inference gateway's ARN — Deny
+> wins over the wildcard Allow, so tool gateways keep working while the inference
+> gateway becomes reachable only with a backend-minted session credential:
+>
+> ```json
+> { "Sid": "NoDirectInferenceGateway", "Effect": "Deny",
+>   "Action": "bedrock-agentcore:InvokeGateway",
+>   "Resource": "arn:aws:bedrock-agentcore:<region>:<account>:gateway/<inference-gw-id>" }
+> ```
 | `BuiltinTools` | `bedrock-agentcore:StartCodeInterpreterSession`, `InvokeCodeInterpreter`, `StopCodeInterpreterSession`, `GetCodeInterpreterSession`, `StartBrowserSession`, `StopBrowserSession`, `GetBrowserSession`, `UpdateBrowserStream`, `ConnectBrowserAutomationStream`, `ConnectBrowserLiveViewStream` | `code-interpreter/aws.codeinterpreter.v1`, `browser/aws.browser.v1` (AWS-managed), plus `{account}:code-interpreter/*` and `{account}:browser/*` (custom variants) | Code Interpreter and Browser built-in tools run in AWS-managed sandboxes under this role — no separate tool runtime to deploy. |
 | `BedrockInvoke` | `bedrock:InvokeModel`, `InvokeModelWithResponseStream` | `*` | The model control plane (Governance → Model backends) can route any agent to Bedrock per invocation. Cross-region inference profiles span regions, so this cannot be region-pinned. See [§4](#4-wildcard-resource-statements). |
 
