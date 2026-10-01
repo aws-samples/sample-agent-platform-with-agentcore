@@ -26,13 +26,15 @@ ways to get there:
   with per-session STS credentials (revoked by an IAM Deny on the session
   tag); runtime → gateway can stay on PrivateLink and gateway → LiteLLM on a
   managed VPC Lattice path, so LiteLLM needs no public endpoint.
-  [How it works](docs/architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
+  [Walkthrough of every hop](docs/architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
 - **`llm-edge`** (`litellm`). A platform-side service holds the key and
   forwards session-scoped calls; runtimes egress through a NAT Gateway with a
   **fixed EIP** you can put on the gateway's source-IP allow-list.
 
 Direct Bedrock access (cross-region inference) is supported as an
 alternative.
+
+![agentcore_gateway backend: AgentCore Gateway in front of a private LiteLLM](docs/images/agentcore-gateway-litellm.svg?v=1)
 
 ![portal overview](docs/images/portal-overview.png)
 
@@ -47,10 +49,7 @@ that carry the security story: the
 traffic) and the
 [customer-owned MCP hub chains](docs/images/mcp-hub-chains.svg)
 (how production applications and the Dev Workbench reach a self-hosted tool
-backend with per-application HMAC signatures and a forwarded user token). A third, the
-[agentcore_gateway model path](docs/images/agentcore-gateway-litellm.svg),
-shows how a kernel reaches a private LiteLLM through AgentCore Gateway over
-PrivateLink and VPC Lattice.
+backend with per-application HMAC signatures and a forwarded user token).
 
 ## What's inside
 
