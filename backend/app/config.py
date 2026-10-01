@@ -40,13 +40,16 @@ class Settings(BaseSettings):
     llm_edge_url: str = ""
 
     # Role the backend assumes once per session to mint the kernel's AgentCore
-    # Gateway credentials, tagged with that session's runtime id. Same shape as
-    # workspace_access_role_arn: the kernel role itself has no InvokeGateway
-    # grant, so a container cannot reach the gateway on its own identity.
+    # Gateway credentials, named after that session's runtime id. The kernel
+    # roles are denied this gateway explicitly, so a container cannot reach it
+    # on its own identity.
     #
-    # The session tag is what makes revocation per-session: ending a session
-    # adds a Deny conditioned on aws:PrincipalTag/session_id, which stops that
-    # session's credentials without touching any other live session's.
+    # On EKS the role is assumed with the pod's IRSA web-identity token rather
+    # than the backend role's credentials, so it is not role chaining and the
+    # 9-hour grant a headless async run needs is possible (chained sessions
+    # are capped at one hour). Ending a session adds a Deny conditioned on the
+    # session's identity, which stops its credentials without touching any
+    # other live session's.
     # Empty = the agentcore_gateway model backend is unavailable and the
     # backend refuses it rather than falling back to a shared credential.
     agentcore_gateway_caller_role_arn: str = ""

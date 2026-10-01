@@ -134,3 +134,15 @@ variable "name_suffix" {
   type    = string
   default = ""
 }
+
+variable "agentcore_gateway_caller_role_arn" {
+  description = "Caller role for the agentcore_gateway model backend. Empty = that backend is unavailable and the backend refuses it."
+  type        = string
+  default     = ""
+}
+
+variable "enable_agentcore_gateway_backend" {
+  description = "Grant the backend role what the agentcore_gateway backend needs on the caller role (a plan-time flag; the role ARN itself is only known after apply)."
+  type        = bool
+  default     = false
+}

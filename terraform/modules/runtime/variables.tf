@@ -98,3 +98,9 @@ variable "platform_version_python" {
   type        = string
   default     = "python3"
 }
+
+variable "deny_gateway_arns" {
+  description = "Gateway ARNs (wildcards allowed) the kernel roles are explicitly denied, overriding their gateway/* InvokeGateway allow. Used for the agentcore_gateway model backend's inference gateway."
+  type        = list(string)
+  default     = []
+}

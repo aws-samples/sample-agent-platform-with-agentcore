@@ -60,7 +60,7 @@ create their own roles in `terraform/modules/team_auth` and
 | 6 | **`agent-platform-schedule-runner`** | `portal` module (CDK: `PortalStack/ScheduleRunner`) | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
 | 7 | **`agent-platform-scheduler`** | `portal` module (CDK: `PortalStack/SchedulerRole`) | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
 | 8 | **`agent-platform-llm-edge`** — *litellm gateway mode only* | `llm_edge` module | The cluster's OIDC provider via **IRSA** — only the `edge` service account in the `llm-edge` namespace | The gateway broker. Holds exactly two grants: `secretsmanager:GetSecretValue` on the gateway key (the **only** principal that has it) and `dynamodb:GetItem` on the platform table for per-session token lookup — no `Query`, no `Scan`, nothing else. |
-| 9 | **AgentCore Gateway caller role** — *`agentcore_gateway` mode only* | supplied by the operator (`agentcore_gateway_caller_role_arn`); no module yet | The **backend role**, which must also be allowed `sts:TagSession` | The identity a *session* borrows. Holds one grant: `bedrock-agentcore:InvokeGateway` on the gateway ARN. The backend assumes it once per session with a session tag (`session_id`) and a session policy narrowing it to a single gateway, so the credentials a container ends up holding are strictly weaker than the role. Session revocation is an inline Deny on this role conditioned on `aws:PrincipalTag/session_id`, which is why the backend also needs `iam:PutRolePolicy`/`DeleteRolePolicy` on it. |
+| 9 | **AgentCore Gateway caller role** — *`agentcore_gateway` mode only* | `agentcore_gateway_backend` (`enable_agentcore_gateway_backend`) | The backend's **IRSA web-identity token** (backend and entry ServiceAccounts) via `AssumeRoleWithWebIdentity`, so a grant is a first hop and can outlast the one-hour role-chaining cap (async runs get 9 h; `MaxSessionDuration` is 12 h). The backend role may also `AssumeRole` + `TagSession` it for runs outside a pod. | The identity a *session* borrows. Holds one grant: `bedrock-agentcore:InvokeGateway` on the inference gateway. Each grant is named after the runtime session id and carries a session policy narrowing it to that gateway, so the credentials a container holds are strictly weaker than the role. Revocation is an inline Deny on this role matching `aws:userid` (or `aws:PrincipalTag/session_id` for tagged sessions), which is why the backend also holds `iam:GetRole`/`PutRolePolicy`/`DeleteRolePolicy` on it. |
 
 The single most important property for a security review: **the browser and
 end users never hold AWS credentials.** All AWS access is server-side under
@@ -97,11 +97,12 @@ tools role (#3) carries **only** the first three rows:
 > statement above is a wildcard over `gateway/*`, which would also cover the
 > *inference* gateway. That defeats the point of minting per-session credentials:
 > a root user in the microVM can read the kernel role from the metadata endpoint
-> and call the inference gateway on the role's own identity, with no session tag
+> and call the inference gateway on the role's own identity, with no session identity
 > to revoke and no session policy to narrow it. Before enabling that backend, add
 > an explicit **Deny** on the kernel roles for the inference gateway's ARN — Deny
 > wins over the wildcard Allow, so tool gateways keep working while the inference
-> gateway becomes reachable only with a backend-minted session credential:
+> gateway becomes reachable only with a backend-minted session credential. The
+> `agentcore_gateway_backend` module adds it (statement `NoDirectInferenceGateway`):
 >
 > ```json
 > { "Sid": "NoDirectInferenceGateway", "Effect": "Deny",

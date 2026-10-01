@@ -193,3 +193,8 @@ output "demo_app_role_arn" {
 output "demo_app_client_secret_name" {
   value = try(module.mcp_hub_demo[0].app_client_secret_name, null)
 }
+
+output "agentcore_gateway_inference_base_url" {
+  description = "base_url for the agentcore_gateway backend (Governance -> Model backends)"
+  value       = try(module.agentcore_gateway_backend[0].inference_base_url, "")
+}
