@@ -253,6 +253,12 @@ variable "entry_desired_count" {
   }
 }
 
+variable "enable_gateway_vpce" {
+  description = "Interface VPC endpoint (private DNS) for AgentCore Gateway in the platform VPC, so runtime -> gateway traffic stays off the NAT path."
+  type        = bool
+  default     = false
+}
+
 variable "enable_mcp_hub_demo" {
   description = "Optional self-hosted MCP hub demo (requires enable_team_auth): a hub EC2 replacing AgentCore Gateway as the tool backend (MCPHUB-HMAC-SHA256 inbound), plus an EC2 playing the calling application. Package the hub source first — scripts/package_mcp_hub.sh."
   type        = bool
