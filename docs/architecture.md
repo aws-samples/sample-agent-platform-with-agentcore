@@ -261,7 +261,7 @@ Both kernels support three model backends:
 |---|---|---|
 | **Bedrock direct** | `CLAUDE_CODE_USE_BEDROCK=1` + cross-region inference profile (`global.` model ID prefix). Container IAM role; no key of any kind | Simplest path, and there is no model credential to leak |
 | **LLM gateway** (`litellm`) | Always per session, never a container default. The gateway key lives only in the `llm-edge` service; a kernel gets a session-scoped grant and reaches the gateway through it (`enable_llm_edge`) | Centralized model governance: allow-lists, budgets, cost attribution per team |
-| **AgentCore Gateway** (`agentcore_gateway`) | Also always per session. The gateway sits in front of the same LiteLLM deployment Option A talks to, and the LiteLLM key lives in AgentCore Identity's token vault — so there is no key on the platform side at all and no broker service to run. A kernel gets STS credentials tagged with its session id and SigV4-signs each request (`agentcore_gateway_caller_role_arn`); LiteLLM keeps its multi-provider routing exactly as it does for every other client | The same governance goal with a managed hop instead of `llm-edge`, and per-session revocation expressed as an IAM Deny |
+| **AgentCore Gateway** (`agentcore_gateway`) | Also always per session. The gateway sits in front of the same LiteLLM deployment Option A talks to, and the LiteLLM key lives in AgentCore Identity's token vault — so there is no key on the platform side at all and no broker service to run. A kernel gets STS credentials named after its session id and SigV4-signs each request (`agentcore_gateway_caller_role_arn`); LiteLLM keeps its multi-provider routing exactly as it does for every other client | The same governance goal with a managed hop instead of `llm-edge`, and per-session revocation expressed as an IAM Deny |
 
 Neither gateway mode has container-level configuration, on purpose. A session's
 user is root in its microVM and the headless kernel runs agent tools in a
@@ -295,9 +295,12 @@ endpoint, and no LiteLLM key exists anywhere on the platform side.
 1. **Kernel → shim.** Claude Code (or the Agent SDK) points
    `ANTHROPIC_BASE_URL` at the kernel's loopback shim with a per-invocation
    local token. The shim holds the session's STS credential — minted by the
-   backend at connect via `AssumeRole` with a `session_id` tag and a session
-   policy that allows `InvokeGateway` on this one gateway — and SigV4-signs
-   each request. Revoking a session is an IAM Deny conditioned on that tag.
+   backend at connect by exchanging its pod's IRSA token for the caller role
+   (`AssumeRoleWithWebIdentity`, a first hop, so async runs can get 9 hours
+   instead of role chaining's one), with the runtime session id as the role
+   session name and a session policy that allows `InvokeGateway` on this one
+   gateway — and SigV4-signs each request. Revoking a session is an IAM Deny
+   on the caller role matching that session's `aws:userid`.
 2. **Runtime → gateway over PrivateLink.** With `enable_gateway_vpce` the
    platform VPC has a `bedrock-agentcore.gateway` interface endpoint with
    private DNS, so the gateway's normal URL resolves to endpoint ENIs and the

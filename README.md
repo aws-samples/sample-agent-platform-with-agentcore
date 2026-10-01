@@ -23,8 +23,8 @@ ways to get there:
 - **AgentCore Gateway in front of LiteLLM** (`agentcore_gateway`,
   recommended). The LiteLLM key lives in AgentCore Identity's token vault, so
   the platform holds no key and runs no broker service. Kernels SigV4-sign
-  with per-session STS credentials (revoked by an IAM Deny on the session
-  tag); runtime → gateway can stay on PrivateLink and gateway → LiteLLM on a
+  with per-session STS credentials (each named after its session and revoked
+  by an IAM Deny on that identity); runtime → gateway can stay on PrivateLink and gateway → LiteLLM on a
   managed VPC Lattice path, so LiteLLM needs no public endpoint.
   [Walkthrough of every hop](docs/architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
 - **`llm-edge`** (`litellm`). A platform-side service holds the key and
@@ -34,7 +34,7 @@ ways to get there:
 Direct Bedrock access (cross-region inference) is supported as an
 alternative.
 
-![agentcore_gateway backend: AgentCore Gateway in front of a private LiteLLM](docs/images/agentcore-gateway-litellm.svg?v=1)
+![agentcore_gateway backend: AgentCore Gateway in front of a private LiteLLM](docs/images/agentcore-gateway-litellm.svg?v=2)
 
 ![portal overview](docs/images/portal-overview.png)
 

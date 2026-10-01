@@ -470,7 +470,7 @@ sessions alike:
   `llm-edge` service can read it — a session container never receives it); and
   **AgentCore Gateway** (`agentcore_gateway`, where the upstream credential
   lives in the gateway's own token vault, so there is no key name to store and
-  no broker service to deploy — a session gets STS credentials tagged with its
+  no broker service to deploy — a session gets STS credentials named after its
   own id). Each has an enable switch and a model catalog that feeds the
   dropdowns elsewhere. Either gateway mode refuses to route a session when its
   prerequisite is missing (`enable_llm_edge`, or the caller role ARN) rather

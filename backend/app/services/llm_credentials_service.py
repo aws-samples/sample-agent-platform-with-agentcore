@@ -29,6 +29,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -123,6 +124,7 @@ class LlmCredentialsService:
         self.sts = boto3.client("sts", region_name=settings.aws_region)
         self.iam = boto3.client("iam")
         self._account_id = ""
+        self._caller_role_id_cache = ""
 
     @property
     def enabled(self) -> bool:
@@ -247,9 +249,10 @@ class LlmCredentialsService:
         - a **session policy** narrowing the grant to `InvokeGateway` on the one
           gateway this backend points at, so a leaked credential cannot reach
           any other gateway in the account;
-        - a **session tag** (``session_id``), which is what
-          :meth:`revoke_agentcore` conditions its Deny on. That is how one
-          session is revoked without disturbing any other live session.
+        - the **session identity**: the role session name is the runtime
+          session id (and, off EKS, a ``session_id`` session tag carries it
+          too), which is what :meth:`revoke_agentcore` conditions its Deny on.
+          That is how one session is revoked without disturbing any other.
 
         What is *not* enforced here is the per-session model allowlist: IAM
         conditions cannot see a request body, so which model a session may ask
@@ -312,7 +315,7 @@ class LlmCredentialsService:
                 base_url,
             )
         try:
-            creds = self.sts.assume_role(**kwargs)["Credentials"]
+            creds = self._assume_caller_role(kwargs)
         except Exception as e:  # noqa: BLE001 - any STS failure means refuse
             logger.error(
                 "AssumeRole for AgentCore gateway session %s failed: %s",
@@ -373,6 +376,40 @@ class LlmCredentialsService:
             "allowed_models": models,
         }
 
+    def _assume_caller_role(self, kwargs: dict) -> dict:
+        """AssumeRole into the caller role without role chaining.
+
+        A role session minted by another role session (role chaining) is
+        capped at one hour no matter what DurationSeconds says, which rules
+        out the 9-hour grant a headless async run needs. On EKS the backend's
+        own identity comes from an IRSA web-identity token, so the same token
+        is exchanged directly for the caller role: that is a first hop, and
+        the caller role's MaxSessionDuration applies.
+
+        AssumeRoleWithWebIdentity takes no Tags (session tags come from the
+        token's claims), so the session is identified by its RoleSessionName,
+        which is the runtime session id, and revocation matches on
+        aws:userid. Outside a pod (local runs, the e2e) there is no token and
+        the plain AssumeRole path with the session tag is used; the revocation
+        Deny covers both.
+        """
+        token_file = os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE", "")
+        if token_file:
+            with open(token_file) as f:
+                token = f.read().strip()
+            wi = {k: v for k, v in kwargs.items() if k not in ("Tags", "TransitiveTagKeys")}
+            return self.sts.assume_role_with_web_identity(
+                WebIdentityToken=token, **wi
+            )["Credentials"]
+        return self.sts.assume_role(**kwargs)["Credentials"]
+
+    def _caller_role_id(self) -> str:
+        """Unique id (AROA...) of the caller role, for aws:userid matching."""
+        if not self._caller_role_id_cache:
+            name = settings.agentcore_gateway_caller_role_arn.rsplit("/", 1)[-1]
+            self._caller_role_id_cache = self.iam.get_role(RoleName=name)["Role"]["RoleId"]
+        return self._caller_role_id_cache
+
     def revoke_agentcore(self, runtime_session_id: str) -> None:
         """Stop one session's gateway credentials from working, now.
 
@@ -430,6 +467,11 @@ class LlmCredentialsService:
         role_name = settings.agentcore_gateway_caller_role_arn.rsplit("/", 1)[-1]
         try:
             if live:
+                # Two statements, one per way a session can have been minted
+                # (see _assume_caller_role): by session name for web-identity
+                # sessions, by session tag for plain AssumeRole ones. Separate
+                # statements because conditions inside one are ANDed.
+                role_id = self._caller_role_id()
                 self.iam.put_role_policy(
                     RoleName=role_name,
                     PolicyName=REVOKE_POLICY_NAME,
@@ -438,7 +480,21 @@ class LlmCredentialsService:
                             "Version": "2012-10-17",
                             "Statement": [
                                 {
-                                    "Sid": "RevokedSessions",
+                                    "Sid": "RevokedSessionsByName",
+                                    "Effect": "Deny",
+                                    "Action": "bedrock-agentcore:*",
+                                    "Resource": "*",
+                                    "Condition": {
+                                        "StringEquals": {
+                                            "aws:userid": [
+                                                f"{role_id}:{sid[:64]}"
+                                                for sid in sorted(live)
+                                            ]
+                                        }
+                                    },
+                                },
+                                {
+                                    "Sid": "RevokedSessionsByTag",
                                     "Effect": "Deny",
                                     "Action": "bedrock-agentcore:*",
                                     "Resource": "*",
@@ -447,7 +503,7 @@ class LlmCredentialsService:
                                             "aws:PrincipalTag/session_id": sorted(live)
                                         }
                                     },
-                                }
+                                },
                             ],
                         }
                     ),

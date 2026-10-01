@@ -507,7 +507,8 @@ AgentCore Gateway（IAM authorizer，公网端点但只认 SigV4）
   三层策略同时求值：
     · caller 角色的身份策略
     · 铸凭证时附加的 session policy —— 只允许这一个 gateway
-    · 会话结束时写入的标签条件 Deny —— aws:PrincipalTag/session_id
+    · 会话结束时写入的 Deny —— 按会话身份匹配（aws:userid = caller 角色 ID:会话 id；
+      非 EKS 路径签出的凭证另按 aws:PrincipalTag/session_id）
     ↓
 （可选）REQUEST interceptor：容器外唯一能做「容器内不可信之事」的位置
     ↓
