@@ -476,7 +476,15 @@ sessions alike:
   prerequisite is missing (`enable_llm_edge`, or the caller role ARN) rather
   than falling back to handing out a shared credential.
 - **Platform default** — which backend an agent uses when it doesn't pick
-  one.
+  one. Model names are per backend (a Bedrock inference profile ID means
+  nothing to a gateway, and the other way round), so an agent that names a
+  model but no backend is routed to the backend whose catalog lists that
+  model; the default only serves its own catalog. A model no catalog lists
+  still goes to a Bedrock default, and is refused otherwise. Saving this card
+  is refused if the change would leave a published agent's model with
+  nowhere to go (for example switching the default to a gateway while agents
+  still name Bedrock IDs, or a model that two backends both list): pin those
+  agents' backend or model first.
 - **Per-agent choice** — the Publish page's edit dialog has a *Model
   backend* selector; re-publishing applies it on the agent's **next
   invocation**. Agents are configuration, not resident processes — there is

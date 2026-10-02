@@ -276,7 +276,9 @@ Workbench sessions carry the same reference resolved at every connect — the
 interactive kernel renders the resolved spec into a shell env file that the
 terminal's Claude Code sources at launch. Both paths reuse one resolver
 (`model_config_service.resolve`), so the catalog, defaults, and disabled-backend
-rules apply identically to headless and interactive workloads.
+rules apply identically to headless and interactive workloads. A reference
+with a model but no backend is routed by catalog membership, since model names
+are per backend; config saves that would strand a published agent are refused.
 
 A gateway spec also carries `alias_models`: one catalog model per Claude
 family, which the kernels export as the `ANTHROPIC_DEFAULT_*_MODEL` steering
