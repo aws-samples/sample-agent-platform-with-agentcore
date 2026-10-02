@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FlaskConical, Loader2, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
-import { api, type EvalDataset, type EvalRun, type PublishedAgent } from '@/services/api'
+import { api, type EvalDataset, type EvalRun, type EvalScoring, type PublishedAgent } from '@/services/api'
 import { fmtTs } from '@/services/format'
 
 export default function EvalPage() {
@@ -15,6 +15,11 @@ export default function EvalPage() {
 
   // create form
   const [name, setName] = useState('')
+  const [scenarioChoice, setScenarioChoice] = useState('general')
+  const [customScenario, setCustomScenario] = useState('')
+  const [scoringMethod, setScoringMethod] = useState<EvalScoring['method']>('llm_judge')
+  const [outputField, setOutputField] = useState('category')
+  const [rubric, setRubric] = useState('')
   const [casesText, setCasesText] = useState('What is 2+2? => 4\nCapital of France? => Paris')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -57,9 +62,20 @@ export default function EvalPage() {
           return { prompt, expected }
         })
         .filter((c) => c.prompt)
-      await api.createEvalDataset({ name, cases })
+      const scenario = scenarioChoice === 'custom' ? customScenario.trim() : scenarioChoice
+      await api.createEvalDataset({
+        name,
+        scenario,
+        scoring: { method: scoringMethod, output_field: outputField.trim() || 'category', rubric },
+        cases,
+      })
       setShowCreate(false)
       setName('')
+      setScenarioChoice('general')
+      setCustomScenario('')
+      setScoringMethod('llm_judge')
+      setOutputField('category')
+      setRubric('')
       refresh()
     } catch (e) {
       setCreateError(String(e))
@@ -85,7 +101,7 @@ export default function EvalPage() {
       <div className="flex items-start justify-between">
         <SectionTitle
           title="Evaluation"
-          subtitle="Fixed task suites scored by an LLM judge — compare kernels and published agents before rollout"
+          subtitle="Fixed task suites: exact-match classification or LLM-judged answers, with results available in Observability"
         />
         <div className="flex gap-2">
           <button className="btn-secondary" onClick={refresh}><RefreshCw size={14} /> Refresh</button>
@@ -105,7 +121,7 @@ export default function EvalPage() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-slate-900">{d.name}</p>
-                  <p className="text-xs text-slate-400">{d.cases.length} cases</p>
+                  <p className="text-xs text-slate-400">{d.cases.length} cases · {d.scenario || 'general'} · {d.scoring?.method || 'llm_judge'}{d.synthetic ? ' · synthetic' : ''}</p>
                 </div>
               </div>
               <button
@@ -148,6 +164,8 @@ export default function EvalPage() {
               </span>
               <p className="text-sm font-medium text-slate-900">{r.dataset_name}</p>
               <p className="font-mono text-xs text-slate-500">{r.target}</p>
+              <span className="badge bg-blue-50 text-blue-700">{r.scenario || 'general'}</span>
+              {r.synthetic && <span className="badge bg-amber-50 text-amber-700">synthetic</span>}
               <p className="text-xs text-slate-500">
                 {r.passed}/{r.total} passed{r.avg_score != null && ` · avg score ${r.avg_score.toFixed(1)}/10`}
               </p>
@@ -165,7 +183,10 @@ export default function EvalPage() {
                       <span className="font-medium text-slate-700">{c.prompt}</span>
                     </div>
                     <p className="mt-1 text-slate-600"><span className="text-slate-400">answer:</span> {c.answer}</p>
-                    <p className="mt-0.5 text-slate-500"><span className="text-slate-400">judge:</span> {c.reason}</p>
+                    {(r.scoring?.method === 'json_exact' || (r.scenario === 'classification' && !r.scoring)) && <p className="mt-0.5 text-slate-500">
+                      expected: {c.expected_value || c.expected_label || c.expected} · predicted: {c.predicted_value || c.predicted_label || 'invalid output'}
+                    </p>}
+                    <p className="mt-0.5 text-slate-500"><span className="text-slate-400">scoring:</span> {c.reason}</p>
                   </div>
                 ))}
                 {r.results.length === 0 && <p className="text-xs text-slate-400">No case results yet…</p>}
@@ -179,6 +200,37 @@ export default function EvalPage() {
       <Modal open={showCreate} title="New eval dataset" onClose={() => setShowCreate(false)}>
         <label className="mb-1 block text-sm font-medium text-slate-700">Name</label>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="smoke-suite" />
+        <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Scenario</label>
+        <select className="input" value={scenarioChoice} onChange={(e) => {
+          const selected = e.target.value
+          setScenarioChoice(selected)
+          setScoringMethod(selected === 'classification' ? 'json_exact' : 'llm_judge')
+        }}>
+          <option value="general">General</option>
+          <option value="classification">Classification</option>
+          <option value="support">Support</option>
+          <option value="custom">Custom scenario</option>
+        </select>
+        {scenarioChoice === 'custom' && <>
+          <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Scenario key</label>
+          <input className="input" value={customScenario} onChange={(e) => setCustomScenario(e.target.value)}
+            placeholder="claims-routing" />
+          <p className="mt-1 text-xs text-slate-500">Lowercase letters, numbers, hyphens and underscores; appears as a tab in Observability.</p>
+        </>}
+        <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Scoring method</label>
+        <select className="input" value={scoringMethod} onChange={(e) => setScoringMethod(e.target.value as EvalScoring['method'])}>
+          <option value="json_exact">Exact match from JSON field</option>
+          <option value="llm_judge">LLM judge</option>
+        </select>
+        {scoringMethod === 'json_exact' ? <>
+          <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Output field</label>
+          <input className="input" value={outputField} onChange={(e) => setOutputField(e.target.value)} placeholder="category or decision.intent" />
+          <p className="mt-1 text-xs text-slate-500">The agent must return JSON; each expected value must match the selected field exactly.</p>
+        </> : <>
+          <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Additional judging criteria (optional)</label>
+          <textarea className="input min-h-20 text-xs" value={rubric} onChange={(e) => setRubric(e.target.value)}
+            placeholder="Check factual accuracy, completeness and appropriate escalation." />
+        </>}
         <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">
           Cases <span className="font-normal text-slate-400">(one per line: prompt =&gt; expected)</span>
         </label>

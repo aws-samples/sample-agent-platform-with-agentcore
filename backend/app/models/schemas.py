@@ -1,5 +1,7 @@
 """API request/response models."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -183,9 +185,22 @@ class EvalCase(BaseModel):
     expected: str = Field(default="", max_length=1000)
 
 
+class EvalScoringConfig(BaseModel):
+    method: Literal["json_exact", "llm_judge"] = "llm_judge"
+    output_field: str = Field(
+        default="category",
+        max_length=80,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,3}$",
+    )
+    rubric: str = Field(default="", max_length=1000)
+
+
 class EvalDatasetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=400)
+    scenario: str = Field(default="general", max_length=48, pattern=r"^[a-z][a-z0-9_-]*$")
+    scoring: EvalScoringConfig | None = None
+    synthetic: bool = False
     cases: list[EvalCase] = Field(min_length=1, max_length=20)
 
 
