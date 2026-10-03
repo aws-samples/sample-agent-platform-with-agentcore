@@ -106,8 +106,86 @@ class ModelConfigService:
                 dst["models"] = [str(m).strip() for m in src["models"] if str(m).strip()][:50]
         if not cfg["backends"][cfg["default_backend"]]["enabled"]:
             raise ValueError(f"default backend '{cfg['default_backend']}' must stay enabled")
+        self._check_published_agents(self.get_config(), cfg)
         self.table.put_item(Item={"PK": PK, "SK": SK, **cfg})
         return cfg
+
+    def _check_published_agents(self, old: dict, new: dict) -> None:
+        """Refuse a config edit that would strand published agents.
+
+        An agent that names a model but no backend is routed by inference
+        (see :meth:`_pick_backend`), so switching the default backend or
+        editing a catalog can leave its model with nowhere to go. Better to
+        refuse the save here than to have every one of its invocations fail
+        on the next scheduled run. Only agents the edit itself breaks count,
+        so one already-broken agent cannot lock the config.
+        """
+        from app.services.agent_service import agent_service
+
+        def route(cfg: dict, agent: dict) -> tuple[str, str]:
+            backend, model = agent.get("model_backend", ""), agent["model"]
+            try:
+                self._resolve(cfg, backend, model)
+                return self._pick_backend(cfg, backend, model), ""
+            except ValueError as e:
+                return "", str(e)
+
+        broken = []
+        for agent in agent_service.list_agents():
+            if not agent.get("model"):
+                continue
+            (was, was_err), (now, err) = route(old, agent), route(new, agent)
+            if was_err:
+                continue
+            if not err and now == "bedrock" != was and not agent.get("model_backend") \
+                    and agent["model"] not in self._catalog(new["backends"]["bedrock"]):
+                # the uncatalogued-model fallback would hand a gateway model
+                # name to Bedrock, which only fails at invocation
+                err = f"model {agent['model']!r} would fall back to Bedrock"
+            if err:
+                broken.append(f"{agent['name']} ({err})")
+        if broken:
+            raise ValueError(
+                "this change would break published agents; set their model "
+                "backend or model first: " + "; ".join(broken[:10])
+                + (f"; and {len(broken) - 10} more" if len(broken) > 10 else "")
+            )
+
+    @staticmethod
+    def _catalog(b: dict) -> set[str]:
+        return {m for m in (*b["models"], b["default_model"], b["small_fast_model"]) if m}
+
+    def _pick_backend(self, cfg: dict, backend: str, model: str) -> str:
+        """Which backend serves a (backend, model) reference.
+
+        An explicit backend wins. Otherwise the default backend serves its own
+        catalog; a model outside it belongs to whichever enabled backend lists
+        it — model names differ per backend (a Bedrock inference profile ID
+        means nothing to a LiteLLM gateway), so handing it to the default
+        would only fail upstream. A model no catalog lists still goes to a
+        Bedrock default — its catalog is a picker hint, not an allow-list, so
+        any inference profile ID keeps working as it did before catalogs.
+        """
+        default = cfg["default_backend"]
+        if backend or not model:
+            return backend or default
+        if model in self._catalog(cfg["backends"][default]):
+            return default
+        owners = [n for n in BACKEND_NAMES
+                  if cfg["backends"][n]["enabled"] and model in self._catalog(cfg["backends"][n])]
+        if len(owners) == 1:
+            return owners[0]
+        if owners:
+            raise ValueError(
+                f"model {model!r} is listed by several backends ({', '.join(owners)}); "
+                "set the model backend explicitly"
+            )
+        if default == "bedrock":
+            return default
+        raise ValueError(
+            f"model {model!r} is not in the catalog of any enabled backend "
+            f"(default is {default!r}); set the model backend or pick a catalog model"
+        )
 
     def resolve(self, backend: str = "", model: str = "") -> dict | None:
         """Turn an agent's (backend, model) reference into the kernel routing
@@ -119,8 +197,10 @@ class ModelConfigService:
         Raises ``ValueError`` when the reference points at a disabled or
         misconfigured backend (fail loudly rather than silently rerouting).
         """
-        cfg = self.get_config()
-        name = backend or cfg["default_backend"]
+        return self._resolve(self.get_config(), backend, model)
+
+    def _resolve(self, cfg: dict, backend: str, model: str) -> dict | None:
+        name = self._pick_backend(cfg, backend, model.strip())
         if name not in BACKEND_NAMES:
             raise ValueError(f"unknown model backend: {name!r}")
         b = cfg["backends"][name]
