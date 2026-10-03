@@ -1,40 +1,28 @@
 # Agent Platform with Amazon Bedrock AgentCore
 
-A reference implementation of an **internal agent platform** built on
-[Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/).
-It shows how a platform team can offer two hosting models behind one portal:
+Standing up an agent on [Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/)
+is no longer the hard part. This repository is a working answer to the
+questions that come after it: what an internal agent platform looks like once
+it has to fit an enterprise's existing identity, network, model-access and
+operations constraints, and which parts of that AgentCore covers and which it
+leaves to you.
 
-- **Interactive cloud workspaces** — launch a full Claude Code CLI inside an
-  AgentCore Runtime and use it from a browser web terminal. The process lives
-  in a persistent tmux session, so disconnecting or switching sessions keeps
-  the conversation and in-flight work running; files and conversation history
-  persist to S3 and survive container restarts.
-- **Headless agent kernels** — publish Claude Agent SDK based agents as
-  AgentCore Runtime endpoints that any application can invoke through a single
-  `/invocations` contract.
+The platform is deployed and in use. The design decisions below are the ones
+we would make again, each with the requirement that forced it, what AgentCore
+provides, the gap, and how this code closes it.
 
-Both kernels route model traffic through a configurable **LLM gateway**
-(e.g. LiteLLM), so the platform works in enterprises that enforce model
-allow-lists, budgets and cost attribution. The gateway key **never enters a
-session container** — a session's user is root in its own microVM, so a
-kernel gets a short-lived, per-session grant rather than a credential. Two
-ways to get there:
+**The requirements it was built against**
 
-- **AgentCore Gateway in front of LiteLLM** (`agentcore_gateway`,
-  recommended). The LiteLLM key lives in AgentCore Identity's token vault, so
-  the platform holds no key and runs no broker service. Kernels SigV4-sign
-  with per-session STS credentials (each named after its session and revoked
-  by an IAM Deny on that identity); runtime → gateway can stay on PrivateLink and gateway → LiteLLM on a
-  managed VPC Lattice path, so LiteLLM needs no public endpoint.
-  [Walkthrough of every hop](docs/architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
-- **`llm-edge`** (`litellm`). A platform-side service holds the key and
-  forwards session-scoped calls; runtimes egress through a NAT Gateway with a
-  **fixed EIP** you can put on the gateway's source-IP allow-list.
-
-Direct Bedrock access (cross-region inference) is supported as an
-alternative.
-
-![agentcore_gateway backend: AgentCore Gateway in front of a private LiteLLM](docs/images/agentcore-gateway-litellm.svg?v=2)
+- Users sign in through the enterprise IdP, and that identity has to decide
+  what an agent may do in downstream systems, not just who reached the portal.
+- Model traffic already goes through an LLM proxy (LiteLLM) with its own keys,
+  budgets and allow-lists. That stays.
+- Other workloads call agents from inside AWS, over private networking, with
+  no long-lived shared secret.
+- Developers want a real coding agent in a cloud workspace (Claude Code in a
+  browser terminal), and teams want to publish agents without building images.
+- Infrastructure is managed as code (Terraform), and pods authenticate with
+  IRSA.
 
 ![portal overview](docs/images/portal-overview.png)
 
@@ -42,14 +30,274 @@ alternative.
      instead of a stale copy at the same path. Bump it whenever the SVG changes. -->
 ![architecture](docs/images/architecture.svg?v=4)
 
-The hero diagram above is the map; two focused diagrams zoom into the parts
-that carry the security story: the
-[management / data-plane split](docs/images/data-plane-split.svg)
-(one backend image, two deployments — the console cannot front production
-traffic) and the
-[customer-owned MCP hub chains](docs/images/mcp-hub-chains.svg)
-(how production applications and the Dev Workbench reach a self-hosted tool
-backend with per-application HMAC signatures and a forwarded user token).
+## Design decisions
+
+| # | Decision | The hard part |
+|---|---|---|
+| 1 | [The signed-in user's identity decides what tools may do](#1-the-signed-in-users-identity-decides-what-tools-may-do) | Backends that cannot validate an IdP token, and teams that do not want Gateway on the tool path |
+| 2 | [A private front door for workloads, separate from the console](#2-a-private-front-door-for-workloads-separate-from-the-console) | Adding and revoking callers without an IAM change each time |
+| 3 | [The LLM proxy key never enters a runtime](#3-the-llm-proxy-key-never-enters-a-runtime) | The Workbench user is root in the container that needs model access |
+| 4 | [Every invocation goes through one governed pipeline](#4-every-invocation-goes-through-one-governed-pipeline) | Six entry points, one answer to "who spent what, and can we stop it" |
+| 5 | [Workflow scripts from the laptop run as governed cloud pipelines](#5-workflow-scripts-from-the-laptop-run-as-governed-cloud-pipelines) | Running an admin's arbitrary script on the pod that holds the platform's credentials |
+| 6 | [Runtime platform version is chosen per workload](#6-runtime-platform-version-is-chosen-per-workload) | V2 is cheaper for some workloads and dearer for others, and the setting is per runtime |
+
+Decision 3, workspace file access and session-id handling all follow from one
+fact about the Workbench, covered after the list:
+[the session user is root in its microVM](#one-fact-behind-three-of-these-decisions).
+
+### 1. The signed-in user's identity decides what tools may do
+
+**Requirement.** The same published agent should return different results to
+different signed-in users, because the backend systems behind its tools grant
+different users different data.
+
+**What AgentCore provides.** AgentCore Gateway turns existing APIs into MCP
+tools, authenticates the inbound caller (JWT or IAM), and can exchange the
+user's token on the outbound side.
+
+**The gap.** Authentication at the gateway is not authorization in the
+backend. And some backends cannot validate an IdP token at all, while some
+organizations do not want a managed service on the tool path.
+
+**What this platform does.** The portal signs in against an external OIDC IdP
+(Keycloak in the demo) and carries the team claim end to end, with three
+enforcement options that coexist per tool:
+
+- **Backend authorizes.** A backend that validates IdP tokens gets an
+  OBO-exchanged token and enforces the team claim in its own code.
+- **Gateway authorizes.** A backend with no SSO support sits behind a Lambda
+  REQUEST interceptor that checks the claim, and receives a static API key
+  outbound.
+- **Your own MCP hub instead of Gateway.** An attachment of kind `mcp-hub`
+  reaches a customer-owned hub. The kernel signs every request per application
+  (`MCPHUB-HMAC-SHA256`, a published agent is one application) and forwards the
+  user's token, so the hub answers "which application" and "which user"
+  separately.
+
+The identity reaches the kernel through the ordinary registry: an MCP server
+whose header holds a `{{user_token}}` placeholder. Machine callers get the same
+treatment by presenting their own client-credentials token (`x-robot-token`,
+fetched by the workload; the platform never holds robot credentials), and an
+agent whose tools need a verified identity fails closed when none arrives.
+
+![Where authorization happens](docs/images/authorization-layers.svg)
+
+![MCP hub chains](docs/images/mcp-hub-chains.svg?v=1)
+
+Details: [docs/enterprise-sso.md](docs/enterprise-sso.md),
+[docs/mcp-hub-integration.md](docs/mcp-hub-integration.md).
+
+### 2. A private front door for workloads, separate from the console
+
+**Requirement.** Services in other VPCs call published agents. No public
+endpoint, no shared bearer token to rotate, and adding or removing a caller
+must not need a change request against IAM every time.
+
+**What AgentCore provides.** `InvokeAgentRuntime`, authorized by IAM or JWT.
+
+**The gap.** Giving every calling workload IAM permission on the runtime
+itself puts per-agent access control in IAM policy, and gives callers a
+direct path that bypasses quotas and the ledger. Front-door timeouts are also
+shorter than agent runs.
+
+**What this platform does.**
+
+- A **private API Gateway** (`AWS_IAM`, PRIVATE endpoint type) reached through
+  the caller's `execute-api` interface endpoint, then a VPC Link to an internal
+  NLB. Nothing on this path touches the internet.
+- **IAM admits a workload once**, API-wide. Each channel then lists the callers
+  it accepts (deny by default, edited in the portal), so
+  day-2 binding and revocation never go back through IAM. Creating a channel
+  produces an SOP with the exact policy and Pod Identity steps for the caller's
+  team to apply; the platform holds no IAM write permission.
+- **Submit / poll** (202, then poll the invocation record), because agent runs
+  outlive front-door timeouts.
+- **The serving path is not the console.** The same backend image runs as two
+  deployments: the management one behind CloudFront and user sign-in, and an
+  entry-only one (`PLATFORM_ENTRY_ONLY=1`) that mounts nothing but the service
+  entry. The NLB targets only the latter, so a bug in a console route is never
+  reachable from the serving path, and the console can be scaled down or stopped without
+  touching serving.
+- The gateway relays the verified caller ARN plus a shared secret, so a
+  neighbour inside the VPC (a runtime container above all) cannot reach the NLB
+  with a forged identity.
+
+![Channels: a private front door](docs/images/channel-entry.svg?v=1)
+
+![One image, two deployments](docs/images/data-plane-split.svg?v=1)
+
+Details: [docs/architecture.md § Platform operations](docs/architecture.md#platform-operations-phase-4).
+
+### 3. The LLM proxy key never enters a runtime
+
+**Requirement.** Model traffic goes through the organization's LiteLLM, which
+issues virtual keys. Every runtime needs model access; nobody should be able to
+take a key home.
+
+**What AgentCore provides.** Runtime, Gateway, and Identity's token vault for
+outbound credentials.
+
+**The gap.** The obvious setup (key in a secret, read by the container)
+hands the key to every Workbench user, because they are root in the container
+([see below](#one-fact-behind-three-of-these-decisions)). An IAM condition on
+the runtime role cannot help either: the role is shared by all sessions of
+that runtime.
+
+**What this platform does.** A kernel gets a short-lived grant minted per
+session by the backend, never a credential of its own. Two backends implement
+it, chosen per workload in Governance:
+
+- **`agentcore_gateway` (recommended).** AgentCore Gateway fronts LiteLLM with
+  an inference target, and the LiteLLM key lives in AgentCore Identity's token
+  vault. The platform side holds no key and runs no broker.
+
+  What a session holds instead is its own IAM identity: STS credentials whose
+  role session name is the runtime session id, narrowed by a session policy to
+  this one gateway. Because the identity is per session, so is revocation: an
+  IAM Deny matching that session's `aws:userid`. The kernel role itself is
+  explicitly denied the gateway, so the shared role is no way around it.
+
+  One detail decides how long such a grant can live. The backend gets it with
+  `AssumeRoleWithWebIdentity` straight from its pod's IRSA token. Assuming the
+  caller role from the backend's own role would be role chaining, which STS
+  caps at one hour; as a first hop the grant covers async runs of up to nine.
+
+  The network path is private end to end: runtime → gateway over PrivateLink,
+  gateway → LiteLLM over a managed VPC Lattice path, so LiteLLM needs no
+  public endpoint.
+- **`llm-edge` (`litellm`).** A platform-side service holds the key and
+  forwards session-scoped calls, restricted to inference routes and an
+  allow-listed header set. Runtimes egress through a NAT Gateway with a fixed
+  EIP that goes on LiteLLM's source-IP allow-list.
+
+Direct Bedrock (cross-region inference, no key of any kind) remains an option.
+The backend is resolved per workload at every invocation or connect, from a
+`(backend, model)` reference on the published agent or Workbench session, so
+changing the default in Governance takes effect without a deployment.
+One limit matters to anyone copying the private path: VPC Lattice closes a
+connection after 350 seconds without data, silently, so non-streaming calls
+that take longer never return. Claude Code and the SDK kernel always stream.
+
+![agentcore_gateway backend in front of a private LiteLLM](docs/images/agentcore-gateway-litellm.svg?v=2)
+
+Details: [every hop of the private path](docs/architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
+
+### 4. Every invocation goes through one governed pipeline
+
+**Requirement.** Six ways in (Debug console, published-agent API, channels,
+schedules, evaluations, and workflows on top of them) and one answer to "who
+spent what, and can we stop it".
+
+**What AgentCore provides.** Per-runtime metering and observability.
+
+**The gap.** Cost and limits per user, per entry point, and per published
+agent are platform concepts AgentCore does not know about.
+
+**What this platform does.** Every headless call goes through
+`invocation_service`: resolve the target → governance check (daily quotas per
+user and platform as atomic counters, per-source kill switches, turn caps) →
+invoke → invocation ledger (source, target, latency, turns, cost, runtime
+version). A new entry point inherits all of it by calling the same function,
+and there is no second path into a runtime that skips the checks.
+
+"Can we stop it" also has a narrower meaning: who may stop whose job.
+Platform administrators share the management pages but each owns their own
+schedules, so one operator cannot pause another's production run; a
+super-administrator tier sees all of them. Every mutating action lands in an
+append-only audit log.
+
+Details: [docs/architecture.md § Platform operations](docs/architecture.md#platform-operations-phase-4),
+[docs/observability.md](docs/observability.md).
+
+### 5. Workflow scripts from the laptop run as governed cloud pipelines
+
+**Requirement.** Multi-agent jobs (fan out research, verify, synthesize) that
+someone prototyped locally should run on a schedule in the cloud, under the
+same limits and the same bill as everything else.
+
+**What AgentCore provides.** One agent per runtime session, synchronous up to
+15 minutes or as an async task up to 8 hours.
+
+**The gap.** Orchestration across sessions, and running someone's
+orchestration script next to the platform's own credentials.
+
+**What this platform does.** A pipeline is a script in the same dialect as the
+Claude Code Workflow tool (`agent()`, `parallel()`, `pipeline()`, `phase()`),
+so a local orchestration ports nearly verbatim. The script runs in a
+short-lived Node child process whose only I/O is a stdio bridge back to the
+engine:
+
+- every `agent()` call is a governed invocation (decision 4), against a
+  published agent or the raw kernel, fanned out up to an engine-side cap
+  (`MAX_FANOUT`) with the rest queued;
+- S3 access goes through the bridge and stays inside the workspace bucket;
+- the child never sees the backend's AWS identity: an allow-listed
+  environment, Node's permission model (no `child_process`, workers or addons,
+  no read access beyond the runner and the script, so the IRSA token file is
+  out of reach), and an unprivileged user;
+- a run is one trace, run → phase → agent → the kernel's own `AGENT` / `TOOL`
+  spans, and the Insights page reads per-run health checks and funnels that the
+  script itself reports;
+- `pipeline:{name}` is a schedule target like any agent.
+
+The engine is marked experimental in the portal: the dialect may still change.
+
+![Workflow engine](docs/images/workflow-engine.svg?v=1)
+
+Details: [docs/architecture.md § Workflow engine](docs/architecture.md#workflow-engine--pipeline-as-data-phase-5-experimental).
+
+### 6. Runtime platform version is chosen per workload
+
+**Requirement.** AgentCore Runtime V2 restores each session from a snapshot,
+so cold start drops to about two seconds, but it costs more per unit. A
+pipeline call with a long idle tail tends to come out cheaper on V2; a
+long-lived interactive terminal may not.
+
+**The gap.** `platformVersion` is a property of the runtime itself, not of a
+session or an endpoint, so one runtime cannot serve both.
+
+**What this platform does.** The interactive and headless kernels each deploy
+as two runtimes from the same image. A Workbench session picks its version at
+creation and keeps it; a published agent stores its choice (or follows the
+platform default), and pipelines, schedules and channels calling it inherit
+it. The ledger and traces record the version each call actually ran on, so
+cost can be split by version.
+
+V2 is not a drop-in switch for the code inside the container. Every session
+restores the same snapshot, so a random value or timestamp computed at startup
+is the same in every restored instance: two sessions would mint the same ids,
+and a timer measured from boot starts from the snapshot's clock. The kernels
+were changed to draw entropy per request and to stop deriving deadlines from
+start-up time before they ran on V2. Any kernel added to this platform needs
+the same review.
+
+Details: [docs/architecture.md § Platform versions](docs/architecture.md#platform-versions-v1--v2).
+
+### One fact behind three of these decisions
+
+The Dev Workbench gives a user a real terminal in the session's microVM, and
+the user is root there. The headless kernel is no different in principle: the
+Agent SDK runs tools in a CLI subprocess. So everything in a runtime
+container (environment, files, process memory, and the execution role's
+credentials from the metadata endpoint) is visible to that session's user.
+
+The rule that follows is that a runtime role may hold only what the session's
+user is entitled to anyway. Three designs apply it:
+
+- **Model access** (decision 3): a per-session grant instead of a key.
+- **Workspace files**: the kernel role has no access to `workspaces/*`. The
+  backend, which owns the session ↔ user mapping, mints S3 credentials whose
+  session policy is pinned to `workspaces/{sessionId}/*`.
+- **The session id itself**: reusing an AgentCore `runtimeSessionId` lands on
+  the same warm microVM, with its files and in-process grants. So a
+  client-supplied session id is bound to the authenticated caller by HMAC
+  before it reaches AgentCore; the same id from another caller lands in a
+  different session.
+
+![Per-session grants](docs/images/session-grants.svg?v=1)
+
+Details: [docs/permissions.md](docs/permissions.md) (every role, written for a
+security review).
 
 ## What's inside
 
@@ -64,86 +312,26 @@ backend with per-application HMAC signatures and a forwarded user token).
 ├── terraform/                # Terraform (the maintained path): network, platform resources, AgentCore runtimes, EKS, portal hosting + scheduler engine
 ├── infrastructure/           # CDK (Python): the legacy ECS Fargate variant of the same stacks, kept for reference
 ├── deploy-cli/               # AWS-CLI-only deployment port for accounts that cannot run Terraform or CDK
-├── pipelines/                # Sample Workflow-dialect pipeline scripts (Phase 5)
+├── pipelines/                # Sample Workflow-dialect pipeline scripts
 ├── demo/                     # Standalone tryouts (invoke a kernel from your terminal, EKS Pod Identity caller)
 ├── scripts/                  # Image build, deployment and end-to-end test helpers
 └── docs/                     # Architecture, deployment, permissions, user guide
 ```
 
-**Ecosystem (Phase 2)**: the portal keeps a registry of **MCP servers** (hosted
-on AgentCore Runtime with `protocol=MCP`, reached via SigV4 through
-`mcp-proxy-for-aws`, or any plain streamable-HTTP URL) and **skill packages**
-(SKILL.md stored in S3). Attach them when creating a Dev Workbench session —
-the kernel writes `.mcp.json` and mounts skills before Claude Code starts — or
-pass both MCP servers and skills per-invocation to the headless kernel: the
-same registry entry behaves identically in either hosting model.
+What the portal offers, in one table (the [user guide](docs/user-guide.md)
+walks through each page):
 
-**Built-in tools (Phase 3)**: the registry also ships two **AgentCore built-in
-tools** — a **Code Interpreter** (isolated Python/shell sandbox) and a
-**Browser** (managed cloud Chromium the agent drives via Playwright). Both are
-wrapped as a local stdio MCP server inside each kernel, so they attach through
-the exact same "kind" mechanism as any other MCP server and run against the
-AWS-managed tool using the container's IAM role — no tool runtime of yours to
-host.
-
-**Platform operations (Phase 4)** — the rest of the portal's information
-architecture, all live:
-
-- **Self-service publish** — drop an `agent.yaml` manifest in a Dev Workbench
-  workspace and publish it as a **versioned agent** (system prompt + tool
-  attachments + memory binding, served by the shared headless kernel — no
-  image build). Republish to bump the version; invoke from Debug, channels,
-  schedules, evals or plain HTTP.
-- **Scheduler** — cron / `rate(N minutes)` schedules against any kernel or
-  published agent, fired by **EventBridge Scheduler → Lambda** (retries +
-  DLQ), with an in-process tick loop as the local-development fallback.
-  Schedules are isolated per creator: administrators see and manage only the
-  schedules they created themselves, so one operator cannot silently pause
-  another's production job. A super-administrator tier
-  (`PLATFORM_SUPER_ADMIN_GROUP` / `PLATFORM_SUPER_ADMIN_USERS`) sees and
-  manages every schedule.
-- **Channels** — entry points for external systems. Simple token webhooks,
-  plus an **IAM service entry**: a *private* API Gateway (SigV4-authenticated,
-  reachable only through allow-listed VPC interface endpoints) with an async
-  submit/poll contract. IAM admits a workload to the entry once; each channel
-  then carries its own deny-by-default caller allowlist, edited in the portal
-  — day-2 bind/revoke never goes back through IAM. A `conversation_id` keeps
-  a warm runtime session and its own memory line.
-- **Memory** — AgentCore Memory stores managed from the portal; bind one to
-  any headless invocation and the kernel retrieves relevant long-term records
-  before the run, replays the **last 10 turns** of the same conversation
-  (so channel conversations survive microVM recycling), and appends the
-  exchange after it.
-- **Observability** — a platform invocation ledger (latency, turns, cost,
-  source) over every governed call, plus one CloudWatch trace per pipeline run
-  that reaches down to the kernel's `AGENT` / `TOOL` spans when the headless
-  kernel is deployed as its opt-in observability image variant (ADOT +
-  OpenInference) — see [docs/observability.md](docs/observability.md).
-- **Evaluation** — fixed task suites executed against any target and scored
-  by an LLM judge; compare a published agent against the raw kernel before
-  rollout.
-- **Governance** — daily quotas (per user + platform), per-source kill
-  switches, turn caps, and an audit trail of every platform action. All
-  invocation paths funnel through one governed pipeline.
-
-**Workflow engine (Phase 5, experimental)**: multi-step orchestration written
-as a **Workflow-dialect script** (`agent()` / `parallel()` / `pipeline()` /
-`phase()`) and registered as a named platform *pipeline*. The script runs in a
-short-lived Node subprocess whose only I/O is a metered bridge back to the
-engine, so `agent()` calls land in the same governed pipeline (quota → invoke →
-ledger) and S3 access stays inside the workspace bucket. Runs are traceable
-(root → phase → agent spans to X-Ray) and schedulable (`pipeline:{name}`). The
-portal page is marked *Exp*; see
-[docs/architecture.md § Workflow engine](docs/architecture.md#workflow-engine--pipeline-as-data-phase-5-experimental).
-
-See [docs/architecture.md](docs/architecture.md) for the full design, including
-how the browser ⇄ AgentCore WebSocket terminal works — and
-[docs/user-guide.md](docs/user-guide.md) for how to *use* the platform, page
-by page (sessions, publishing agents, channels, memory, evals, quotas, and
-calling the API from code). Running your own MCP hub as the tool backend in
-place of AgentCore Gateway — with a dedicated data plane for published agents
-and HMAC-authenticated application access — is covered in
-[docs/mcp-hub-integration.md](docs/mcp-hub-integration.md).
+| Area | What it does |
+|---|---|
+| **Dev Workbench** | Claude Code CLI in an AgentCore Runtime, in a browser terminal. tmux keeps work running across disconnects; files and conversation history persist to S3. |
+| **Headless kernel** | Claude Agent SDK behind the `/invocations` contract, invocable by any application. |
+| **MCP & Skills** | Registry of MCP servers (AgentCore Runtime `protocol=MCP` via SigV4, AgentCore Gateway, an MCP hub, or any streamable-HTTP URL) and SKILL.md packages in S3; attach to a Workbench session or per invocation. Code Interpreter and Browser built-in tools attach the same way. |
+| **Publish** | An `agent.yaml` in a Workbench workspace becomes a versioned agent served by the shared headless kernel. No image build. |
+| **Scheduler** | cron / `rate()` schedules on EventBridge Scheduler → Lambda (retries + DLQ), against agents, kernels or pipelines. |
+| **Channels** | Token webhooks, and the private IAM service entry (decision 2). A `conversation_id` keeps a warm session and a separate memory history per conversation. |
+| **Memory** | AgentCore Memory stores; bound invocations retrieve long-term records and replay the last 10 turns, so conversations survive microVM recycling. |
+| **Observability · Eval · Governance** | Invocation ledger and per-run traces; LLM-judged task suites against any target; quotas, kill switches, model backends and the audit log. |
+| **Workflow** *(experimental)* | Workflow-dialect pipelines (decision 5) with a live trace view and an Insights page. |
 
 ## Prerequisites
 
@@ -227,47 +415,21 @@ extension points in [EXTENDING.md](EXTENDING.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md#security-issue-notifications) for how to
 report security issues.
 
-The portal is guarded by an Amazon Cognito user pool (ID-token verification
-on every API call). The web terminal grants a shell **inside the runtime
-container**; isolation relies on AgentCore microVM session isolation plus the
-VPC egress security group. Review [docs/architecture.md — Security notes](docs/architecture.md#security-notes)
+The portal is guarded by an Amazon Cognito user pool by default (ID-token
+verification on every API call), or by an external OIDC IdP as in
+[decision 1](#1-the-signed-in-users-identity-decides-what-tools-may-do). Portal
+APIs are role-gated: platform admins see the whole catalog and the admin pages,
+developers see what they created. The web terminal grants a shell **inside the
+runtime container**; isolation relies on AgentCore microVM session isolation,
+the per-session grants described
+[above](#one-fact-behind-three-of-these-decisions), and the VPC egress security
+group. Review [docs/architecture.md — Security notes](docs/architecture.md#security-notes)
 before exposing the portal beyond a demo audience.
 
-Need enterprise SSO instead of Cognito? The optional
-[**team-auth setup**](docs/enterprise-sso.md) swaps the portal onto an external
-OIDC IdP (Keycloak) and carries the IdP's team claim end to end — JWT-inbound
-runtime → AgentCore Gateway → team-scoped backend APIs — showing both
-enforcement models side by side:
-
-![Where authorization happens](docs/images/authorization-layers.svg)
-
-The gateway always **authenticates**; who **authorizes** depends on whether the
-outbound credential still carries the user's identity. A backend that can
-validate IdP tokens gets an OBO-exchanged token and enforces the team claim
-itself (authorization stays in your application code). A backend with no SSO
-support — the new internal API nobody has adapted yet — is covered by the
-gateway's Lambda REQUEST interceptor instead, with a static API key injected
-outbound. Both live on one gateway, per target:
-[where authorization happens](docs/enterprise-sso.md#where-authorization-happens).
-
-That identity then flows through the *ordinary* platform: a gateway is
-registered as one MCP server whose header holds a `{{user_token}}`
-placeholder, so any agent it is attached to carries the caller's own identity
-— the same published agent returns different results per signed-in user, and
-the **Gateway** page shows, per target, where authorization is decided.
-
-Machine callers get the same treatment. A workload entering through the
-private service entry can present its **own IdP client-credentials token**
-(`x-robot-token`, fetched by the workload itself — the platform never holds
-robot credentials); the platform verifies it and forwards it as the caller
-identity, so the OBO exchange authorizes team-scoped backends for robots
-exactly as for humans. An agent whose tools require a verified identity
-fails closed when no token arrives. Portal APIs themselves are role-gated:
-platform admins see the whole catalog and the admin pages, developers see
-what they created. Five E2E suites under `scripts/` cover these paths —
-`e2e_platform.py` (platform operations), `e2e_team_auth.py` (the SSO chain
-end to end), `e2e_gateway_identity.py` (same agent, different signed-in
-user), `e2e_service_entry.py` (private SigV4 entry + robot identity) and
+Five E2E suites under `scripts/` cover the security-relevant paths:
+`e2e_platform.py` (platform operations), `e2e_team_auth.py` (the SSO chain end
+to end), `e2e_gateway_identity.py` (same agent, different signed-in user),
+`e2e_service_entry.py` (private SigV4 entry + robot identity) and
 `e2e_mcp_hub.py` (customer-owned MCP hub).
 
 Deploying into a permission-controlled account? [**docs/permissions.md**](docs/permissions.md)
