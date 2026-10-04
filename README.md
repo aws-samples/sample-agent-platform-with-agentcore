@@ -174,6 +174,11 @@ Direct Bedrock (cross-region inference, no key of any kind) remains an option.
 The backend is resolved per workload at every invocation or connect, from a
 `(backend, model)` reference on the published agent or Workbench session, so
 changing the default in Governance takes effect without a deployment.
+That makes a config save as risky as a deployment, so it is checked like one:
+an agent that names a model but no backend is routed to whichever backend's
+catalog lists that model, and before a change is saved every published agent is
+resolved against the old and the new config. If the change would leave an agent
+with no backend for its model, the save is refused and the agents are named.
 One limit matters to anyone copying the private path: VPC Lattice closes a
 connection after 350 seconds without data, silently, so non-streaming calls
 that take longer never return. Claude Code and the SDK kernel always stream.
