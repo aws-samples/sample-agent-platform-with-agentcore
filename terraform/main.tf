@@ -68,8 +68,11 @@ module "runtime" {
   default_platform_version   = var.runtime_default_platform_version
   mcp_tools_platform_version = var.mcp_tools_platform_version
   platform_version_python    = var.platform_version_python
-  name_suffix                = var.name_suffix
-  runtime_name_suffix        = local.runtime_suffix
+  # Kernel roles hold InvokeGateway on gateway/* for MCP tool gateways; the
+  # inference gateway must only be reachable with a per-session credential.
+  deny_gateway_arns   = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference${var.name_suffix}-*"] : []
+  name_suffix         = var.name_suffix
+  runtime_name_suffix = local.runtime_suffix
 }
 
 # The cluster every platform container runs on. Created whenever a module
@@ -131,6 +134,30 @@ module "llm_edge" {
   name_suffix        = var.name_suffix
 }
 
+# Optional: the agentcore_gateway model backend. The backend role ARN is
+# built from its fixed name rather than read from module.portal, which needs
+# this module's caller role ARN (that would be a cycle).
+module "agentcore_gateway_backend" {
+  source = "./modules/agentcore_gateway_backend"
+  count  = var.enable_agentcore_gateway_backend && var.enable_portal && var.enable_runtime ? 1 : 0
+
+  litellm_endpoint        = var.agentcore_gateway_litellm_endpoint
+  credential_provider_arn = var.agentcore_gateway_credential_provider_arn
+  models                  = var.agentcore_gateway_models
+  private_endpoint        = var.agentcore_gateway_private_endpoint
+  backend_role_arn        = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/agent-platform-backend-task${var.name_suffix}"
+  eks = {
+    oidc_provider_arn = local.eks_facts.oidc_provider_arn
+    oidc_issuer_host  = local.eks_facts.oidc_issuer_host
+  }
+  backend_service_accounts = [
+    "system:serviceaccount:portal:backend",
+    "system:serviceaccount:portal:entry",
+  ]
+  script_python = var.platform_version_python
+  name_suffix   = var.name_suffix
+}
+
 module "portal" {
   source = "./modules/portal"
   count  = var.enable_portal && var.enable_runtime ? 1 : 0
@@ -159,10 +186,12 @@ module "portal" {
   oidc_audience             = var.oidc_audience
   # external caller VPCs' endpoints, plus the platform VPC's own when the
   # mcp-hub demo is on (the demo app calls the private API from in-VPC)
-  service_api_allowed_vpces = concat(var.service_api_allowed_vpces, aws_vpc_endpoint.service_entry[*].id)
-  llm_edge_url              = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].edge_url : ""
-  eks                       = local.eks_facts
-  name_suffix               = var.name_suffix
+  service_api_allowed_vpces         = concat(var.service_api_allowed_vpces, aws_vpc_endpoint.service_entry[*].id)
+  llm_edge_url                      = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].edge_url : ""
+  agentcore_gateway_caller_role_arn = try(module.agentcore_gateway_backend[0].caller_role_arn, "")
+  enable_agentcore_gateway_backend  = var.enable_agentcore_gateway_backend
+  eks                               = local.eks_facts
+  name_suffix                       = var.name_suffix
 }
 
 module "team_auth" {
@@ -234,6 +263,56 @@ resource "aws_vpc_endpoint" "service_entry" {
 
   tags = {
     Name = "agent-platform-service-entry${var.name_suffix}"
+  }
+}
+
+# AgentCore Gateway interface endpoint. With private DNS on, every
+# *.gateway.bedrock-agentcore.<region> name resolved inside this VPC lands on
+# the endpoint ENIs, so runtimes reach their gateways (MCP tools today, the
+# agentcore_gateway model backend once enabled) without leaving the VPC and
+# without any URL change. The policy narrows the endpoint to InvokeGateway
+# on this account's gateways; Principal stays "*" because the team gateway
+# authorizes with CUSTOM_JWT, which endpoint policies cannot match on.
+data "aws_caller_identity" "current" {}
+
+resource "aws_security_group" "gateway_vpce" {
+  count = var.enable_gateway_vpce ? 1 : 0
+
+  name        = "agent-platform-gateway-vpce${var.name_suffix}"
+  description = "AgentCore Gateway interface endpoint - HTTPS from inside the VPC"
+  vpc_id      = module.network.vpc_id
+
+  ingress {
+    description = "HTTPS from the platform VPC"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr_block]
+  }
+}
+
+resource "aws_vpc_endpoint" "agentcore_gateway" {
+  count = var.enable_gateway_vpce ? 1 : 0
+
+  vpc_id              = module.network.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock-agentcore.gateway"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.network.private_subnet_ids
+  security_group_ids  = [aws_security_group.gateway_vpce[0].id]
+  private_dns_enabled = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "bedrock-agentcore:InvokeGateway"
+      Resource  = "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/*"
+    }]
+  })
+
+  tags = {
+    Name = "agent-platform-agentcore-gateway${var.name_suffix}"
   }
 }
 

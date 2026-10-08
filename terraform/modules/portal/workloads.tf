@@ -213,6 +213,36 @@ data "aws_iam_policy_document" "backend" {
   }
 }
 
+# agentcore_gateway model backend. On EKS the caller role is assumed with
+# the pod's web-identity token, which needs no identity-policy grant; the
+# AssumeRole/TagSession pair covers the non-IRSA path. Revocation rewrites an
+# inline Deny on the caller role, and reads its RoleId for aws:userid.
+data "aws_iam_policy_document" "backend_agentcore_gateway" {
+  count = var.enable_agentcore_gateway_backend ? 1 : 0
+
+  statement {
+    sid       = "AssumeAgentCoreGatewayCaller"
+    actions   = ["sts:AssumeRole", "sts:TagSession"]
+    resources = [var.agentcore_gateway_caller_role_arn]
+  }
+  statement {
+    sid = "RevokeAgentCoreGatewaySessions"
+    actions = [
+      "iam:GetRole",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+    ]
+    resources = [var.agentcore_gateway_caller_role_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "backend_agentcore_gateway" {
+  count  = var.enable_agentcore_gateway_backend ? 1 : 0
+  name   = "agentcore-gateway-backend"
+  role   = aws_iam_role.backend.id
+  policy = data.aws_iam_policy_document.backend_agentcore_gateway[0].json
+}
+
 resource "aws_iam_role_policy" "backend" {
   name   = "backend"
   role   = aws_iam_role.backend.id
@@ -430,17 +460,18 @@ resource "aws_lb_listener" "service_entry" {
 locals {
   backend_env = merge(
     {
-      PLATFORM_AWS_REGION                = local.region
-      PLATFORM_DYNAMO_TABLE              = var.platform_table.name
-      PLATFORM_WORKSPACE_BUCKET          = var.workspace_bucket.name
-      PLATFORM_INTERACTIVE_RUNTIME_ARN   = var.interactive_runtime_arn
-      PLATFORM_SDK_RUNTIME_ARN           = var.sdk_runtime_arn
-      PLATFORM_MCP_TOOLS_RUNTIME_ARN     = var.mcp_tools_runtime_arn
-      PLATFORM_INTERACTIVE_RUNTIME_ARNS  = jsonencode(var.interactive_runtime_arns)
-      PLATFORM_SDK_RUNTIME_ARNS          = jsonencode(var.sdk_runtime_arns)
-      PLATFORM_DEFAULT_PLATFORM_VERSION  = var.default_platform_version
-      PLATFORM_WORKSPACE_ACCESS_ROLE_ARN = var.workspace_access_role_arn
-      PLATFORM_LLM_EDGE_URL              = var.llm_edge_url
+      PLATFORM_AWS_REGION                        = local.region
+      PLATFORM_DYNAMO_TABLE                      = var.platform_table.name
+      PLATFORM_WORKSPACE_BUCKET                  = var.workspace_bucket.name
+      PLATFORM_INTERACTIVE_RUNTIME_ARN           = var.interactive_runtime_arn
+      PLATFORM_SDK_RUNTIME_ARN                   = var.sdk_runtime_arn
+      PLATFORM_MCP_TOOLS_RUNTIME_ARN             = var.mcp_tools_runtime_arn
+      PLATFORM_INTERACTIVE_RUNTIME_ARNS          = jsonencode(var.interactive_runtime_arns)
+      PLATFORM_SDK_RUNTIME_ARNS                  = jsonencode(var.sdk_runtime_arns)
+      PLATFORM_DEFAULT_PLATFORM_VERSION          = var.default_platform_version
+      PLATFORM_WORKSPACE_ACCESS_ROLE_ARN         = var.workspace_access_role_arn
+      PLATFORM_LLM_EDGE_URL                      = var.llm_edge_url
+      PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN = var.agentcore_gateway_caller_role_arn
       # Scoped to the portal's own origin. The API sits behind the same
       # CloudFront domain as the SPA, so same-origin calls need no CORS at
       # all — this only readmits the one legitimate cross-origin caller

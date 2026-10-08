@@ -35,6 +35,7 @@ with an upstream update.
 | Which layers to create | `enable_runtime`, `enable_portal`, `enable_llm_edge`, `enable_team_auth`, `enable_team_demo`, `enable_mcp_hub_demo` | [terraform/variables.tf](terraform/variables.tf) — the quick start uses them to stage the deploy |
 | Bedrock direct mode | `CLAUDE_CODE_USE_BEDROCK=1` | runtime env; no key involved |
 | Your LLM gateway | `enable_llm_edge = true` + the backend's `base_url` in Governance → Model backends | key in Secrets Manager, read only by `llm-edge`; kernels get a per-session grant, never the key |
+| An AgentCore Gateway instead | `PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN` + the backend's `base_url` (the gateway's `/inference` URL) | no key on the platform side at all and no `llm-edge` to run; kernels get session-tagged STS credentials and SigV4-sign. Requires denying the kernel roles direct `InvokeGateway` on that gateway — see [docs/permissions.md](docs/permissions.md) |
 | Backend runtime settings (table, buckets, ARNs, Cognito, CORS, admin tiers) | `PLATFORM_*` env vars | [backend/app/config.py](backend/app/config.py) — every field there is `PLATFORM_<FIELD>` (`env_prefix`); `backend/.env.example` for local runs |
 
 Terraform state is yours: `terraform/backend.tf.example` shows the remote-state

@@ -463,17 +463,28 @@ The **Model backends** card on the Governance page is the routing control
 plane for every model call — headless invocations and Dev Workbench
 sessions alike:
 
-- **Two backends** — Amazon Bedrock (direct, via the kernel container's IAM
-  role; use `global.` cross-region inference profile IDs) and an
-  Anthropic-compatible **LLM gateway** (e.g. LiteLLM; the API key lives in
-  Secrets Manager, only its *name* is stored here, and only the `llm-edge`
-  service can read it — a session container never receives it). Each has an
-  enable switch and a model catalog that feeds the dropdowns elsewhere.
-  Gateway mode requires `llm-edge` to be deployed (`enable_llm_edge`); with it
-  missing, the platform refuses to route a session rather than falling back to
-  handing out the key.
+- **Three backends** — Amazon Bedrock (direct, via the kernel container's IAM
+  role; use `global.` cross-region inference profile IDs); an
+  Anthropic-compatible **LLM gateway** (`litellm`, e.g. LiteLLM; the API key
+  lives in Secrets Manager, only its *name* is stored here, and only the
+  `llm-edge` service can read it — a session container never receives it); and
+  **AgentCore Gateway** (`agentcore_gateway`, where the upstream credential
+  lives in the gateway's own token vault, so there is no key name to store and
+  no broker service to deploy — a session gets STS credentials named after its
+  own id). Each has an enable switch and a model catalog that feeds the
+  dropdowns elsewhere. Either gateway mode refuses to route a session when its
+  prerequisite is missing (`enable_llm_edge`, or the caller role ARN) rather
+  than falling back to handing out a shared credential.
 - **Platform default** — which backend an agent uses when it doesn't pick
-  one.
+  one. Model names are per backend (a Bedrock inference profile ID means
+  nothing to a gateway, and the other way round), so an agent that names a
+  model but no backend is routed to the backend whose catalog lists that
+  model; the default only serves its own catalog. A model no catalog lists
+  still goes to a Bedrock default, and is refused otherwise. Saving this card
+  is refused if the change would leave a published agent's model with
+  nowhere to go (for example switching the default to a gateway while agents
+  still name Bedrock IDs, or a model that two backends both list): pin those
+  agents' backend or model first.
 - **Per-agent choice** — the Publish page's edit dialog has a *Model
   backend* selector; re-publishing applies it on the agent's **next
   invocation**. Agents are configuration, not resident processes — there is

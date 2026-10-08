@@ -101,6 +101,152 @@ With `enable_llm_edge = false`, selecting the litellm backend makes the platform
 refuse the session with a 503 instead of falling back to handing a container the
 key.
 
+### Option A2 — AgentCore Gateway in front of LiteLLM
+
+Same promise as Option A with one fewer service to run: the LiteLLM API key
+lives in AgentCore Identity's token vault, so there is no bearer secret on
+the platform side and no `llm-edge` to deploy. A kernel receives STS
+credentials named after its session id and SigV4-signs each request; the
+gateway substitutes in the LiteLLM key on the way out. LiteLLM keeps its
+multi-provider routing, cost accounting and model catalog exactly as it does
+for every other client — this option changes only how our platform reaches
+LiteLLM, not what LiteLLM does behind it.
+
+How each hop works, including the VPC Lattice private path and its 350-second
+idle limit, is drawn and explained in
+[architecture.md](architecture.md#how-the-agentcore_gateway-backend-reaches-a-private-litellm).
+
+1. **Mint a LiteLLM virtual key** scoped to the models this backend will
+   serve. The Prod-LiteLLM master key stays where it is; the key stored in
+   the vault below is the virtual one, so a revocation there does not touch
+   any other LiteLLM client.
+
+   ```bash
+   curl -sS -X POST "$LITELLM_URL/key/generate" \
+     -H "Authorization: Bearer $LITELLM_MASTER" \
+     -H "Content-Type: application/json" \
+     -d '{"models":["claude-haiku-4-5","claude-sonnet-5-5"],
+          "key_alias":"agentcore-gateway"}' | jq -r .key
+   ```
+
+2. **Store the key in AgentCore Identity.** In the AWS console: Amazon
+   Bedrock AgentCore → **Identity** → **API key credential providers** →
+   *Create*. Paste the virtual key. AWS returns a
+   `credentialProviderArn` of the form
+   `arn:aws:bedrock-agentcore:<region>:<acct>:token-vault/default/apikeycredentialprovider/<name>`
+   — note it for step 4.
+
+**Steps 3–6 are Terraform** (`enable_agentcore_gateway_backend`, module
+`agentcore_gateway_backend`). They are described below so the shape is clear;
+with the module you only set the variables:
+
+```hcl
+enable_agentcore_gateway_backend          = true
+agentcore_gateway_litellm_endpoint        = "https://litellm.example.com"
+agentcore_gateway_credential_provider_arn = "arn:aws:bedrock-agentcore:<region>:<acct>:token-vault/default/apikeycredentialprovider/<name>"
+agentcore_gateway_models                  = ["claude-sonnet-5-5", "gpt-6-astra"]
+# optional, when LiteLLM has no public listener:
+agentcore_gateway_private_endpoint = {
+  vpc_id             = "<LiteLLM VPC>"
+  subnet_ids         = ["<subnet-a>", "<subnet-b>"]
+  security_group_ids = ["<SG for the Lattice ENIs>"]
+  routing_domain     = "internal-<alb>.<region>.elb.amazonaws.com"
+}
+```
+
+The provider has no inference target type yet, so the module creates the
+target with `scripts/set_inference_target.py` from a `terraform_data`
+(`platform_version_python` must have a botocore that knows inference targets).
+The `agentcore_gateway_inference_base_url` output is the `base_url` for step 7.
+
+3. **Create the gateway.** `protocolType=MCP`, `authorizerType=AWS_IAM`. Its
+   execution role needs only the token-vault reads that fetch the API key
+   (`bedrock-agentcore:GetWorkloadAccessToken` and `GetResourceApiKey`, plus
+   `secretsmanager:GetSecretValue` on the provider's secret); it does *not*
+   need any `bedrock*` grant, because the outbound call is HTTPS to LiteLLM
+   with a header-injected API key rather than a Bedrock service call.
+
+4. **Create the inference *provider* target** pointing at LiteLLM, with the
+   credential provider substituting the caller's `Authorization` header on
+   the way out (`credentialPrefix: "Bearer"`, no trailing space). Declare
+   each path the clients use (`/v1/messages`, `/v1/chat/completions`,
+   `/v1/responses`; the gateway accepts no others) and the models each
+   path may route to. The gateway does no protocol translation: it matches
+   path and `model`, swaps in the key and relays body and SSE stream
+   verbatim, so LiteLLM decides which model works on which path.
+
+   - **`metadataConfiguration.allowedRequestHeaders`** must list at least
+     `content-type`, `anthropic-version`, `anthropic-beta` and `accept`.
+     Left unset the gateway relays whatever the caller sent — including the
+     caller's own `x-amz-security-token`. Once set, `content-type` has to
+     be listed explicitly or the target stops relaying it and LiteLLM
+     answers 400.
+   - **Enable `drop_params: true` on the LiteLLM model entries** this
+     target routes to. Claude Code sends first-party-only fields
+     (`context_management` is the current one) that LiteLLM's Bedrock
+     adapter rejects otherwise. A REQUEST interceptor at the gateway could
+     strip them instead, but it adds a synchronous Lambda call per model
+     request and caps request bodies at Lambda's 6 MB invoke payload
+     (about 4.5 MB of JSON once base64-encoded), which a long session can
+     reach.
+   - **If LiteLLM is not publicly reachable**, add a top-level
+     `privateEndpoint.managedVpcResource` (sibling of
+     `targetConfiguration`): the gateway places VPC Lattice resource-gateway
+     ENIs in your subnets and connects to `routingDomain` (for example an
+     internal ALB's DNS name) while keeping the target endpoint's hostname
+     as TLS SNI, so the ALB needs a publicly trusted certificate for that
+     name. Lattice closes TCP connections idle for 350 seconds, so on this
+     path a non-streaming call whose response takes longer than that never
+     returns; clients must stream.
+
+   Measured through a private endpoint (Tokyo, 2026-10): `claude-opus-5-5`,
+   `claude-sonnet-5-5`, `gpt-6-astra` and `kimi-k3` each answered on all
+   three paths, streaming and not; 20 concurrent calls and a 634-second SSE
+   stream went through; a non-streaming call that took 368 seconds never
+   returned. `GET /inference/v1/models` lists every declared model across the
+   gateway's targets as `<targetName>/<model>`, and a client may pin a target
+   that way in the `model` field.
+
+   The exact `targetConfiguration` and `credentialProviderConfigurations`
+   payloads are in `scripts/e2e_agentcore_gateway.py`; that script provisions
+   all of the above against a live account.
+
+5. **Create the role the backend assumes per session**, with
+   `MaxSessionDuration` 12 h and one grant: `bedrock-agentcore:InvokeGateway`
+   on the gateway ARN. Its trust policy admits the backend's **IRSA
+   web-identity token** (the backend and entry ServiceAccounts): the backend
+   exchanges that token directly with `AssumeRoleWithWebIdentity`, so the
+   per-session credential is a first hop and can last the 9 hours a headless
+   async run needs. Assuming the role from the backend role's own
+   credentials would be role chaining, which STS caps at one hour. The
+   backend role also gets `iam:GetRole`/`PutRolePolicy`/`DeleteRolePolicy` on
+   the caller role for revocation, and `sts:AssumeRole`/`TagSession` for runs
+   outside a pod (local development, the e2e), which mint with plain
+   `AssumeRole` and a `session_id` tag instead. The module sets
+   `PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN` on the backend.
+
+   Either way the role session name is the runtime session id, and
+   revocation is an inline Deny on the caller role matching
+   `aws:userid = <caller role id>:<session id>` (web-identity sessions) or
+   `aws:PrincipalTag/session_id` (tagged ones).
+
+6. **Deny the kernel roles direct access to this gateway.** The kernel roles
+   already hold `bedrock-agentcore:InvokeGateway` on `gateway/*` so they can
+   reach MCP tool gateways, and that wildcard would also cover the inference
+   gateway — letting a root user in the microVM call it on the kernel role's own
+   identity, with nothing per-session to revoke. The module makes the runtime
+   module add an explicit Deny for the inference gateway's ARN to each kernel
+   role; see permissions.md §3. Without it the per-session credential is
+   decorative.
+
+7. **Point the backend at the gateway in the portal**: *Governance → Model
+   backends → agentcore_gateway*, setting `base_url` to the `/inference` URL
+   and the model catalog to whichever LiteLLM aliases the virtual key
+   authorises. There is no `secret_name` for this backend.
+
+With the caller role ARN unset, selecting this backend makes the platform refuse
+the session rather than fall back to a shared credential.
+
 ### Option B — Bedrock direct
 
 Set:

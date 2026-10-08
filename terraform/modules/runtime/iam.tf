@@ -120,6 +120,21 @@ data "aws_iam_policy_document" "agent_common" {
     ]))
   }
 
+  # The inference gateway of the agentcore_gateway model backend is covered by
+  # the wildcard above, and a root user in the microVM can read this role's
+  # credentials. Deny wins over the Allow, so tool gateways keep working while
+  # the inference gateway is reachable only with a backend-minted per-session
+  # credential (docs/permissions.md).
+  dynamic "statement" {
+    for_each = length(var.deny_gateway_arns) > 0 ? [1] : []
+    content {
+      sid       = "NoDirectInferenceGateway"
+      effect    = "Deny"
+      actions   = ["bedrock-agentcore:InvokeGateway"]
+      resources = var.deny_gateway_arns
+    }
+  }
+
   # MCP hub HMAC credentials (mcp-hub attachments): the invocation payload
   # carries only the secret *name*; the in-container signing proxy fetches
   # the access/secret pair here, under this role, and signs each hub request

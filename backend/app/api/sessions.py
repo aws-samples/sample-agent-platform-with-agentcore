@@ -158,44 +158,48 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
     config = _session_config(item) or {}
     # Model routing (same control plane as published agents): resolve the
     # session's (backend, model) reference now so a model-config edit applies
-    # on the next connect. Resolution failure (e.g. the backend was disabled
-    # after the session was created) falls back to the container default
-    # rather than bricking the terminal.
-    if item.get("model_backend") or item.get("model"):
-        try:
-            spec = model_config_service.resolve(
-                item.get("model_backend", ""), item.get("model", "")
+    # on the next connect. A session with neither set follows the platform
+    # default backend, exactly as a published agent does — resolve() returns
+    # None only when that default is plain Bedrock. Resolution failure (e.g.
+    # the backend was disabled after the session was created) falls back to
+    # the container default rather than bricking the terminal.
+    try:
+        spec = model_config_service.resolve(
+            item.get("model_backend", ""), item.get("model", "")
+        )
+        if spec and spec.get("backend") in ("gateway", "agentcore_gateway"):
+            # No upstream credential reaches the container in either mode:
+            # litellm keeps the key in llm-edge, AgentCore keeps it in the
+            # gateway's token vault. The kernel gets an endpoint plus a
+            # session-scoped credential, and the routing fields are
+            # stripped from what the container sees.
+            creds = llm_credentials_service.mint(
+                item["runtime_session_id"], user, spec
             )
-            if spec and spec.get("backend") == "gateway":
-                # The gateway key stays in llm-edge. The kernel gets an
-                # endpoint plus a session-scoped token, and the routing fields
-                # are stripped from what the container sees: the edge re-reads
-                # them from the grant, so a container has nothing to forge.
-                creds = llm_credentials_service.mint(
-                    item["runtime_session_id"], user, spec
+            if not creds:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "gateway model routing is unavailable: deploy "
+                        "llm-edge (enable_llm_edge) for the litellm "
+                        "backend, or set the AgentCore gateway caller role "
+                        "for the agentcore_gateway backend"
+                    ),
                 )
-                if not creds:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "gateway model routing is unavailable: the llm-edge "
-                            "service is not deployed (set enable_llm_edge)"
-                        ),
-                    )
-                config["llm_credentials"] = creds
-                spec = {
-                    k: v
-                    for k, v in spec.items()
-                    if k not in ("base_url", "secret_name")
-                }
-            if spec:
-                config["model"] = spec
-        except ValueError as e:
-            logger.warning(
-                "session %s model resolve failed (%s), using container default",
-                session_id,
-                e,
-            )
+            config["llm_credentials"] = creds
+            spec = {
+                k: v
+                for k, v in spec.items()
+                if k not in ("base_url", "secret_name")
+            }
+        if spec:
+            config["model"] = spec
+    except ValueError as e:
+        logger.warning(
+            "session %s model resolve failed (%s), using container default",
+            session_id,
+            e,
+        )
     # Workspace-sync credentials: the kernel's own role has no workspaces/*
     # access — the backend mints session-scoped STS credentials and delivers
     # them in the warmup payload, plus a refresh token the container uses to

@@ -255,17 +255,18 @@ Claude Code calls it from a terminal or the SDK kernel calls it per-invoke.
 
 ### 2. Model access — LLM gateway first
 
-Both kernels support two model backends:
+Both kernels support three model backends:
 
 | Mode | How | When to use |
 |---|---|---|
 | **Bedrock direct** | `CLAUDE_CODE_USE_BEDROCK=1` + cross-region inference profile (`global.` model ID prefix). Container IAM role; no key of any kind | Simplest path, and there is no model credential to leak |
-| **LLM gateway** | Always per session, never a container default. The gateway key lives only in the `llm-edge` service; a kernel gets a session-scoped grant and reaches the gateway through it (`enable_llm_edge`) | Centralized model governance: allow-lists, budgets, cost attribution per team |
+| **LLM gateway** (`litellm`) | Always per session, never a container default. The gateway key lives only in the `llm-edge` service; a kernel gets a session-scoped grant and reaches the gateway through it (`enable_llm_edge`) | Centralized model governance: allow-lists, budgets, cost attribution per team |
+| **AgentCore Gateway** (`agentcore_gateway`) | Also always per session. The gateway sits in front of the same LiteLLM deployment Option A talks to, and the LiteLLM key lives in AgentCore Identity's token vault — so there is no key on the platform side at all and no broker service to run. A kernel gets STS credentials named after its session id and SigV4-signs each request (`agentcore_gateway_caller_role_arn`); LiteLLM keeps its multi-provider routing exactly as it does for every other client | The same governance goal with a managed hop instead of `llm-edge`, and per-session revocation expressed as an IAM Deny |
 
-Gateway mode has no container-level configuration on purpose. A session's user
-is root in its microVM and the headless kernel runs agent tools in a
+Neither gateway mode has container-level configuration, on purpose. A session's
+user is root in its microVM and the headless kernel runs agent tools in a
 subprocess, so any credential placed in a kernel container is a credential its
-users have. Reaching the gateway therefore requires a grant the backend mints
+users have. Reaching either gateway therefore requires a grant the backend mints
 per session; see security-explainer.zh.md §9.
 
 The environment sets the **container default**; the model control plane
@@ -275,7 +276,9 @@ Workbench sessions carry the same reference resolved at every connect — the
 interactive kernel renders the resolved spec into a shell env file that the
 terminal's Claude Code sources at launch. Both paths reuse one resolver
 (`model_config_service.resolve`), so the catalog, defaults, and disabled-backend
-rules apply identically to headless and interactive workloads.
+rules apply identically to headless and interactive workloads. A reference
+with a model but no backend is routed by catalog membership, since model names
+are per backend; config saves that would strand a published agent are refused.
 
 A gateway spec also carries `alias_models`: one catalog model per Claude
 family, which the kernels export as the `ANTHROPIC_DEFAULT_*_MODEL` steering
@@ -283,6 +286,57 @@ variables (clearing families the catalog lacks). This keeps Claude Code's
 `/model` picker and background tasks on the session's own backend — without
 it, a gateway session would inherit the container's baked-in Bedrock profile
 IDs, which the gateway rejects.
+
+#### How the `agentcore_gateway` backend reaches a private LiteLLM
+
+![agentcore_gateway backend in front of a private LiteLLM](images/agentcore-gateway-litellm.svg)
+
+Every hop is inside AWS; neither the gateway nor LiteLLM needs a public
+endpoint, and no LiteLLM key exists anywhere on the platform side.
+
+1. **Kernel → shim.** Claude Code (or the Agent SDK) points
+   `ANTHROPIC_BASE_URL` at the kernel's loopback shim with a per-invocation
+   local token. The shim holds the session's STS credential — minted by the
+   backend at connect by exchanging its pod's IRSA token for the caller role
+   (`AssumeRoleWithWebIdentity`, a first hop, so async runs can get 9 hours
+   instead of role chaining's one), with the runtime session id as the role
+   session name and a session policy that allows `InvokeGateway` on this one
+   gateway — and SigV4-signs each request. Revoking a session is an IAM Deny
+   on the caller role matching that session's `aws:userid`.
+2. **Runtime → gateway over PrivateLink.** With `enable_gateway_vpce` the
+   platform VPC has a `bedrock-agentcore.gateway` interface endpoint with
+   private DNS, so the gateway's normal URL resolves to endpoint ENIs and the
+   call never touches the NAT.
+3. **Gateway: match, swap, relay.** The IAM authorizer checks the signature
+   and session policy. The inference *provider* target matches the request
+   path (`/v1/messages`, `/v1/chat/completions` or `/v1/responses` — the
+   only three it accepts) and the body's `model` against its declared
+   models, replaces `Authorization` with the LiteLLM virtual key held in
+   AgentCore Identity's token vault, and relays the body and the SSE stream
+   **verbatim**. The gateway translates nothing; which model works on which
+   path is LiteLLM's decision.
+4. **Gateway → LiteLLM over VPC Lattice.** The target's top-level
+   `privateEndpoint.managedVpcResource` makes AgentCore place a VPC Lattice
+   resource gateway (ENIs plus a security group you choose) in the LiteLLM
+   VPC's subnets. Two names do two jobs:
+   - `provider.endpoint` (`https://<name>`) is the name on the ALB's
+     **publicly trusted** certificate. It is sent as TLS SNI and `Host`, so
+     the handshake succeeds; it needs no public DNS record.
+   - `routingDomain` is the **internal ALB's DNS name**: where Lattice
+     actually connects.
+5. **ALB → LiteLLM.** The internal ALB terminates TLS and forwards to the
+   LiteLLM pods. `drop_params` on the LiteLLM model entries strips the
+   first-party-only fields Claude Code sends (`context_management`), which
+   is why no gateway interceptor is needed (one would also cap request
+   bodies at about 4.5 MB, Lambda's invoke payload after base64).
+
+**The one limit that changes client behaviour:** VPC Lattice closes a TCP
+connection that carries no data for **350 seconds** (VPC Lattice quotas,
+"Connection idle time per connection for VPC Lattice resources"), and the
+gateway does not report it — a non-streaming call whose response takes
+longer simply never returns. Streaming keeps bytes on the wire and is not
+affected (a 10-minute stream completes). Claude Code and the SDK kernel
+always stream; other clients on this path must too.
 
 The gateway pattern is why **networking matters** (next section): enterprise
 gateways typically enforce source-IP allow-lists.
@@ -304,6 +358,13 @@ AgentCore Runtime ENIs → private subnets → NAT Gateway (Elastic IP) → inte
   allow-list.
 - `NetworkConfiguration` is not create-only: an existing runtime can be switched
   between PUBLIC and VPC without changing its ARN.
+- Optional `enable_gateway_vpce` adds an AgentCore Gateway interface endpoint
+  (`com.amazonaws.<region>.bedrock-agentcore.gateway`, private DNS on). Calls
+  from runtimes to any gateway in the account (MCP tool gateways, and the
+  `agentcore_gateway` model backend) then stay inside the VPC instead of
+  leaving through the NAT, with no URL change. The endpoint policy allows
+  only `InvokeGateway` on this account's gateways; `Principal` stays `*`
+  because JWT-authorized gateways cannot be matched on an IAM principal.
 
 ### 4. Backend control plane (`backend/`)
 
@@ -534,12 +595,15 @@ a new runtime version automatically).
   (SDK kernel only, and nothing the platform ships needs it, since search
   authenticates with the kernel's own role). The LLM gateway key is
   deliberately **not** among them: it is readable only by the `llm-edge` task
-  role, which no session can enter.
+  role, which no session can enter. With the `agentcore_gateway` backend there
+  is no such key on the platform side at all — the upstream credential lives in
+  the gateway's token vault.
 - No secrets are baked into images; keys are read from Secrets Manager at
   container/Lambda start.
 - The browser and end users hold **no AWS credentials** — all AWS access is
   server-side under the platform's seven IAM roles (an eighth,
-  `agent-platform-llm-edge`, in gateway mode), enumerated in
+  `agent-platform-llm-edge`, in litellm gateway mode; a ninth, the AgentCore
+  Gateway caller role, in `agentcore_gateway` mode), enumerated in
   [permissions.md §1](permissions.md#1-principals-at-a-glance).
 - If your LLM gateway is HTTP-only, traffic from NAT → gateway crosses the
   network unencrypted; put a TLS listener or PrivateLink in front for

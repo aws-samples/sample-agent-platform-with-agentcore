@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 900" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="agentcore_gateway model backend · AgentCore Gateway in front of a private LiteLLM">
+<title>agentcore_gateway model backend · AgentCore Gateway in front of a private LiteLLM</title>
+<defs>
+<pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse"><path d="M34 0 H0 V34" fill="none" stroke="#EAEFF6" stroke-width="1"/></pattern>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>@media (prefers-reduced-motion: no-preference){.flow{stroke-dasharray:6 6;animation:dm .8s linear infinite}}@keyframes dm{to{stroke-dashoffset:-12}}</style>
+</defs>
+<rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
+<text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">agentcore_gateway model backend · AgentCore Gateway in front of a private LiteLLM</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">No model key on the platform side or in any container · per-session SigV4 in, API key injected out · runtime → gateway over PrivateLink, gateway → LiteLLM over a managed VPC Lattice resource gateway</text>
+<rect x="60" y="110" width="1410" height="640" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="76" y="130" font-size="11" font-weight="700" fill="#0B7E7F">AWS account · Region</text>
+<rect x="80" y="300" width="520" height="230" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="96" y="320" font-size="11" font-weight="700" fill="#7C3AED">Platform VPC · private subnets</text>
+<rect x="100" y="340" width="300" height="150" rx="12" fill="rgba(231,21,123,0.04)" stroke="#E7157B" stroke-width="1.5" stroke-dasharray="3 4"/>
+<text x="114" y="482" font-size="11" font-weight="700" fill="#B21667">AgentCore Runtime microVM</text>
+<rect x="640" y="150" width="240" height="590" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="656" y="730" font-size="11" font-weight="700" fill="#0B7E7F">AgentCore service</text>
+<rect x="905" y="300" width="545" height="230" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="936" y="320" font-size="11" font-weight="700" fill="#7C3AED">LiteLLM VPC · private subnets</text>
+<path class="flow" d="M 173.0 400.0 L 307.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 353.0 400.0 L 497.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 543.0 400.0 L 737.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 783.0 400.0 L 987.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1033.0 400.0 L 1177.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1223.0 400.0 L 1357.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1403.0 400.0 L 1517.0 400.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 353.0 190.0 L 420.0 190.0 L 420.0 330.0 L 330.0 330.0 L 330.0 377.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 760.0 377.0 L 760.0 300.0 L 840.0 300.0 L 840.0 190.0 L 783.0 190.0" fill="none" stroke="#94A3B8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 760.0 423.0 L 760.0 617.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="190" y="378" width="100" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="240" y="388" text-anchor="middle" font-size="9.5" fill="#48586a">loopback token</text>
+<rect x="352" y="378" width="147" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="425" y="388" text-anchor="middle" font-size="9.5" fill="#48586a">SigV4 /inference/v1/*</text>
+<rect x="600" y="378" width="81" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="640" y="388" text-anchor="middle" font-size="9.5" fill="#48586a">PrivateLink</text>
+<rect x="810" y="378" width="140" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="880" y="388" text-anchor="middle" font-size="9.5" fill="#48586a">Bearer · LiteLLM key</text>
+<rect x="1088" y="378" width="34" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1105" y="388" text-anchor="middle" font-size="9.5" fill="#48586a">:443</text>
+<rect x="1270" y="378" width="41" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1290" y="388" text-anchor="middle" font-size="9.5" fill="#48586a">:4000</text>
+<rect x="413" y="252" width="114" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="470" y="262" text-anchor="middle" font-size="9.5" fill="#48586a">grant at connect</text>
+<rect x="806" y="252" width="67" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="840" y="262" text-anchor="middle" font-size="9.5" fill="#48586a">authorize</text>
+<rect x="700" y="535" width="120" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="760" y="545" text-anchor="middle" font-size="9.5" fill="#48586a">GetResourceApiKey</text>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="0.00s" repeatCount="indefinite" path="M 173.0 400.0 L 307.0 400.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="0.46s" repeatCount="indefinite" path="M 353.0 400.0 L 497.0 400.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="0.91s" repeatCount="indefinite" path="M 543.0 400.0 L 737.0 400.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="1.37s" repeatCount="indefinite" path="M 783.0 400.0 L 987.0 400.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="1.83s" repeatCount="indefinite" path="M 1033.0 400.0 L 1177.0 400.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="2.29s" repeatCount="indefinite" path="M 1223.0 400.0 L 1357.0 400.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.2s" begin="2.74s" repeatCount="indefinite" path="M 1403.0 400.0 L 1517.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="0.00s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 1403.0 400.0 L 1517.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="0.49s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 1223.0 400.0 L 1357.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="0.97s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 1033.0 400.0 L 1177.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="1.46s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 783.0 400.0 L 987.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="1.94s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 543.0 400.0 L 737.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="2.43s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 353.0 400.0 L 497.0 400.0"/></circle>
+<circle r="3.4" fill="#0F766E"><animateMotion dur="3.4s" begin="2.91s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear" path="M 173.0 400.0 L 307.0 400.0"/></circle>
+<circle r="4" fill="#0369A1"><animateMotion dur="2.0s" begin="0.00s" repeatCount="indefinite" path="M 760.0 423.0 L 760.0 617.0"/></circle>
+<circle r="4" fill="#0369A1"><animateMotion dur="2.4s" begin="0.00s" repeatCount="indefinite" path="M 353.0 190.0 L 420.0 190.0 L 420.0 330.0 L 330.0 330.0 L 330.0 377.0"/></circle>
+<rect x="127.0" y="377.0" width="46" height="46" rx="8" fill="#334155"/><rect x="137" y="390" width="26" height="20" rx="3" fill="none" stroke="#fff" stroke-width="2.2"/><line x1="137" y1="396" x2="163" y2="396" stroke="#fff" stroke-width="2"/><circle cx="141" cy="393" r="1.3" fill="#fff"/><circle cx="145" cy="393" r="1.3" fill="#fff"/><text x="150" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Claude Code / SDK</text><text x="150" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">base URL = 127.0.0.1</text>
+<rect x="307.0" y="377.0" width="46" height="46" rx="8" fill="#0F766E"/><circle cx="325" cy="397" r="6" fill="none" stroke="#fff" stroke-width="2.4"/><path d="M329 401 l12 12 M336 408 l3 -3 M339 411 l3 -3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><text x="330" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">kernel shim</text><text x="330" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">SigV4 · per-session STS</text>
+<g transform="translate(497.00,377.00) scale(0.9583)">
+
+    
+    <g id="endpoints__Icon-Resource/Networking-and-Content-Delivery/Res_Amazon-VPC_Endpoints_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <path d="M20.6197,27.6015 L22.0337,29.0155 L26.3967,24.6515 C26.7877,24.2605 26.7877,23.6275 26.3967,23.2375 L22.0337,18.8735 L20.6197,20.2885 L23.2757,22.9445 L6.4907,22.9445 L6.4907,24.9445 L23.2767,24.9445 L20.6197,27.6015 Z M43.8897,23.9445 C43.8897,12.9475 34.9417,3.9995 23.9447,3.9995 C12.9467,3.9995 3.9997,12.9475 3.9997,23.9445 C3.9997,34.9425 12.9467,43.8895 23.9447,43.8895 C34.9417,43.8895 43.8897,34.9425 43.8897,23.9445 L43.8897,23.9445 Z M45.8897,23.9445 C45.8897,36.0445 36.0457,45.8895 23.9447,45.8895 C11.8447,45.8895 1.9997,36.0445 1.9997,23.9445 C1.9997,11.8435 11.8447,1.9995 23.9447,1.9995 C36.0457,1.9995 45.8897,11.8435 45.8897,23.9445 L45.8897,23.9445 Z M15.9627,26.5625 L15.9627,27.0165 C15.9627,27.0765 15.9677,27.1355 15.9777,27.1945 C16.0417,27.5435 17.5967,35.7575 23.9447,35.7575 C30.2927,35.7575 31.8477,27.5435 31.9107,27.1945 C31.9217,27.1355 31.9267,27.0765 31.9267,27.0165 L31.9267,16.4655 C31.9267,16.0575 31.6787,15.6905 31.2997,15.5385 L24.3177,12.7275 C24.0797,12.6315 23.8097,12.6315 23.5717,12.7275 L16.5897,15.5385 C16.2107,15.6905 15.9627,16.0575 15.9627,16.4655 L15.9627,21.3265 L17.9627,21.3265 L17.9627,17.1415 L23.9447,14.7335 L29.9267,17.1415 L29.9267,26.9175 C29.7647,27.6895 28.3467,33.7575 23.9447,33.7575 C19.5427,33.7575 18.1247,27.6895 17.9627,26.9175 L17.9627,26.5625 L15.9627,26.5625 Z M35.4167,13.3245 L35.4167,26.6755 C35.4167,31.2075 33.0187,39.7805 23.9447,39.7805 C19.2227,39.7805 15.7337,37.3375 13.8537,32.7165 C12.8547,30.2675 12.5767,27.8485 12.5007,26.6245 L14.4967,26.4995 C14.5527,27.3865 14.7807,29.6945 15.7067,31.9615 C17.2767,35.8235 20.0487,37.7805 23.9447,37.7805 C33.2797,37.7805 33.4157,27.1275 33.4167,26.6745 L33.4167,13.9995 L23.9447,10.1865 L14.4727,13.9995 L14.4727,21.3265 L12.4727,21.3265 L12.4727,13.3245 C12.4727,12.9155 12.7207,12.5485 13.0987,12.3965 L23.5717,8.1805 C23.8097,8.0845 24.0797,8.0845 24.3177,8.1805 L34.7897,12.3965 C35.1687,12.5485 35.4167,12.9155 35.4167,13.3245 L35.4167,13.3245 Z" id="endpoints__AWS-Amazon-VPC_Endpoints_Resource-Icon_light-bg" fill="#8C4FFF"></path>
+    </g>
+</g><text x="520" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Gateway VPC endpoint</text><text x="520" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">private DNS</text>
+<g transform="translate(737.00,377.00) scale(0.7188)">
+<g clip-path="url(#agentcore__clip0_211_72)">
+<rect width="64" height="64" fill="#01A88D"/>
+<path d="M53.3721 21.0727L50.8965 20.0801L49.9326 17.6343C49.7812 17.2519 49.4131 17.001 49.0019 17.001C48.5908 17.0015 48.2217 17.2529 48.0713 17.6357L47.0976 20.1157L44.6377 21.0703C44.2529 21.2197 43.999 21.5913 44 22.0049C44.0009 22.4184 44.2568 22.7891 44.6426 22.9365L47.1553 23.897L48.0625 26.3481C48.2051 26.7353 48.5723 26.9946 48.9853 27.001H49C49.4072 27.001 49.7744 26.7539 49.9277 26.375L50.9385 23.8686L53.3603 22.9341C53.7432 22.7856 53.9971 22.4184 54 22.0073C54.0029 21.5967 53.7539 21.2256 53.3721 21.0727ZM49.8135 22.1592C49.5557 22.2593 49.3496 22.4614 49.2461 22.7183L49.04 23.2285L48.873 22.7773C48.7734 22.5073 48.5615 22.2934 48.293 22.1904L47.7822 21.9951L48.2305 21.8213C48.4902 21.7202 48.6973 21.5146 48.7988 21.2544L49.0039 20.7319L49.1592 21.1265C49.25 21.437 49.4883 21.6855 49.793 21.792L50.2695 21.9834L49.8135 22.1592ZM51.2148 30.853L44.0078 27.9629L41.1973 20.8379C41.0078 20.3569 40.5508 20.0459 40.0342 20.0459C39.5166 20.0464 39.0586 20.3574 38.8701 20.8394L36.0312 28.0747L33.0011 29.2507L33.0019 13.998C33.0019 13.6191 32.788 13.2729 32.4492 13.1035L26.4472 10.1055C26.1513 9.95849 25.8027 9.96581 25.5146 10.126L16.5146 15.126C16.1972 15.3022 16 15.6367 16 16V23.3818L10.5527 26.1055C10.2138 26.2749 9.99997 26.6211 9.99997 27V37C9.99997 37.3511 10.1845 37.6768 10.4853 37.8574L15 40.5664V47C15 47.3657 15.2002 47.7026 15.5214 47.8779L26.5215 53.8779C26.6709 53.9594 26.8349 54 27 54C27.1787 54 27.3564 53.9521 27.5146 53.8574L32.5146 50.8574C32.8154 50.6767 33 50.351 33 50L33.0008 34.7649L36.2138 35.9927L38.8662 43.1616C39.0459 43.6494 39.499 43.9697 40.0185 43.9775C40.0253 43.9775 40.0322 43.978 40.039 43.978C40.5507 43.978 41.0039 43.6733 41.1982 43.1953L44.1396 35.9053L51.1992 33.1797C51.6816 32.9941 51.9961 32.5395 52 32.022C52.0029 31.5044 51.6953 31.0454 51.2148 30.853ZM26.9766 51.8481L23.7745 50.1015L27.5146 47.8574L26.4853 46.1426L21.7383 48.9908L17 46.4062V40.5662L21.5146 37.8574L20.4853 36.1426L16 38.8338L12 36.4336V32.6182L17.4472 29.8945L16.5527 28.1055L12 30.3818V27.6182L16.9563 25.14L21 27.5662V30.3818L17.5527 32.1055L18.4472 33.8945L22.0026 32.1169L25.5566 33.877L26.4433 32.085L23 30.3797V27.5664L27.5146 24.8574C27.8154 24.6768 28 24.3511 28 24V19H26V23.4336L22 25.8338L18 23.4338V16.5884L21 14.9217V21H23V13.8106L26.0244 12.1304L31.0019 14.6162L31.0007 36.4504L20.4629 43.1563L21.5371 44.8438L31.0006 38.8215L31 49.4336L26.9766 51.8481ZM43.0146 34.1953C42.7568 34.2954 42.5508 34.4976 42.4473 34.7544L40.0683 40.6494L37.9316 34.8735C37.832 34.6035 37.6201 34.3896 37.3516 34.2866L33.0009 32.6238L33.001 31.3955L37.1631 29.7803C37.4238 29.6792 37.6308 29.4736 37.7324 29.2134L40.0361 23.3438L42.2431 28.9385C42.3183 29.2905 42.5849 29.5747 42.9258 29.6841L48.7021 32L43.0146 34.1953Z" fill="white"/>
+</g>
+<defs>
+<clipPath id="agentcore__clip0_211_72">
+<rect width="64" height="64" fill="white"/>
+</clipPath>
+</defs>
+</g><rect x="690" y="425" width="140" height="28" rx="3" fill="#EAF6F7"/><text x="760" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">AgentCore Gateway</text><text x="760" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">inference provider target</text>
+<g transform="translate(987.00,377.00) scale(0.9583)">
+
+    
+    <g id="eni__Icon-Resource/Networking-and-Content-Delivery/Res_Amazon-VPC_Elastic-Network-Interface_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <path d="M22.376,25.627 L26.502,25.627 L26.502,21.501 L22.376,21.501 L22.376,25.627 Z M28.502,25.627 L32.627,25.627 L32.627,21.501 L28.502,21.501 L28.502,25.627 Z M21.376,27.627 L33.627,27.627 C34.179,27.627 34.627,27.18 34.627,26.627 L34.627,20.501 C34.627,19.948 34.179,19.501 33.627,19.501 L21.376,19.501 C20.823,19.501 20.376,19.948 20.376,20.501 L20.376,26.627 C20.376,27.18 20.823,27.627 21.376,27.627 L21.376,27.627 Z M37.877,29.127 L35.377,29.127 C34.824,29.127 34.377,29.574 34.377,30.127 L34.377,31.752 L32.002,31.752 L32.002,30.127 C32.002,29.574 31.554,29.127 31.002,29.127 L27.502,29.127 C26.949,29.127 26.502,29.574 26.502,30.127 L26.502,31.752 L19.751,31.752 L19.751,30.127 C19.751,29.574 19.303,29.127 18.751,29.127 L18.001,29.127 L18.001,18.001 L37.877,18.001 L37.877,29.127 Z M38.877,16.001 L17.001,16.001 C16.448,16.001 16.001,16.448 16.001,17.001 L16.001,30.127 C16.001,30.68 16.448,31.127 17.001,31.127 L17.751,31.127 L17.751,32.752 C17.751,33.305 18.198,33.752 18.751,33.752 L27.502,33.752 C28.054,33.752 28.502,33.305 28.502,32.752 L28.502,31.127 L30.002,31.127 L30.002,32.752 C30.002,33.305 30.449,33.752 31.002,33.752 L35.377,33.752 C35.929,33.752 36.377,33.305 36.377,32.752 L36.377,31.127 L38.877,31.127 C39.429,31.127 39.877,30.68 39.877,30.127 L39.877,17.001 C39.877,16.448 39.429,16.001 38.877,16.001 L38.877,16.001 Z M14.501,15.251 L14.501,34.502 C14.501,35.055 14.053,35.502 13.501,35.502 L10.35,35.502 L10.35,33.502 L12.501,33.502 L12.501,16.251 L10.35,16.251 L10.35,14.251 L13.501,14.251 C14.053,14.251 14.501,14.698 14.501,15.251 L14.501,15.251 Z M24.002,44.003 C12.972,44.003 4,35.03 4,24.001 C4,12.973 12.972,4 24.002,4 C35.03,4 44.002,12.973 44.002,24.001 C44.002,35.03 35.03,44.003 24.002,44.003 L24.002,44.003 Z M24.002,2 C11.87,2 2,11.869 2,24.001 C2,36.133 11.87,46.003 24.002,46.003 C36.133,46.003 46.002,36.133 46.002,24.001 C46.002,11.869 36.133,2 24.002,2 L24.002,2 Z" id="eni__AWS-Amazon-VPC_Elastic-network-interface_Resource-Icon_light-bg" fill="#8C4FFF"></path>
+    </g>
+</g><text x="1010" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Lattice resource gateway</text><text x="1010" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">managed ENIs · 350 s idle timeout</text>
+<g transform="translate(1177.00,377.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="elb__linearGradient-1">
+            <stop stop-color="#4D27A8" offset="0%"></stop>
+            <stop stop-color="#A166FF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="elb__Icon-Architecture/64/Arch_Elastic-Load-Balancing_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="elb__Icon-Architecture-BG/64/Networking-Content-Delivery" fill="#8C4FFF">
+            <rect id="elb__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M30,53 C22.832,53 17,47.168 17,40 C17,32.832 22.832,27 30,27 C37.168,27 43,32.832 43,40 C43,47.168 37.168,53 30,53 M60,59 C60,61.206 58.206,63 56,63 C53.794,63 52,61.206 52,59 C52,56.794 53.794,55 56,55 C58.206,55 60,56.794 60,59 M56,17 C58.206,17 60,18.794 60,21 C60,23.206 58.206,25 56,25 C53.794,25 52,23.206 52,21 C52,18.794 53.794,17 56,17 M59,36 C61.206,36 63,37.794 63,40 C63,42.206 61.206,44 59,44 C56.794,44 55,42.206 55,40 C55,37.794 56.794,36 59,36 M44.949,41 L53.09,41 C53.568,43.833 56.033,46 59,46 C62.309,46 65,43.309 65,40 C65,36.691 62.309,34 59,34 C56.033,34 53.568,36.167 53.09,39 L44.949,39 C44.823,37.099 44.344,35.297 43.572,33.654 L52.446,25.823 C53.442,26.559 54.669,27 56,27 C59.309,27 62,24.309 62,21 C62,17.691 59.309,15 56,15 C52.691,15 50,17.691 50,21 C50,22.256 50.389,23.421 51.051,24.386 L42.581,31.859 C39.904,27.738 35.271,25 30,25 C21.729,25 15,31.729 15,40 C15,48.271 21.729,55 30,55 C35.271,55 39.904,52.262 42.581,48.141 L51.051,55.614 C50.389,56.579 50,57.744 50,59 C50,62.309 52.691,65 56,65 C59.309,65 62,62.309 62,59 C62,55.691 59.309,53 56,53 C54.669,53 53.442,53.441 52.446,54.177 L43.572,46.346 C44.344,44.703 44.823,42.901 44.949,41" id="elb__Elastic-Load-Balancing_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="1200" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">internal ALB</text><text x="1200" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">public ACM cert</text>
+<rect x="1357.0" y="377.0" width="46" height="46" rx="8" fill="#4F46E5"/><path d="M1369 392 l9 8 l-9 8 M1379 392 l9 8 l-9 8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><text x="1380" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">LiteLLM</text><text x="1380" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">drop_params · routing</text>
+<g transform="translate(1517.00,377.00) scale(0.7188)">
+
+    
+    <g id="bedrock__Icon-Architecture/48/Arch_Amazon-Bedrock_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="bedrock__Icon-Architecture-BG/48/Machine-Learning" fill="#01A88D">
+            <rect id="bedrock__Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <g id="bedrock__Icon-Service/48/Amazon-Bedrock_48" transform="translate(10.000000, 10.000000)" fill="#FFFFFF">
+            <path d="M41,20.9998818 C40.448,20.9998818 40,20.5508818 40,19.9998818 C40,19.4488818 40.448,18.9998818 41,18.9998818 C41.552,18.9998818 42,19.4488818 42,19.9998818 C42,20.5508818 41.552,20.9998818 41,20.9998818 L41,20.9998818 Z M16.977,41.8478818 L13.774,40.1018818 L17.515,37.8568818 L16.485,36.1428818 L11.738,38.9908818 L7,36.4058818 L7,30.5658818 L11.515,27.8568818 L10.485,26.1428818 L6,28.8338818 L2,26.4338818 L2,22.6178818 L7.447,19.8948818 L6.553,18.1048818 L2,20.3818818 L2,17.6178818 L6.956,15.1398818 L11,17.5658818 L11,20.3818818 L7.553,22.1048818 L8.447,23.8948818 L12.003,22.1168818 L15.557,23.8768818 L16.443,22.0848818 L13,20.3798818 L13,17.5658818 L17.515,14.8568818 C17.815,14.6768818 18,14.3508818 18,13.9998818 L18,8.99988178 L16,8.99988178 L16,13.4338818 L12,15.8338818 L8,13.4338818 L8,6.58788178 L11,4.92188178 L11,10.9998818 L13,10.9998818 L13,3.81088178 L16.024,2.12988178 L21.002,4.61588178 L21.001,26.4498818 L10.463,33.1558818 L11.537,34.8438818 L21.001,28.8218818 L21,39.4338818 L16.977,41.8478818 Z M38,28.9998818 C38.552,28.9998818 39,29.4488818 39,29.9998818 C39,30.5508818 38.552,30.9998818 38,30.9998818 C37.448,30.9998818 37,30.5508818 37,29.9998818 C37,29.4488818 37.448,28.9998818 38,28.9998818 L38,28.9998818 Z M30,38.9998818 C29.448,38.9998818 29,38.5508818 29,37.9998818 C29,37.4488818 29.448,36.9998818 30,36.9998818 C30.552,36.9998818 31,37.4488818 31,37.9998818 C31,38.5508818 30.552,38.9998818 30,38.9998818 L30,38.9998818 Z M32,5.99988178 C32.552,5.99988178 33,6.44888178 33,6.99988178 C33,7.55088178 32.552,7.99988178 32,7.99988178 C31.448,7.99988178 31,7.55088178 31,6.99988178 C31,6.44888178 31.448,5.99988178 32,5.99988178 L32,5.99988178 Z M41,16.9998818 C39.698,16.9998818 38.598,17.8388818 38.184,18.9998818 L23.001,18.9998818 L23.001,14.9998818 L32,14.9998818 C32.553,14.9998818 33,14.5518818 33,13.9998818 L33,9.81588178 C34.161,9.40188178 35,8.30188178 35,6.99988178 C35,5.34588178 33.654,3.99988178 32,3.99988178 C30.346,3.99988178 29,5.34588178 29,6.99988178 C29,8.30188178 29.839,9.40188178 31,9.81588178 L31,12.9998818 L23.001,12.9998818 L23.002,3.99788178 C23.002,3.61888178 22.788,3.27288178 22.449,3.10388178 L16.447,0.104881781 C16.151,-0.0421182195 15.803,-0.0341182195 15.515,0.125881781 L6.515,5.12588178 C6.197,5.30188178 6,5.63688178 6,5.99988178 L6,13.3818818 L0.553,16.1048818 C0.214,16.2748818 0,16.6208818 0,16.9998818 L0,26.9998818 C0,27.3508818 0.185,27.6768818 0.485,27.8568818 L5,30.5658818 L5,36.9998818 C5,37.3658818 5.2,37.7028818 5.521,37.8778818 L16.521,43.8778818 C16.671,43.9588818 16.835,43.9998818 17,43.9998818 C17.179,43.9998818 17.356,43.9518818 17.515,43.8568818 L22.515,40.8568818 C22.815,40.6768818 23,40.3508818 23,39.9998818 L23,32.9998818 L29,32.9998818 L29,35.1838818 C27.839,35.5978818 27,36.6978818 27,37.9998818 C27,39.6538818 28.346,40.9998818 30,40.9998818 C31.654,40.9998818 33,39.6538818 33,37.9998818 C33,36.6978818 32.161,35.5978818 31,35.1838818 L31,31.9998818 C31,31.4478818 30.553,30.9998818 30,30.9998818 L23,30.9998818 L23.001,26.9998818 L33.586,26.9998818 L35.301,28.7148818 C35.113,29.1058818 35,29.5378818 35,29.9998818 C35,31.6538818 36.346,32.9998818 38,32.9998818 C39.654,32.9998818 41,31.6538818 41,29.9998818 C41,28.3458818 39.654,26.9998818 38,26.9998818 C37.538,26.9998818 37.106,27.1128818 36.715,27.3008818 L34.707,25.2928818 C34.52,25.1048818 34.266,24.9998818 34,24.9998818 L23.001,24.9998818 L23.001,20.9998818 L38.184,20.9998818 C38.598,22.1608818 39.698,22.9998818 41,22.9998818 C42.654,22.9998818 44,21.6538818 44,19.9998818 C44,18.3458818 42.654,16.9998818 41,16.9998818 L41,16.9998818 Z" id="bedrock__Fill-3"></path>
+        </g>
+    </g>
+</g><text x="1540" y="438" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Upstream models</text><text x="1540" y="451" text-anchor="middle" font-size="9.5" fill="#5A6B7B">Bedrock · others</text>
+<g transform="translate(307.00,167.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="iam__linearGradient-1">
+            <stop stop-color="#BD0816" offset="0%"></stop>
+            <stop stop-color="#FF5252" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="iam__Icon-Architecture/64/Arch_AWS-Identity-and-Access-Management_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="iam__Icon-Architecture-BG/64/Security-Identity-Compliance" fill="#DD344C">
+            <rect id="iam__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M14,59 L66,59 L66,21 L14,21 L14,59 Z M68,20 L68,60 C68,60.552 67.553,61 67,61 L13,61 C12.447,61 12,60.552 12,60 L12,20 C12,19.448 12.447,19 13,19 L67,19 C67.553,19 68,19.448 68,20 L68,20 Z M44,48 L59,48 L59,46 L44,46 L44,48 Z M57,42 L62,42 L62,40 L57,40 L57,42 Z M44,42 L52,42 L52,40 L44,40 L44,42 Z M29,46 C29,45.449 28.552,45 28,45 C27.448,45 27,45.449 27,46 C27,46.551 27.448,47 28,47 C28.552,47 29,46.551 29,46 L29,46 Z M31,46 C31,47.302 30.161,48.401 29,48.816 L29,51 L27,51 L27,48.815 C25.839,48.401 25,47.302 25,46 C25,44.346 26.346,43 28,43 C29.654,43 31,44.346 31,46 L31,46 Z M19,53.993 L36.994,54 L36.996,50 L33,50 L33,48 L36.996,48 L36.998,45 L33,45 L33,43 L36.999,43 L37,40.007 L19.006,40 L19,53.993 Z M22,38.001 L34,38.006 L34,31 C34.001,28.697 31.197,26.677 28,26.675 L27.996,26.675 C24.804,26.675 22.004,28.696 22.002,31 L22,38.001 Z M17,54.992 L17.006,39 C17.006,38.734 17.111,38.48 17.299,38.292 C17.486,38.105 17.741,38 18.006,38 L20,38.001 L20.002,31 C20.004,27.512 23.59,24.675 27.996,24.675 L28,24.675 C32.412,24.677 36.001,27.515 36,31 L36,38.007 L38,38.008 C38.553,38.008 39,38.456 39,39.008 L38.994,55 C38.994,55.266 38.889,55.52 38.701,55.708 C38.514,55.895 38.259,56 37.994,56 L18,55.992 C17.447,55.992 17,55.544 17,54.992 L17,54.992 Z M60,36 L62,36 L62,34 L60,34 L60,36 Z M44,36 L55,36 L55,34 L44,34 L44,36 Z" id="iam__AWS-Identity-and-Access-Management_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="330" y="228" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Backend · STS</text><text x="330" y="241" text-anchor="middle" font-size="9.5" fill="#5A6B7B">IRSA token → AssumeRoleWithWebIdentity</text>
+<g transform="translate(737.00,617.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="secretsmanager__linearGradient-1">
+            <stop stop-color="#BD0816" offset="0%"></stop>
+            <stop stop-color="#FF5252" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="secretsmanager__Icon-Architecture/64/Arch_AWS-Secrets-Manager_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="secretsmanager__Icon-Architecture-BG/64/Security-Identity-Compliance" fill="#DD344C">
+            <rect id="secretsmanager__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M38.76,43.36 C38.76,44.044 39.317,44.6 40,44.6 C40.684,44.6 41.24,44.044 41.24,43.36 C41.24,42.676 40.684,42.12 40,42.12 C39.317,42.12 38.76,42.676 38.76,43.36 L38.76,43.36 Z M36.76,43.36 C36.76,41.573 38.213,40.12 40,40.12 C41.787,40.12 43.24,41.573 43.24,43.36 C43.24,44.796 42.296,46.002 41,46.426 L41,49 L39,49 L39,46.426 C37.704,46.002 36.76,44.796 36.76,43.36 L36.76,43.36 Z M49,38 L31,38 L31,51 L49,51 L49,48 L46,48 L46,46 L49,46 L49,43 L46,43 L46,41 L49,41 L49,38 Z M34,36 L45.999,36 L46,31 C46.001,28.384 43.143,26.002 40.004,26 L40.001,26 C38.472,26 36.928,26.574 35.763,27.575 C34.643,28.537 34,29.786 34,31.001 L34,36 Z M48,31.001 L47.999,36 L50,36 C50.553,36 51,36.448 51,37 L51,52 C51,52.552 50.553,53 50,53 L30,53 C29.447,53 29,52.552 29,52 L29,37 C29,36.448 29.447,36 30,36 L32,36 L32,31 C32.001,29.202 32.897,27.401 34.459,26.058 C35.982,24.75 38.001,24 40.001,24 L40.004,24 C44.265,24.002 48.001,27.273 48,31.001 L48,31.001 Z M19.207,55.049 L20.828,53.877 C18.093,50.097 16.581,45.662 16.396,41 L19,41 L19,39 L16.399,39 C16.598,34.366 18.108,29.957 20.828,26.198 L19.207,25.025 C16.239,29.128 14.599,33.942 14.399,39 L12,39 L12,41 L14.396,41 C14.582,46.086 16.224,50.926 19.207,55.049 L19.207,55.049 Z M53.838,59.208 C50.069,61.936 45.648,63.446 41,63.639 L41,61 L39,61 L39,63.639 C34.352,63.447 29.93,61.937 26.159,59.208 L24.988,60.828 C29.1,63.805 33.928,65.445 39,65.639 L39,68 L41,68 L41,65.639 C46.072,65.445 50.898,63.805 55.01,60.828 L53.838,59.208 Z M26.159,20.866 C29.93,18.138 34.352,16.628 39,16.436 L39,19 L41,19 L41,16.436 C45.648,16.628 50.069,18.138 53.838,20.866 L55.01,19.246 C50.898,16.27 46.072,14.63 41,14.436 L41,12 L39,12 L39,14.436 C33.928,14.629 29.1,16.269 24.988,19.246 L26.159,20.866 Z M65.599,39 C65.399,33.942 63.759,29.128 60.79,25.025 L59.169,26.198 C61.89,29.957 63.4,34.366 63.599,39 L61,39 L61,41 L63.602,41 C63.416,45.662 61.905,50.097 59.169,53.877 L60.79,55.049 C63.774,50.926 65.415,46.086 65.602,41 L68,41 L68,39 L65.599,39 Z M56.386,25.064 L64.226,17.224 L62.812,15.81 L54.972,23.65 L56.386,25.064 Z M23.612,55.01 L15.772,62.85 L17.186,64.264 L25.026,56.424 L23.612,55.01 Z M28.666,27.253 L13.825,12.413 L12.411,13.827 L27.252,28.667 L28.666,27.253 Z M54.193,52.78 L67.586,66.173 L66.172,67.587 L52.779,54.194 L54.193,52.78 Z" id="secretsmanager__AWS-Secrets-Manager_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="760" y="678" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Token vault</text><text x="760" y="691" text-anchor="middle" font-size="9.5" fill="#5A6B7B">API-key provider · LiteLLM key</text>
+<g transform="translate(737.00,167.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="iam__linearGradient-1">
+            <stop stop-color="#BD0816" offset="0%"></stop>
+            <stop stop-color="#FF5252" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="iam__Icon-Architecture/64/Arch_AWS-Identity-and-Access-Management_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="iam__Icon-Architecture-BG/64/Security-Identity-Compliance" fill="#DD344C">
+            <rect id="iam__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M14,59 L66,59 L66,21 L14,21 L14,59 Z M68,20 L68,60 C68,60.552 67.553,61 67,61 L13,61 C12.447,61 12,60.552 12,60 L12,20 C12,19.448 12.447,19 13,19 L67,19 C67.553,19 68,19.448 68,20 L68,20 Z M44,48 L59,48 L59,46 L44,46 L44,48 Z M57,42 L62,42 L62,40 L57,40 L57,42 Z M44,42 L52,42 L52,40 L44,40 L44,42 Z M29,46 C29,45.449 28.552,45 28,45 C27.448,45 27,45.449 27,46 C27,46.551 27.448,47 28,47 C28.552,47 29,46.551 29,46 L29,46 Z M31,46 C31,47.302 30.161,48.401 29,48.816 L29,51 L27,51 L27,48.815 C25.839,48.401 25,47.302 25,46 C25,44.346 26.346,43 28,43 C29.654,43 31,44.346 31,46 L31,46 Z M19,53.993 L36.994,54 L36.996,50 L33,50 L33,48 L36.996,48 L36.998,45 L33,45 L33,43 L36.999,43 L37,40.007 L19.006,40 L19,53.993 Z M22,38.001 L34,38.006 L34,31 C34.001,28.697 31.197,26.677 28,26.675 L27.996,26.675 C24.804,26.675 22.004,28.696 22.002,31 L22,38.001 Z M17,54.992 L17.006,39 C17.006,38.734 17.111,38.48 17.299,38.292 C17.486,38.105 17.741,38 18.006,38 L20,38.001 L20.002,31 C20.004,27.512 23.59,24.675 27.996,24.675 L28,24.675 C32.412,24.677 36.001,27.515 36,31 L36,38.007 L38,38.008 C38.553,38.008 39,38.456 39,39.008 L38.994,55 C38.994,55.266 38.889,55.52 38.701,55.708 C38.514,55.895 38.259,56 37.994,56 L18,55.992 C17.447,55.992 17,55.544 17,54.992 L17,54.992 Z M60,36 L62,36 L62,34 L60,34 L60,36 Z M44,36 L55,36 L55,34 L44,34 L44,36 Z" id="iam__AWS-Identity-and-Access-Management_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="760" y="228" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">IAM authorizer</text><text x="760" y="241" text-anchor="middle" font-size="9.5" fill="#5A6B7B">session policy · Deny by session</text>
+<circle cx="425" cy="400" r="9" fill="#232F3E"/><text x="425" y="403" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">1</text>
+<circle cx="640" cy="400" r="9" fill="#232F3E"/><text x="640" y="403" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">2</text>
+<circle cx="885" cy="400" r="9" fill="#232F3E"/><text x="885" y="403" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">3</text>
+<circle cx="1105" cy="400" r="9" fill="#232F3E"/><text x="1105" y="403" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">4</text>
+<circle cx="1290" cy="400" r="9" fill="#232F3E"/><text x="1290" y="403" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">5</text>
+<text x="40" y="790" font-size="11" font-weight="700" fill="#16202E">Flows</text>
+<circle cx="92" cy="786" r="5" fill="#1D4ED8"/><text x="102" y="790" font-size="10.5" fill="#5A6B7B">request → (SSE streams back verbatim)</text>
+<circle cx="381" cy="786" r="5" fill="#0F766E"/><text x="391" y="790" font-size="10.5" fill="#5A6B7B">response ←</text>
+<circle cx="481" cy="786" r="5" fill="#0369A1"/><text x="491" y="790" font-size="10.5" fill="#5A6B7B">credentials</text>
+<circle cx="588" cy="786" r="5" fill="#94A3B8"/><text x="598" y="790" font-size="10.5" fill="#5A6B7B">authorization</text>
+<text x="40" y="812" font-size="10.5" fill="#48586a"><tspan font-weight="700" fill="#16202E">1–2  </tspan>The shim signs each call with the session's STS credential (session policy: InvokeGateway on this gateway only; revoke = IAM Deny on that session's aws:userid). With private DNS on the interface endpoint, *.gateway.bedrock-agentcore.&lt;region&gt; resolves to endpoint ENIs: no NAT, no URL change.</text>
+<text x="40" y="831" font-size="10.5" fill="#48586a"><tspan font-weight="700" fill="#16202E">3  </tspan>No protocol translation: the gateway matches path (/v1/messages, /v1/chat/completions, /v1/responses only) and the body's model, replaces Authorization with the vault-held LiteLLM key, and relays the body and SSE stream verbatim.</text>
+<text x="40" y="850" font-size="10.5" fill="#48586a"><tspan font-weight="700" fill="#16202E">4–5  </tspan>provider.endpoint = https://&lt;name on the public ACM cert&gt; (TLS SNI + Host)  ·  privateEndpoint.managedVpcResource.routingDomain = internal ALB DNS (where Lattice connects). The cert name needs no public DNS record.</text>
+<text x="40" y="869" font-size="10.5" fill="#48586a"><tspan font-weight="700" fill="#16202E">Limit  </tspan>Lattice closes TCP connections idle for 350 s and the gateway returns no error, so a non-streaming call slower than that hangs: stream instead (Claude Code and the SDK kernel do). LiteLLM drop_params strips first-party-only fields.</text>
+</svg>

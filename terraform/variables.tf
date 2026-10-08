@@ -230,6 +230,41 @@ variable "llm_edge_desired_count" {
   }
 }
 
+variable "enable_agentcore_gateway_backend" {
+  description = "Create the AgentCore Gateway + LiteLLM inference target and the per-session caller role for the 'agentcore_gateway' model backend (no key on the platform side; see docs/deployment.md Option A2). The LiteLLM key lives in an AgentCore Identity API-key credential provider created out of band."
+  type        = bool
+  default     = false
+}
+
+variable "agentcore_gateway_litellm_endpoint" {
+  description = "LiteLLM base URL for the inference target (https://...). With agentcore_gateway_private_endpoint set, the name on the internal ALB's publicly trusted certificate."
+  type        = string
+  default     = ""
+}
+
+variable "agentcore_gateway_credential_provider_arn" {
+  description = "AgentCore Identity API-key credential provider ARN holding the LiteLLM virtual key."
+  type        = string
+  default     = ""
+}
+
+variable "agentcore_gateway_models" {
+  description = "LiteLLM model names the inference target accepts (keep in line with the virtual key)."
+  type        = list(string)
+  default     = []
+}
+
+variable "agentcore_gateway_private_endpoint" {
+  description = "Reach LiteLLM through a managed VPC Lattice resource gateway: vpc_id/subnet_ids/security_group_ids for the ENIs in LiteLLM's VPC, routing_domain = internal ALB DNS. Null = over the internet."
+  type = object({
+    vpc_id             = string
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+    routing_domain     = string
+  })
+  default = null
+}
+
 variable "enable_team_auth" {
   description = "Optional enterprise-SSO demo: Keycloak + team APIs (requires team-auth images pushed)."
   type        = bool
@@ -251,6 +286,12 @@ variable "entry_desired_count" {
     condition     = var.entry_desired_count >= 1
     error_message = "entry_desired_count must be at least 1."
   }
+}
+
+variable "enable_gateway_vpce" {
+  description = "Interface VPC endpoint (private DNS) for AgentCore Gateway in the platform VPC, so runtime -> gateway traffic stays off the NAT path."
+  type        = bool
+  default     = false
 }
 
 variable "enable_mcp_hub_demo" {
