@@ -324,8 +324,12 @@ POST {ServiceEntryApiUrl}/service/v1/channels/<id>/invocations   (SigV4)
   {"message": "...", "conversation_id": "order-1234"}
   → 202 {"invocation_id": "...", "poll": "/service/v1/invocations/..."}
 GET  {ServiceEntryApiUrl}/service/v1/invocations/<invocation_id> (SigV4)
-  → {"status": "queued|running|succeeded|failed", "result": "...", ...}
+  → {"status": "queued|running|succeeded|failed", "result": "...", "result_truncated": false, ...}
 ```
+
+`result` holds at most 300,000 bytes of UTF-8, about 100,000 CJK characters.
+A longer answer is cut at that point and `result_truncated` is `true`. For
+large outputs, have the agent write to the workspace and return a reference.
 
 Invocation records are private to the submitting role, and the ledger
 attributes every call to the caller's role ARN. If the target agent uses

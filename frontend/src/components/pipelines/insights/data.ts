@@ -94,7 +94,7 @@ const isFull = (r: PipelineRun | PipelineRunSummary): r is PipelineRun => Array.
 
 export function toSummary(r: PipelineRun | PipelineRunSummary): RunSummary {
   const phases = isFull(r) ? phaseStats(r.agents) : r.phases || []
-  const agentsTotal = isFull(r) ? r.agents.length : r.agents_total ?? phases.reduce((s, p) => s + p.calls, 0)
+  const agentsTotal = r.agents_total ?? (isFull(r) ? r.agents.length : phases.reduce((s, p) => s + p.calls, 0))
   const result = r.result && typeof r.result === 'object' ? r.result : null
   const { counts, breakdowns } = splitCounts(result)
   const ms = r.started_at && r.finished_at ? new Date(r.finished_at).getTime() - new Date(r.started_at).getTime() : NaN
