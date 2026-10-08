@@ -9,6 +9,16 @@ class Settings(BaseSettings):
     # DynamoDB single table for sessions
     dynamo_table: str = "agent-platform"
 
+    # How long records are kept before DynamoDB TTL may delete them, in days
+    # (0 = keep forever). See app/services/retention.py. Credential rows
+    # (gateway grants, revocations, workspace tokens) follow their own expiry.
+    retention_ledger_days: int = 90  # invocation ledger (PK=INVOCATION)
+    retention_usage_days: int = 90  # daily quota counters (PK=USAGE)
+    retention_service_invocation_days: int = 7  # async service-entry results (PK=SVCINV)
+    retention_terminated_session_days: int = 30  # sessions after they are terminated
+    retention_audit_days: int = 0  # audit trail (PK=AUDIT)
+    retention_pipeline_run_days: int = 0  # pipeline runs (PK=PIPELINERUN)
+
     # AgentCore Runtime ARNs (outputs of the RuntimeStack)
     interactive_runtime_arn: str = ""
     sdk_runtime_arn: str = ""

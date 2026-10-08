@@ -38,6 +38,7 @@ import urllib.parse
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,7 @@ class LlmCredentialsService:
                     # replay the grant.
                     "token_sha256": _sha256(token),
                     "expires_at": expires_at,
+                    retention.TTL_ATTR: retention.ttl_after_expiry(expires_at),
                     "runtime_session_id": runtime_session_id,
                     "user": user,
                     "team": team,
@@ -334,6 +336,7 @@ class LlmCredentialsService:
                     # No token digest: the credential is an STS session, not a
                     # bearer value this table could be used to replay.
                     "expires_at": expires_at,
+                    retention.TTL_ATTR: retention.ttl_after_expiry(expires_at),
                     "runtime_session_id": runtime_session_id,
                     "user": user,
                     "team": team,
@@ -435,6 +438,8 @@ class LlmCredentialsService:
                     "PK": LLM_REVOKE_PK,
                     "SK": f"RSID#{runtime_session_id}",
                     "expires_at": expires_at,
+                    # A revocation only has to outlive the credential it denies.
+                    retention.TTL_ATTR: retention.ttl_after_expiry(expires_at),
                 }
             )
         except Exception:  # noqa: BLE001
@@ -561,9 +566,15 @@ class LlmCredentialsService:
         try:
             self.table.update_item(
                 Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"},
-                UpdateExpression="SET token_sha256 = :h, expires_at = :e",
+                # Rotation extends validity, so it must extend the row's TTL too.
+                UpdateExpression="SET token_sha256 = :h, expires_at = :e, #ttl = :ttl",
                 ConditionExpression="attribute_exists(PK)",
-                ExpressionAttributeValues={":h": _sha256(token), ":e": expires_at},
+                ExpressionAttributeNames={"#ttl": retention.TTL_ATTR},
+                ExpressionAttributeValues={
+                    ":h": _sha256(token),
+                    ":e": expires_at,
+                    ":ttl": retention.ttl_after_expiry(expires_at),
+                },
             )
         except Exception:
             # No grant for this session (never gateway-routed, or revoked).

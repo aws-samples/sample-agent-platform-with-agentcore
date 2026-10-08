@@ -16,6 +16,7 @@ from botocore.auth import SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 
 from app.config import runtime_arn, settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,22 @@ class SessionService:
         )
 
     def set_status(self, user: str, session_id: str, status: str) -> None:
+        update = "SET #s = :s, last_activity = :t"
+        names = {"#s": "status"}
+        values = {":s": status, ":t": _now()}
+        ttl = retention.ttl_after_days(settings.retention_terminated_session_days)
+        if status == "terminated" and ttl is not None:
+            # A terminated session is hidden from every listing; keep the row
+            # a while for support, then let TTL drop it. Workspace files in S3
+            # are not touched.
+            update += ", #ttl = :ttl"
+            names["#ttl"] = retention.TTL_ATTR
+            values[":ttl"] = ttl
         self.table.update_item(
             Key={"PK": f"USER#{user}", "SK": f"SESSION#{session_id}"},
-            UpdateExpression="SET #s = :s, last_activity = :t",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": status, ":t": _now()},
+            UpdateExpression=update,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
         )
 
     # ------------------------------------------------- terminal connectivity

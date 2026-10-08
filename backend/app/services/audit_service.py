@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +33,17 @@ class AuditService:
         action being audited."""
         try:
             ts = _now()
-            self.table.put_item(
-                Item={
-                    "PK": PK,
-                    "SK": f"{ts}#{uuid.uuid4().hex[:8]}",
-                    "ts": ts,
-                    "user": user,
-                    "action": action,
-                    "resource": resource[:300],
-                    "detail": detail[:500],
-                }
-            )
+            item = {
+                "PK": PK,
+                "SK": f"{ts}#{uuid.uuid4().hex[:8]}",
+                "ts": ts,
+                "user": user,
+                "action": action,
+                "resource": resource[:300],
+                "detail": detail[:500],
+            }
+            retention.with_ttl(item, retention.ttl_after_days(settings.retention_audit_days))
+            self.table.put_item(Item=item)
         except Exception:
             logger.exception("audit record failed: %s %s", action, resource)
 

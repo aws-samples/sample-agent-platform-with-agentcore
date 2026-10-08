@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ class ServiceInvocationService:
             "created_at": _now(),
             "updated_at": _now(),
         }
+        retention.with_ttl(item, retention.ttl_after_days(settings.retention_service_invocation_days))
         self.table.put_item(Item=item)
         _EXECUTOR.submit(
             self._run, channel_item, channel_id, inv_id, caller, message,

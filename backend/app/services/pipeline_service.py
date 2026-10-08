@@ -28,6 +28,7 @@ from decimal import Decimal
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +331,7 @@ class PipelineService:
         }
         if parent_run:
             item["parent_run"] = parent_run
+        retention.with_ttl(item, retention.ttl_after_days(settings.retention_pipeline_run_days))
         self.table.put_item(Item=item)
         return sk
 
