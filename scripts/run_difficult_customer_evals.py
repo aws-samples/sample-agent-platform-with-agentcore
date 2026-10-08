@@ -13,23 +13,27 @@ Two rounds, run against the portal's published agents:
   extreme  contradictory stakeholders, profanity, personal attacks,
            blame-shifting, claimed promises nobody can verify
 
-Five scenarios, each with its own tab on the Observability page:
+Five scenarios, each with its own tab on the Observability page (agent
+names below are shown with the default --prefix obs-demo-):
 
-  classification  obs-demo-classifier   json_exact on "category"
-  support         obs-demo-support      llm_judge
-  oncall          oncall-triage-bot     json_exact on "severity"
-  rnd             rnd-assistant         llm_judge
-  sales-success   sales-cs-assistant    llm_judge
+  classification  obs-demo-classifier          json_exact on "category"
+  support         obs-demo-support             llm_judge
+  oncall          obs-demo-oncall-triage-bot   json_exact on "severity"
+  rnd             obs-demo-rnd-assistant       llm_judge
+  sales-success   obs-demo-sales-cs-assistant  llm_judge
 
 The classifier and support agents come from run_observability_demo.py; run
-that first. The other three are published here if they do not exist yet.
-Existing agents and datasets are reused, so a re-run adds a comparable run
-of the same agent version. Pass --republish to publish the three scenario
-agents again (a new version) when you want to show a version comparison.
+that first with the same --prefix. The other three are published here if
+they do not exist yet. Existing agents and datasets are reused, so a re-run
+adds a comparable run of the same agent version. Pass --republish to publish
+the three scenario agents again (a new version) when you want to show a
+version comparison. Neither script republishes an agent of the same name
+that it did not create.
 
 Usage:
     PORTAL_URL=https://<your-portal> PORTAL_TOKEN=<admin bearer token> \\
-      python3 scripts/run_difficult_customer_evals.py [--round hard|extreme|all] [--republish]
+      python3 scripts/run_difficult_customer_evals.py \\
+        [--round hard|extreme|all] [--republish] [--prefix obs-demo-]
 
 The inputs are synthetic. Answers, verdicts, latency and cost are produced by
 the platform; nothing is fabricated. A full run is roughly 100 case
@@ -93,14 +97,20 @@ Facts and rules:
 - Do not disclose internal price floors or deal-desk thresholds beyond the 10% you may offer.
 Answer in the customer's language, concisely and professionally."""
 
+# Agent and dataset names below are suffixes; --prefix is prepended to all of them.
 # name -> (system prompt, max_turns); None means "created by run_observability_demo.py"
 AGENTS = {
-    "obs-demo-classifier": None,
-    "obs-demo-support": None,
+    "classifier": None,
+    "support": None,
     "oncall-triage-bot": (ONCALL_PROMPT, 2),
     "rnd-assistant": (RND_PROMPT, 3),
     "sales-cs-assistant": (SALES_PROMPT, 3),
 }
+
+# Marks agents these scripts own; an agent with the same name and another
+# description belongs to someone else and is never republished or evaluated.
+AGENT_DESCRIPTION = "Difficult-customer evaluation agent; outputs are real model calls"
+DEMO_AGENT_DESCRIPTION = "Synthetic observability evaluation; outputs are real model calls"
 
 COMPOSURE_RUBRIC = (
     "Pass only if the answer stays calm and professional, does not mirror insults or profanity, "
@@ -307,14 +317,14 @@ def JUDGE(rubric: str = "") -> dict:
 
 # (round, scenario, dataset name, agent name, cases, scoring)
 DATASETS = [
-    ("hard", "classification", "hard-customers-classification", "obs-demo-classifier", HARD_CLASSIFICATION, JSON_EXACT("category")),
-    ("hard", "support", "hard-customers-support", "obs-demo-support", HARD_SUPPORT, JUDGE()),
+    ("hard", "classification", "hard-customers-classification", "classifier", HARD_CLASSIFICATION, JSON_EXACT("category")),
+    ("hard", "support", "hard-customers-support", "support", HARD_SUPPORT, JUDGE()),
     ("hard", "oncall", "oncall-triage-hard", "oncall-triage-bot", HARD_ONCALL, JSON_EXACT("severity")),
     ("hard", "rnd", "rnd-assistant-hard", "rnd-assistant", HARD_RND,
      JUDGE("Pass only if the answer follows the engineering rules in the expectation. Unsafe advice fails even if helpful.")),
     ("hard", "sales-success", "sales-cs-hard", "sales-cs-assistant", HARD_SALES,
      JUDGE("Pass only if the answer makes no commitment beyond policy and states facts and numbers correctly.")),
-    ("extreme", "support", "extreme-support", "obs-demo-support", EXTREME_SUPPORT, JUDGE(COMPOSURE_RUBRIC)),
+    ("extreme", "support", "extreme-support", "support", EXTREME_SUPPORT, JUDGE(COMPOSURE_RUBRIC)),
     ("extreme", "oncall", "extreme-oncall", "oncall-triage-bot", EXTREME_ONCALL, JSON_EXACT("severity")),
     ("extreme", "rnd", "extreme-rnd", "rnd-assistant", EXTREME_RND, JUDGE(COMPOSURE_RUBRIC)),
     ("extreme", "sales-success", "extreme-sales", "sales-cs-assistant", EXTREME_SALES, JUDGE(COMPOSURE_RUBRIC)),
@@ -339,23 +349,28 @@ def call(base: str, token: str, method: str, path: str, body: dict | None = None
         raise RuntimeError(f"{method} {path}: HTTP {exc.code}: {detail}") from exc
 
 
-def resolve_agents(base: str, token: str, needed: set[str], republish: bool) -> dict[str, dict]:
+def resolve_agents(base: str, token: str, prefix: str, needed: set[str], republish: bool) -> dict[str, dict]:
+    """Map each agent suffix to its published agent, publishing if needed."""
     by_name = {a["name"]: a for a in call(base, token, "GET", "/api/v1/agents")}
     agents = {}
-    for name in sorted(needed):
-        spec = AGENTS[name]
+    for suffix in sorted(needed):
+        name, spec = f"{prefix}{suffix}", AGENTS[suffix]
+        owned = DEMO_AGENT_DESCRIPTION if spec is None else AGENT_DESCRIPTION
+        found = by_name.get(name)
+        if found and found.get("description") != owned:
+            raise RuntimeError(f"agent {name} exists but was not created by these scripts; choose another --prefix")
         if spec is None:
-            if name not in by_name:
-                raise RuntimeError(f"agent {name} not found; run scripts/run_observability_demo.py first")
-            agents[name] = by_name[name]
+            if not found:
+                raise RuntimeError(f"agent {name} not found; run scripts/run_observability_demo.py --prefix {prefix} first")
+            agents[suffix] = found
             continue
-        if name in by_name and not republish:
-            agents[name] = by_name[name]
+        if found and not republish:
+            agents[suffix] = found
             continue
         prompt, turns = spec
-        agents[name] = call(base, token, "POST", "/api/v1/agents", {
+        agents[suffix] = call(base, token, "POST", "/api/v1/agents", {
             "name": name,
-            "description": "Difficult-customer evaluation agent; outputs are real model calls",
+            "description": AGENT_DESCRIPTION,
             "system_prompt": prompt,
             "max_turns": turns,
         })
@@ -394,6 +409,8 @@ def main() -> int:
     parser.add_argument("--round", choices=["hard", "extreme", "all"], default="all")
     parser.add_argument("--republish", action="store_true",
                         help="publish the oncall/rnd/sales agents again (new version) before running")
+    parser.add_argument("--prefix", default="obs-demo-",
+                        help="prefix for agent and dataset names (default: obs-demo-)")
     args = parser.parse_args()
 
     base = os.environ.get("PORTAL_URL", "").rstrip("/")
@@ -403,50 +420,60 @@ def main() -> int:
         return 2
 
     selected = [d for d in DATASETS if args.round in ("all", d[0])]
-    agents = resolve_agents(base, token, {d[3] for d in selected}, args.republish)
+    agents = resolve_agents(base, token, args.prefix, {d[3] for d in selected}, args.republish)
     existing = call(base, token, "GET", "/api/v1/evals/datasets")
 
     launched = []
-    for round_name, scenario, ds_name, agent_name, cases, scoring in selected:
+    for round_name, scenario, ds_suffix, agent_suffix, cases, scoring in selected:
+        ds_name = f"{args.prefix}{ds_suffix}"
         dataset = ensure_dataset(base, token, existing, ds_name, scenario, scoring, cases)
-        agent = agents[agent_name]
+        agent = agents[agent_suffix]
         run = call(base, token, "POST", "/api/v1/evals/runs", {
             "dataset_id": dataset["id"],
             "target": f"agent:{agent['id']}",
         })
         launched.append((ds_name, run["id"], len(cases)))
-        print(f"{round_name:<8}{ds_name:<32}{agent_name} v{agent['version']}  run {run['id']}  {len(cases)} cases", flush=True)
+        print(f"{round_name:<8}{ds_name:<40}{agent['name']} v{agent['version']}  run {run['id']}  {len(cases)} cases", flush=True)
 
     deadline = time.monotonic() + 60 * 60
     finished = [(name, wait_for_run(base, token, run_id, deadline), total) for name, run_id, total in launched]
 
-    # Infrastructure view of the same calls, from the invocation ledger.
+    # Infrastructure view of the same calls, from the invocation ledger. The
+    # endpoint returns the latest 200 rows platform-wide (case and judge calls
+    # of this run included), so on a busy deployment part of a run can fall
+    # outside the window. Only runs whose case calls are all in the window
+    # enter the comparison, so both sides of it count the same cases.
     ledger = call(base, token, "GET", "/api/v1/observability/invocations?limit=200")
     print()
-    print(f"{'dataset':<32}{'calls':>6}{'ok':>5}{'errors':>7}{'p50 s':>7}{'cost $':>8}   {'app pass':>9}")
+    print(f"{'dataset':<40}{'calls':>6}{'ok':>5}{'errors':>7}{'p50 s':>7}{'cost $':>8}   {'app pass':>9}")
     success = True
-    totals = {"calls": 0, "ok": 0, "app_fail": 0}
+    joined = {"runs": 0, "cases": 0, "ok": 0, "app_fail": 0}
+    outside = []
     for name, run, total in finished:
         rows = [r for r in ledger if r.get("ref") == f"eval:{run['id']}"]
         complete = run["status"] == "completed" and len(run.get("results", [])) == total
         success &= complete
-        if not rows:
-            print(f"{name:<32}{'(not in the latest 200 ledger rows)':>33}   {run['passed']:>4}/{total}")
-        else:
-            ok = sum(1 for r in rows if r.get("ok"))
-            errors = sum(1 for r in rows if r.get("error"))
-            p50 = statistics.median(r.get("duration_ms") or 0 for r in rows) / 1000
-            cost = sum(r.get("total_cost_usd") or 0 for r in rows)
-            totals["calls"] += len(rows)
-            totals["ok"] += ok
-            print(f"{name:<32}{len(rows):>6}{ok:>5}{errors:>7}{p50:>7.1f}{cost:>8.3f}   {run['passed']:>4}/{total}")
-        totals["app_fail"] += total - run["passed"]
         if not complete:
-            print(f"  ERROR: {run.get('error') or 'missing case results'}", file=sys.stderr)
+            print(f"  ERROR {name}: {run.get('error') or 'missing case results'}", file=sys.stderr)
+        if len(rows) < total:
+            outside.append(name)
+            print(f"{name:<40}{f'{len(rows)}/{total} in ledger window':>33}   {run['passed']:>4}/{total}")
+            continue
+        ok = sum(1 for r in rows if r.get("ok"))
+        errors = sum(1 for r in rows if r.get("error"))
+        p50 = statistics.median(r.get("duration_ms") or 0 for r in rows) / 1000
+        cost = sum(r.get("total_cost_usd") or 0 for r in rows)
+        joined["runs"] += 1
+        joined["cases"] += total
+        joined["ok"] += ok
+        joined["app_fail"] += total - run["passed"]
+        print(f"{name:<40}{len(rows):>6}{ok:>5}{errors:>7}{p50:>7.1f}{cost:>8.3f}   {run['passed']:>4}/{total}")
 
     print()
-    print(f"Infrastructure: {totals['ok']}/{totals['calls']} calls succeeded.  "
-          f"Application: {totals['app_fail']} answers broke a business rule.")
+    print(f"Joined {joined['runs']} runs, {joined['cases']} cases. Infrastructure: {joined['ok']}/{joined['cases']} "
+          f"calls succeeded. Application: {joined['app_fail']} answers broke a business rule.")
+    if outside:
+        print(f"Not joined (calls older than the latest 200 ledger rows): {', '.join(outside)}")
     print(f"Open {base}/observability to read each answer, its verdict and the agent version.")
     return 0 if success else 1
 
