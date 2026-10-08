@@ -406,6 +406,16 @@ variable "mcp_tools_platform_version" {
   default     = "V1"
 }
 
+variable "runtime_log_retention_days" {
+  description = "Retention in days for the AgentCore runtimes' own log groups, which AgentCore creates with no expiry. They hold kernel stdout and, with agent_observability, full prompt and answer text. 0 leaves them unmanaged."
+  type        = number
+  default     = 30
+  validation {
+    condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.runtime_log_retention_days)
+    error_message = "runtime_log_retention_days must be 0 or a CloudWatch Logs retention value (1, 3, 5, 7, 14, 30, 60, 90, ...)."
+  }
+}
+
 variable "platform_version_python" {
   description = "Python interpreter Terraform uses to run scripts/set_platform_version.py (needs botocore >= 1.43.98)."
   type        = string

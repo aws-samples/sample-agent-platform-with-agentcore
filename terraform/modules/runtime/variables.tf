@@ -99,6 +99,12 @@ variable "platform_version_python" {
   default     = "python3"
 }
 
+variable "runtime_log_retention_days" {
+  description = "Retention in days for the runtimes' /aws/bedrock-agentcore/runtimes/<id>-DEFAULT log groups (kernel stdout, and prompt/answer event records when agent_observability is on). Must be a CloudWatch Logs retention value; 0 leaves the groups as AgentCore created them (never expire)."
+  type        = number
+  default     = 30
+}
+
 variable "deny_gateway_arns" {
   description = "Gateway ARNs (wildcards allowed) the kernel roles are explicitly denied, overriding their gateway/* InvokeGateway allow. Used for the agentcore_gateway model backend's inference gateway."
   type        = list(string)

@@ -101,6 +101,12 @@ event records in the runtime log group
 correlated by `spanId`; the kernel's stdout lines in the same group also carry
 `trace_id=… span_id=…`.
 
+AgentCore creates that log group with no retention. Terraform sets it to
+`runtime_log_retention_days`, 30 by default, once the runtime exists; the
+deploy-cli path reads `RUNTIME_LOG_RETENTION_DAYS`. With trace delivery on,
+this group holds full prompt and answer text, so choose the value with that
+in mind. The kernel's own log line records only the prompt length.
+
 ## Gotchas
 
 - **`llm.model_name` on the AGENT span can name the wrong model.** The

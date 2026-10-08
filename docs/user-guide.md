@@ -370,9 +370,11 @@ with source (debug / api / schedule / channel / eval), target, who ran it,
 latency, turns, cost and the error if it failed. Stat tiles summarize the
 recent window (success rate, average duration, total cost).
 
-This is the platform-side aggregate view. For span-level traces (per tool
-call, per model turn), the runtimes emit OTel data to CloudWatch GenAI
-Observability under `/aws/bedrock-agentcore/runtimes/*`.
+This is the platform-side aggregate view. For span-level traces, the headless
+kernel emits OTel data to CloudWatch GenAI Observability when trace delivery
+is enabled: one span per invocation with token and cost totals, plus one per
+tool call. Model calls inside an invocation do not get spans of their own
+(see [observability.md](observability.md#gotchas)).
 
 ## Evaluation
 

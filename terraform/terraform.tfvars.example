@@ -71,6 +71,11 @@ service_api_allowed_vpces = [] # e.g. ["vpce-0123456789abcdef0"]
 # mcp_tools_platform_version       = "V1"
 # platform_version_python          = "python3" # needs botocore >= 1.43.98
 
+# --- runtime logs -----------------------------------------------------------
+# AgentCore creates each runtime's log group with no expiry; it holds kernel
+# stdout and, with agent_observability, full prompt and answer text.
+# runtime_log_retention_days = 30   # 0 = leave as created
+
 # --- deploy staging ---------------------------------------------------------
 # Phase 1 (repos only):   enable_runtime = false, enable_portal = false
 # Phase 2: push images (scripts/build-and-push.sh)
