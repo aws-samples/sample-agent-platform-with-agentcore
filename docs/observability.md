@@ -165,12 +165,30 @@ the dashboard. Each dataset selects one of two scoring methods:
   response (for example `category` or `decision.intent`) and compares it
   exactly with the case's expected value. The dashboard counts expected and
   actual values, exact-match rate, invalid outputs and failures. It makes no
-  judge-model call.
+  judge-model call. Scores are only 0 or 10, so no mean score is shown.
 - **`llm_judge`** scores each answer against the case's expectation and an
   optional dataset rubric. The dashboard shows pass rate, mean score,
   low-score cases, full answers and reasons. Judge scores are screening
   signals; calibrate them against a small human-reviewed set before treating
   them as a quality target.
+
+`json_exact` is a strict contract. Dataset authors should know the rules:
+
+- The whole answer must parse as one JSON object. A surrounding Markdown
+  code fence is stripped; any other prose before or after the object makes
+  the answer an invalid output.
+- The field must be a string. Its value is trimmed and compared
+  **case-sensitively** with the trimmed expected value, so `Billing` fails
+  against `billing`. Write the expected values in the exact form the agent
+  is told to return.
+- A dotted `output_field` walks nested objects, up to four levels.
+
+The judge runs on the platform's own headless kernel with the same default
+model family as most agents under test. That keeps the sample free of extra
+dependencies, but the judge is not independent of what it grades and can
+share its blind spots. In the difficult-customer runs it passed an answer
+that invented a response deadline. Treat a pass as "nothing obviously wrong"
+and keep reviewing the stored answers.
 
 Users can create a custom scenario and choose its scoring contract in the
 **Evaluation** page. The equivalent API request is:
@@ -187,8 +205,13 @@ Users can create a custom scenario and choose its scoring contract in the
 The agent must then return a JSON object with `decision.intent`. A new
 scenario appears in Observability when its first evaluation run starts.
 For an LLM-judged scenario, use `method = llm_judge` and set `rubric` to the
-business-specific judging criteria. The original `classification` and
-`support` datasets still work without a `scoring` field.
+business-specific judging criteria.
+
+When `scoring` is omitted, the scenario name picks a default: `classification`
+becomes `json_exact` on `category`, and every other scenario becomes
+`llm_judge` with no rubric. The default keeps datasets created before
+scoring configuration working. Pass `scoring` explicitly for new datasets so
+the contract is visible in the request.
 
 This is the no-code extension path. For a new scoring algorithm, extend
 `EvalScoringConfig` in `backend/app/models/schemas.py`, the scoring dispatch
@@ -198,11 +221,17 @@ for exact JSON scoring and a score breakdown for judge scoring. A custom
 algorithm may also need a corresponding dashboard component. The platform
 does not execute arbitrary user-uploaded evaluator code.
 
-Each run captures the published agent's version and configured system prompt
-at start, together with the case prompts and actual answers. A version change
-while a run is executing fails the run so it cannot be presented as a
-single-version comparison. The dashboard compares completed runs of the
-**same dataset** and flags a drop in pass rate. This is an offline benchmark:
+Each run records the published agent's version at start, and the system
+prompt of that version is stored once and shared by every run of it. Each
+case's prompt, expectation, full answer and verdict is stored as its own item,
+so a run of 20 long multilingual cases stays well inside DynamoDB's item size
+limit. A version change while a run is executing fails the run so it cannot be
+presented as a single-version comparison.
+
+The dashboard compares completed runs of the **same dataset**. Every pass rate
+is shown with its sample size, because one case moves the rate of an 8-case
+dataset by over 12 points. A drop is flagged only when it amounts to at least
+two cases. This is an offline benchmark:
 the general invocation ledger still stores only a 200-character user-prompt
 preview and execution metrics. It has no automatic business label or
 production-conversation quality score.
@@ -218,16 +247,28 @@ python3 scripts/run_observability_demo.py
 
 For local open-auth development, omit `PORTAL_TOKEN`. The script publishes a
 classifier and a support agent, creates two reusable synthetic datasets,
-starts real AgentCore invocations, waits for scored results, and checks that
-the case calls landed in the invocation ledger. Re-running bumps the agents'
-versions and adds comparable runs to the same datasets. It does not fabricate
-predictions, answers, scores, token usage, latency, or cost. Model calls incur
-the platform's normal charges and quota.
+starts real AgentCore invocations, waits for scored results, and reports how
+many of the case calls it finds in the invocation ledger. Re-running bumps the
+agents' versions and adds comparable runs to the same datasets. It does not
+fabricate predictions, answers, scores, token usage, latency, or cost. Model
+calls incur the platform's normal charges and quota.
+
+Agent and dataset names start with `--prefix`, `obs-demo-` by default. An
+administrator can republish an agent another user published, so the script
+checks first: if an agent with one of its names exists and was not created
+by these scripts, it stops instead of overwriting it. Choose another prefix
+in that case.
+
+The ledger endpoint returns the latest 200 rows across the platform. On a
+deployment with other traffic, part of a run's calls can be older than that.
+The script then reports the count it found as "in window" rather than
+failing.
 
 ### Difficult-customer benchmarks
 
-`scripts/run_difficult_customer_evals.py` builds on the two demo agents
-and adds three more scenarios: `oncall` (severity triage, `json_exact` on
+`scripts/run_difficult_customer_evals.py` builds on the two demo agents (run
+the demo script first, with the same `--prefix`) and adds three more
+scenarios: `oncall` (severity triage, `json_exact` on
 `severity`), `rnd` (an engineering assistant) and `sales-success`. It runs
 96 adversarial cases in two rounds:
 
@@ -244,8 +285,10 @@ PORTAL_URL=https://<your-portal> PORTAL_TOKEN=<admin-bearer-token> \
 python3 scripts/run_difficult_customer_evals.py --round all
 ```
 
-The script ends by joining each run with the invocation ledger. The usual
-result is that every call succeeds at the infrastructure layer, with no
+The script ends by joining each run with the invocation ledger. Only runs
+whose case calls are all inside the ledger window enter the comparison, so
+the infrastructure count and the application count cover the same cases. The
+usual result is that every call succeeds at the infrastructure layer, with no
 errors and normal latency and cost. The evaluation layer still flags answers
 that broke a business rule, for example an upsell to a customer claiming
 compensation, a response deadline the policy never states, or a severity
