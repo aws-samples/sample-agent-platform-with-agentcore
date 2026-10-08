@@ -228,6 +228,16 @@ so a run of 20 long multilingual cases stays well inside DynamoDB's item size
 limit. A version change while a run is executing fails the run so it cannot be
 presented as a single-version comparison.
 
+Each case also records the execution facts of its own calls, the same ones
+the invocation ledger keeps: ok, duration, turns, cost and runtime session id,
+for the agent call and for the judge call. The run summary aggregates them
+when it ends. The page shows that infrastructure view next to the pass rate
+for the same cases, for example "20/20 agent calls returned ok, 6 of those
+answers broke the expectation", with no join against the ledger. The session
+id on a case is also the `session.id` on its kernel spans when trace delivery
+is enabled. A dataset's run history is read through its own index, so the
+previous run is found however many runs of other datasets came after it.
+
 The dashboard compares completed runs of the **same dataset**. Every pass rate
 is shown with its sample size, because one case moves the rate of an 8-case
 dataset by over 12 points. A drop is flagged only when it amounts to at least
@@ -285,11 +295,10 @@ PORTAL_URL=https://<your-portal> PORTAL_TOKEN=<admin-bearer-token> \
 python3 scripts/run_difficult_customer_evals.py --round all
 ```
 
-The script ends by joining each run with the invocation ledger. Only runs
-whose case calls are all inside the ledger window enter the comparison, so
-the infrastructure count and the application count cover the same cases. The
-usual result is that every call succeeds at the infrastructure layer, with no
-errors and normal latency and cost. The evaluation layer still flags answers
+The script ends by printing, for each run, the infrastructure view of its
+calls next to its pass rate. Both come from the run itself, so they always
+cover the same cases. The usual result is that every call succeeds at the
+infrastructure layer, with no errors and normal latency and cost. The evaluation layer still flags answers
 that broke a business rule, for example an upsell to a customer claiming
 compensation, a response deadline the policy never states, or a severity
 talked down by an angry message. That gap is what the page is for. Judge

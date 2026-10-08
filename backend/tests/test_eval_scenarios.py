@@ -233,8 +233,12 @@ class EvalStorageTests(unittest.TestCase):
 
         def invoke(**kwargs):
             if kwargs["target"] == "agent-sdk":
-                return {"ok": True, "result": '{"pass":true,"score":9,"reason":"ok"}'}
-            return {"ok": True, "result": "请联系人工客服。" * 2000}
+                return {"ok": True, "result": '{"pass":true,"score":9,"reason":"ok"}',
+                        "usage": {"duration_ms": 1500, "num_turns": 1, "total_cost_usd": 0.002},
+                        "runtime_session_id": "judge-sid"}
+            return {"ok": True, "result": "请联系人工客服。" * 2000,
+                    "usage": {"duration_ms": 9000, "num_turns": 2, "total_cost_usd": 0.0125},
+                    "runtime_session_id": "agent-sid"}
 
         invocation_module.invoke = invoke
         agent_module = types.ModuleType("app.services.agent_service")
@@ -281,6 +285,36 @@ class EvalStorageTests(unittest.TestCase):
         self.run_dataset()
         prompts = [k for k in self.service.table.items if k[0] == "AGENTPROMPT"]
         self.assertEqual(prompts, [("AGENTPROMPT", "ag1#V000003")])
+
+    def test_each_case_records_its_calls_and_the_run_aggregates_them(self):
+        run = self.run_dataset()
+        full = self.service.get_run(run["id"])
+        case = full["results"][0]
+        self.assertEqual(case["agent_call"], {
+            "ok": True, "duration_ms": 9000, "num_turns": 2, "cost_usd": 0.0125, "runtime_session_id": "agent-sid",
+        })
+        self.assertEqual(case["judge_call"]["runtime_session_id"], "judge-sid")
+        calls = full["calls"]
+        self.assertEqual((calls["agent_calls"], calls["agent_ok"], calls["judge_calls"]), (20, 20, 20))
+        self.assertEqual(calls["agent_duration_p50_ms"], 9000)
+        self.assertAlmostEqual(calls["agent_cost_usd"], 0.25)
+        self.assertAlmostEqual(calls["judge_cost_usd"], 0.04)
+        json.dumps(full)  # API-serialisable without a Decimal encoder
+
+    def test_dataset_history_is_independent_of_other_runs(self):
+        first = self.run_dataset()
+        self.service.table.put_item(Item={
+            "PK": "EVAL", "SK": "DS#other", "name": "other", "scenario": "support",
+            "scoring": {"method": "llm_judge", "output_field": "category", "rubric": ""},
+            "cases": [{"prompt": "x", "expected": "y"}],
+        })
+        for i in range(60):  # more than the 50-run window of list_runs
+            self.service.table.put_item(Item={"PK": "EVALRUN", "SK": f"9999-{i:03d}#o{i}", "run_id": f"o{i}",
+                                              "dataset_id": "other", "status": "completed"})
+        self.assertNotIn(first["id"], [r["id"] for r in self.service.list_runs(50)])
+        second = self.run_dataset()
+        history = self.service.list_dataset_runs("ds1")
+        self.assertEqual([r["id"] for r in history], [second["id"], first["id"]])
 
     def test_legacy_inline_run_is_still_readable(self):
         self.service.table.put_item(Item={

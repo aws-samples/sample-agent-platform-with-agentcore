@@ -33,6 +33,16 @@ def create_dataset(req: EvalDatasetCreateRequest, user: str = Depends(get_curren
     return ds
 
 
+@router.get("/datasets/{dataset_id}/runs")
+def list_dataset_runs(
+    dataset_id: str,
+    limit: int = Query(20, ge=1, le=50),
+    user: str = Depends(get_current_user),
+):
+    """Run summaries of one dataset, newest first (for version comparison)."""
+    return eval_service.list_dataset_runs(dataset_id, limit)
+
+
 @router.delete("/datasets/{dataset_id}")
 def delete_dataset(dataset_id: str, user: str = Depends(get_current_user)):
     if not eval_service.delete_dataset(dataset_id):

@@ -43,7 +43,6 @@ invocations plus about 60 judge calls, billed at the normal model rates.
 import argparse
 import json
 import os
-import statistics
 import sys
 import time
 import urllib.error
@@ -438,42 +437,31 @@ def main() -> int:
     deadline = time.monotonic() + 60 * 60
     finished = [(name, wait_for_run(base, token, run_id, deadline), total) for name, run_id, total in launched]
 
-    # Infrastructure view of the same calls, from the invocation ledger. The
-    # endpoint returns the latest 200 rows platform-wide (case and judge calls
-    # of this run included), so on a busy deployment part of a run can fall
-    # outside the window. Only runs whose case calls are all in the window
-    # enter the comparison, so both sides of it count the same cases.
-    ledger = call(base, token, "GET", "/api/v1/observability/invocations?limit=200")
+    # Infrastructure view of the same calls. Each case records its own call
+    # (ok, duration, cost, runtime session id) and the run aggregates them, so
+    # both sides of the comparison always cover exactly the same cases.
     print()
-    print(f"{'dataset':<40}{'calls':>6}{'ok':>5}{'errors':>7}{'p50 s':>7}{'cost $':>8}   {'app pass':>9}")
+    print(f"{'dataset':<40}{'calls':>6}{'ok':>5}{'p50 s':>7}{'cost $':>8}   {'app pass':>9}")
     success = True
-    joined = {"runs": 0, "cases": 0, "ok": 0, "app_fail": 0}
-    outside = []
+    totals = {"runs": 0, "calls": 0, "ok": 0, "ok_but_failed": 0}
     for name, run, total in finished:
-        rows = [r for r in ledger if r.get("ref") == f"eval:{run['id']}"]
         complete = run["status"] == "completed" and len(run.get("results", [])) == total
         success &= complete
         if not complete:
             print(f"  ERROR {name}: {run.get('error') or 'missing case results'}", file=sys.stderr)
-        if len(rows) < total:
-            outside.append(name)
-            print(f"{name:<40}{f'{len(rows)}/{total} in ledger window':>33}   {run['passed']:>4}/{total}")
-            continue
-        ok = sum(1 for r in rows if r.get("ok"))
-        errors = sum(1 for r in rows if r.get("error"))
-        p50 = statistics.median(r.get("duration_ms") or 0 for r in rows) / 1000
-        cost = sum(r.get("total_cost_usd") or 0 for r in rows)
-        joined["runs"] += 1
-        joined["cases"] += total
-        joined["ok"] += ok
-        joined["app_fail"] += total - run["passed"]
-        print(f"{name:<40}{len(rows):>6}{ok:>5}{errors:>7}{p50:>7.1f}{cost:>8.3f}   {run['passed']:>4}/{total}")
+        calls = run.get("calls") or {}
+        agent_calls, ok = calls.get("agent_calls", 0), calls.get("agent_ok", 0)
+        p50 = (calls.get("agent_duration_p50_ms") or 0) / 1000
+        cost = (calls.get("agent_cost_usd") or 0) + (calls.get("judge_cost_usd") or 0)
+        totals["runs"] += 1
+        totals["calls"] += agent_calls
+        totals["ok"] += ok
+        totals["ok_but_failed"] += ok - run["passed"]
+        print(f"{name:<40}{agent_calls:>6}{ok:>5}{p50:>7.1f}{cost:>8.3f}   {run['passed']:>4}/{total}")
 
     print()
-    print(f"Joined {joined['runs']} runs, {joined['cases']} cases. Infrastructure: {joined['ok']}/{joined['cases']} "
-          f"calls succeeded. Application: {joined['app_fail']} answers broke a business rule.")
-    if outside:
-        print(f"Not joined (calls older than the latest 200 ledger rows): {', '.join(outside)}")
+    print(f"{totals['runs']} runs. Infrastructure: {totals['ok']}/{totals['calls']} agent calls returned ok. "
+          f"Application: {totals['ok_but_failed']} of those answers broke a business rule.")
     print(f"Open {base}/observability to read each answer, its verdict and the agent version.")
     return 0 if success else 1
 

@@ -16,6 +16,15 @@ Storage keeps every item far below DynamoDB's 400 KB limit:
   answer, verdict). Cases are written once each, never rewritten.
 * ``PK=AGENTPROMPT, SK=<agent_id>#V<version>`` — the system prompt of a
   published agent version, written once and shared by every run of it.
+* ``PK=EVALDS#<dataset_id>, SK=<started_at>#<run_id>`` — one pointer per run,
+  so a dataset's full run history is one Query however many other runs exist.
+
+Each case also records the infrastructure view of its own calls (ok,
+duration, turns, cost, runtime session id for the agent call and the judge
+call), and the summary aggregates them when the run ends. Outcome and
+execution health of the same calls therefore sit on the same record, with no
+join against the invocation ledger; the session id links a case to its
+kernel spans.
 
 Runs written before this layout carry ``results`` and ``system_prompt`` on
 the summary item; :meth:`EvalService.get_run` still reads them.
@@ -28,6 +37,8 @@ import asyncio
 import json
 import logging
 import re
+import statistics
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -47,6 +58,54 @@ MAX_ANSWER_CHARS = 8000
 
 def _run_pk(run_id: str) -> str:
     return f"{PK_RUN}#{run_id}"
+
+
+def _dataset_runs_pk(dataset_id: str) -> str:
+    return f"EVALDS#{dataset_id}"
+
+
+def _plain(value):
+    """DynamoDB numbers come back as Decimal; return JSON-friendly numbers."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _call_metrics(res: dict, started: float) -> dict:
+    """The execution facts of one invocation, as the ledger would record them."""
+    usage = res.get("usage") or {}
+    cost = usage.get("total_cost_usd")
+    turns = usage.get("num_turns")
+    return {
+        "ok": bool(res.get("ok")),
+        "duration_ms": int(usage.get("duration_ms") or (time.monotonic() - started) * 1000),
+        "num_turns": int(turns) if turns is not None else None,
+        "cost_usd": Decimal(str(cost)) if cost is not None else None,
+        "runtime_session_id": str(res.get("runtime_session_id") or ""),
+    }
+
+
+def _calls_summary(results: list[dict]) -> dict:
+    """Aggregate the per-case call metrics onto the run summary."""
+    agent = [r["agent_call"] for r in results if r.get("agent_call")]
+    judge = [r["judge_call"] for r in results if r.get("judge_call")]
+
+    def cost(calls: list[dict]) -> Decimal:
+        return sum((c["cost_usd"] for c in calls if c.get("cost_usd") is not None), Decimal(0))
+
+    return {
+        "agent_calls": len(agent),
+        "agent_ok": sum(1 for c in agent if c["ok"]),
+        "agent_duration_p50_ms": int(statistics.median(c["duration_ms"] for c in agent)) if agent else None,
+        "agent_cost_usd": cost(agent),
+        "judge_calls": len(judge),
+        "judge_ok": sum(1 for c in judge if c["ok"]),
+        "judge_cost_usd": cost(judge),
+    }
 
 
 def _prompt_sk(agent_id: str, version: int) -> str:
@@ -231,6 +290,7 @@ class EvalService:
             "passed": int(item.get("passed", 0)),
             "total": int(item.get("total", 0)),
             "avg_score": float(item["avg_score"]) if "avg_score" in item else None,
+            "calls": _plain(item["calls"]) if item.get("calls") else None,
             "error": item.get("error", ""),
         }
 
@@ -257,6 +317,22 @@ class EvalService:
             item, results=self._case_rows(run_id), system_prompt=self._system_prompt_for(item),
         )
 
+    def list_dataset_runs(self, dataset_id: str, limit: int = 20) -> list[dict]:
+        """Run summaries of one dataset, newest first, independent of how many
+        runs other datasets have had since."""
+        resp = self.table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": _dataset_runs_pk(dataset_id)},
+            ScanIndexForward=False,
+            Limit=min(limit, 50),
+        )
+        out = []
+        for pointer in resp.get("Items", []):
+            item = self.table.get_item(Key={"PK": PK_RUN, "SK": pointer["SK"]}).get("Item")
+            if item:
+                out.append(self._run_public(item, results=[], system_prompt=""))
+        return out
+
     def _get_legacy_run(self, run_id: str) -> dict | None:
         # Runs written before per-case storage have no META pointer; their
         # results sit on the summary item. Look in the recent window only.
@@ -280,10 +356,7 @@ class EvalService:
         while True:
             resp = self.table.query(**kwargs)
             for item in resp.get("Items", []):
-                row = {k: v for k, v in item.items() if k not in ("PK", "SK")}
-                row["case"] = int(row.get("case", 0))
-                row["score"] = int(row.get("score", 0))
-                rows.append(row)
+                rows.append(_plain({k: v for k, v in item.items() if k not in ("PK", "SK")}))
             if "LastEvaluatedKey" not in resp:
                 return sorted(rows, key=lambda r: r["case"])
             kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
@@ -372,6 +445,7 @@ class EvalService:
         }
         self.table.put_item(Item=item)
         self.table.put_item(Item={"PK": _run_pk(run_id), "SK": "META", "run_sk": sk})
+        self.table.put_item(Item={"PK": _dataset_runs_pk(dataset_id), "SK": sk, "run_id": run_id})
         # fire-and-forget; progress lands in DDB. Requires a running event
         # loop, so the API route calling this must be ``async def`` (sync
         # routes run in a threadpool thread with no loop).
@@ -399,6 +473,7 @@ class EvalService:
                     current = agent_service.get_agent(target.partition(":")[2])
                     if not current or current["version"] != agent_version:
                         raise RuntimeError("agent version changed during evaluation")
+                started = time.monotonic()
                 answer_res = await asyncio.to_thread(
                     invoke,
                     user=user,
@@ -407,6 +482,8 @@ class EvalService:
                     prompt=case["prompt"],
                     ref=f"eval:{run_id}",
                 )
+                agent_call = _call_metrics(answer_res, started)
+                judge_call = None
                 if agent_version is not None:
                     current = agent_service.get_agent(target.partition(":")[2])
                     if not current or current["version"] != agent_version:
@@ -441,6 +518,7 @@ class EvalService:
                         f"Evaluation rubric:\n{scoring.get('rubric') or '(use expected outcome)'}\n\n"
                         f"Candidate answer:\n{answer or '(empty answer)'}"
                     )
+                    started = time.monotonic()
                     judge_res = await asyncio.to_thread(
                         invoke,
                         user=user,
@@ -451,6 +529,7 @@ class EvalService:
                         max_turns=1,
                         ref=f"eval-judge:{run_id}",
                     )
+                    judge_call = _call_metrics(judge_res, started)
                     verdict = (
                         _parse_verdict(judge_res.get("result") or "")
                         if judge_res.get("ok")
@@ -464,7 +543,10 @@ class EvalService:
                     "pass": verdict["pass"],
                     "score": verdict["score"],
                     "reason": verdict["reason"],
+                    "agent_call": agent_call,
                 }
+                if judge_call:
+                    row["judge_call"] = judge_call
                 if scoring["method"] == "json_exact":
                     row["predicted_value"] = predicted
                     row["expected_value"] = case["expected"].strip()
@@ -481,10 +563,13 @@ class EvalService:
                 status="completed",
                 finished_at=_now(),
                 avg_score=(sum(scores) / len(scores)) if scores else 0.0,
+                calls=_calls_summary(results),
             )
         except Exception as e:
             logger.exception("eval run failed: %s", sk)
-            self._update_run(sk, status="failed", finished_at=_now(), error=str(e)[:300])
+            self._update_run(
+                sk, status="failed", finished_at=_now(), error=str(e)[:300], calls=_calls_summary(results),
+            )
 
 
 eval_service = EvalService()

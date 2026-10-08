@@ -36,6 +36,7 @@ function isStructured(run: EvalRun | undefined): boolean {
 export default function ApplicationOutcomes({ refreshKey }: { refreshKey: number }) {
   const [runs, setRuns] = useState<EvalRun[]>([])
   const [detail, setDetail] = useState<EvalRun | null>(null)
+  const [datasetRuns, setDatasetRuns] = useState<EvalRun[]>([])
   const [scenario, setScenario] = useState('')
   const [runId, setRunId] = useState('')
   const [error, setError] = useState('')
@@ -64,6 +65,13 @@ export default function ApplicationOutcomes({ refreshKey }: { refreshKey: number
     api.getEvalRun(summary.id).then(setDetail).catch((e) => setError(String(e)))
   }, [summary?.id, summary?.evaluated, summary?.status])
 
+  // A dataset's own history, so the previous run is found however many runs
+  // of other datasets came after it.
+  useEffect(() => {
+    if (!summary) return setDatasetRuns([])
+    api.listDatasetRuns(summary.dataset_id).then(setDatasetRuns).catch(() => setDatasetRuns([]))
+  }, [summary?.dataset_id, summary?.status, refreshKey])
+
   const run = detail && summary && detail.id === summary.id ? detail : undefined
   const structured = isStructured(summary)
   const outputField = summary?.scoring?.output_field || 'category'
@@ -72,7 +80,10 @@ export default function ApplicationOutcomes({ refreshKey }: { refreshKey: number
   const passed = summary?.passed ?? 0
   const failedCases = results.filter((r) => !r.pass)
 
-  const history = choices.filter((r) => r.dataset_id === summary?.dataset_id).slice(0, 8)
+  const history = [...new Map(
+    [...datasetRuns, ...choices.filter((r) => r.dataset_id === summary?.dataset_id)].map((r) => [r.id, r]),
+  ).values()].sort((a, b) => b.started_at.localeCompare(a.started_at)).slice(0, 8)
+  const calls = run?.calls ?? summary?.calls ?? null
   const previous = history.find((r) =>
     summary && r.id !== summary.id && r.status === 'completed' && r.started_at < summary.started_at && r.evaluated > 0,
   )
@@ -154,6 +165,19 @@ export default function ApplicationOutcomes({ refreshKey }: { refreshKey: number
           </div>
           {summary.status === 'failed' && (
             <p className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">Run failed: {summary.error || 'unknown error'}</p>
+          )}
+
+          {calls && calls.agent_calls > 0 && (
+            <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <strong>Same calls, infrastructure view:</strong>{' '}
+              {calls.agent_ok}/{calls.agent_calls} agent calls returned ok
+              {calls.agent_duration_p50_ms != null && ` · median ${(calls.agent_duration_p50_ms / 1000).toFixed(1)}s`}
+              {` · $${calls.agent_cost_usd.toFixed(4)}`}
+              {calls.judge_calls > 0 && ` (+ ${calls.judge_calls} judge calls, $${calls.judge_cost_usd.toFixed(4)})`}.{' '}
+              {calls.agent_ok > passed
+                ? <span className="font-medium text-amber-800">{calls.agent_ok - passed} of the answers that returned ok broke the expectation.</span>
+                : 'Every answer that returned ok also passed.'}
+            </div>
           )}
 
           <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -265,6 +289,14 @@ export default function ApplicationOutcomes({ refreshKey }: { refreshKey: number
                     {structured && <p><strong>{outputField}:</strong> {row.predicted_value || row.predicted_label || INVALID}</p>}
                     <p className="whitespace-pre-wrap"><strong>Answer:</strong> {row.answer || '(empty answer)'}</p>
                     <p><strong>Verdict:</strong> {row.reason}</p>
+                    {row.agent_call && (
+                      <p className="text-slate-500">
+                        <strong>Call:</strong> {row.agent_call.ok ? 'ok' : 'failed'} · {(row.agent_call.duration_ms / 1000).toFixed(1)}s
+                        {row.agent_call.num_turns != null && ` · ${row.agent_call.num_turns} turns`}
+                        {row.agent_call.cost_usd != null && ` · $${row.agent_call.cost_usd.toFixed(4)}`}
+                        {row.agent_call.runtime_session_id && <> · session <span className="font-mono">{row.agent_call.runtime_session_id}</span></>}
+                      </p>
+                    )}
                   </div>
                 </details>
               ))}

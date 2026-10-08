@@ -193,6 +193,15 @@ export interface EvalDataset {
   created_at: string
 }
 
+/** Execution facts of one invocation, as the invocation ledger records them. */
+export interface EvalCallMetrics {
+  ok: boolean
+  duration_ms: number
+  num_turns: number | null
+  cost_usd: number | null
+  runtime_session_id: string
+}
+
 export interface EvalRun {
   id: string
   dataset_id: string
@@ -219,7 +228,19 @@ export interface EvalRun {
     expected_label?: string
     predicted_value?: string
     expected_value?: string
+    agent_call?: EvalCallMetrics
+    judge_call?: EvalCallMetrics
   }[]
+  /** set when the run ends: the infrastructure view of the same calls */
+  calls: {
+    agent_calls: number
+    agent_ok: number
+    agent_duration_p50_ms: number | null
+    agent_cost_usd: number
+    judge_calls: number
+    judge_ok: number
+    judge_cost_usd: number
+  } | null
   /** cases scored so far; `results` is only filled by getEvalRun */
   evaluated: number
   passed: number
@@ -574,6 +595,8 @@ export const api = {
   deleteEvalDataset: (id: string) => request<{ ok: boolean }>(`/api/v1/evals/datasets/${id}`, { method: 'DELETE' }),
   listEvalRuns: (limit = 20) => request<EvalRun[]>(`/api/v1/evals/runs?limit=${limit}`),
   getEvalRun: (id: string) => request<EvalRun>(`/api/v1/evals/runs/${id}`),
+  listDatasetRuns: (datasetId: string, limit = 20) =>
+    request<EvalRun[]>(`/api/v1/evals/datasets/${datasetId}/runs?limit=${limit}`),
   startEvalRun: (body: { dataset_id: string; target: string }) =>
     request<EvalRun>('/api/v1/evals/runs', { method: 'POST', body: JSON.stringify(body) }),
 
