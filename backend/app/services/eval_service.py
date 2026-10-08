@@ -4,8 +4,21 @@ Datasets (``PK=EVAL``) hold up to :data:`MAX_CASES` cases inline — each a
 prompt plus free-text expectation. A *run* executes every case against a
 chosen target (kernel or published agent) through the invocation pipeline.
 JSON field datasets use deterministic exact-match scoring; other datasets ask
-the same headless kernel to act as a strict judge. Runs (``PK=EVALRUN``) update
-progressively so the portal can poll while a run executes in the background.
+the same headless kernel to act as a strict judge.
+
+Storage keeps every item far below DynamoDB's 400 KB limit:
+
+* ``PK=EVALRUN, SK=<started_at>#<run_id>`` — the run summary (status, counts,
+  agent version). Small, so listing recent runs stays one cheap Query page.
+* ``PK=EVALRUN#<run_id>`` — the run's own partition: ``SK=META`` points back
+  at the summary's sort key (lookup by id without a scan) and
+  ``SK=CASE#<idx>`` holds one case's full evidence (prompt, expectation,
+  answer, verdict). Cases are written once each, never rewritten.
+* ``PK=AGENTPROMPT, SK=<agent_id>#V<version>`` — the system prompt of a
+  published agent version, written once and shared by every run of it.
+
+Runs written before this layout carry ``results`` and ``system_prompt`` on
+the summary item; :meth:`EvalService.get_run` still reads them.
 
 Judging with the platform's own kernel keeps the sample dependency-free; the
 judge system prompt pins the output to a JSON verdict for parsing.
@@ -27,7 +40,17 @@ logger = logging.getLogger(__name__)
 
 PK_DS = "EVAL"
 PK_RUN = "EVALRUN"
+PK_PROMPT = "AGENTPROMPT"
 MAX_CASES = 20
+MAX_ANSWER_CHARS = 8000
+
+
+def _run_pk(run_id: str) -> str:
+    return f"{PK_RUN}#{run_id}"
+
+
+def _prompt_sk(agent_id: str, version: int) -> str:
+    return f"{agent_id}#V{int(version):06d}"
 
 JUDGE_SYSTEM = (
     "You are a strict evaluation judge. You receive a task prompt, the expected "
@@ -48,7 +71,7 @@ def _parse_verdict(text: str) -> dict:
         try:
             v = json.loads(match.group(0))
             if not isinstance(v, dict) or not isinstance(v.get("pass"), bool):
-                raise ValueError("judge pass must be a boolean")
+                raise TypeError("judge pass must be a boolean")
             return {
                 "pass": v["pass"],
                 "score": max(0, min(10, int(v.get("score", 0)))),
@@ -182,7 +205,13 @@ class EvalService:
     # ---------------------------------------------------------------- runs
 
     @staticmethod
-    def _run_public(item: dict) -> dict:
+    def _run_public(item: dict, results: list[dict] | None = None, system_prompt: str | None = None) -> dict:
+        """Summary fields always; ``results``/``system_prompt`` only when given.
+
+        Legacy items (pre per-case storage) carry both inline; they are used
+        when the caller does not pass the new-layout values.
+        """
+        inline = item.get("results", [])
         return {
             "id": item.get("run_id", ""),
             "dataset_id": item.get("dataset_id", ""),
@@ -192,12 +221,13 @@ class EvalService:
             "synthetic": bool(item.get("synthetic", False)),
             "target": item.get("target", ""),
             "agent_version": int(item["agent_version"]) if item.get("agent_version") is not None else None,
-            "system_prompt": item.get("system_prompt", ""),
+            "system_prompt": system_prompt if system_prompt is not None else item.get("system_prompt", ""),
             "status": item.get("status", ""),
             "started_by": item.get("started_by", ""),
             "started_at": item.get("started_at", ""),
             "finished_at": item.get("finished_at", ""),
-            "results": item.get("results", []),
+            "results": results if results is not None else inline,
+            "evaluated": int(item["evaluated"]) if "evaluated" in item else len(inline),
             "passed": int(item.get("passed", 0)),
             "total": int(item.get("total", 0)),
             "avg_score": float(item["avg_score"]) if "avg_score" in item else None,
@@ -205,20 +235,88 @@ class EvalService:
         }
 
     def list_runs(self, limit: int = 20) -> list[dict]:
+        """Recent run summaries, newest first. Case evidence and the system
+        prompt are not included; fetch one run with :meth:`get_run`."""
         resp = self.table.query(
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={":pk": PK_RUN},
             ScanIndexForward=False,
             Limit=min(limit, 50),
         )
-        return [self._run_public(i) for i in resp.get("Items", [])]
+        return [self._run_public(i, results=[], system_prompt="") for i in resp.get("Items", [])]
 
     def get_run(self, run_id: str) -> dict | None:
-        # SK is ts#id; scan the recent window for the id (sample-scale volumes)
-        for run in self.list_runs(50):
-            if run["id"] == run_id:
-                return run
+        """One run with every case's evidence and the agent's system prompt."""
+        meta = self.table.get_item(Key={"PK": _run_pk(run_id), "SK": "META"}).get("Item")
+        if not meta:
+            return self._get_legacy_run(run_id)
+        item = self.table.get_item(Key={"PK": PK_RUN, "SK": meta["run_sk"]}).get("Item")
+        if not item:
+            return None
+        return self._run_public(
+            item, results=self._case_rows(run_id), system_prompt=self._system_prompt_for(item),
+        )
+
+    def _get_legacy_run(self, run_id: str) -> dict | None:
+        # Runs written before per-case storage have no META pointer; their
+        # results sit on the summary item. Look in the recent window only.
+        resp = self.table.query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": PK_RUN},
+            ScanIndexForward=False,
+            Limit=50,
+        )
+        for item in resp.get("Items", []):
+            if item.get("run_id") == run_id:
+                return self._run_public(item)
         return None
+
+    def _case_rows(self, run_id: str) -> list[dict]:
+        rows: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :p)",
+            "ExpressionAttributeValues": {":pk": _run_pk(run_id), ":p": "CASE#"},
+        }
+        while True:
+            resp = self.table.query(**kwargs)
+            for item in resp.get("Items", []):
+                row = {k: v for k, v in item.items() if k not in ("PK", "SK")}
+                row["case"] = int(row.get("case", 0))
+                row["score"] = int(row.get("score", 0))
+                rows.append(row)
+            if "LastEvaluatedKey" not in resp:
+                return sorted(rows, key=lambda r: r["case"])
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    def _system_prompt_for(self, item: dict) -> str:
+        target = item.get("target", "")
+        version = item.get("agent_version")
+        if not target.startswith("agent:") or version is None:
+            return item.get("system_prompt", "")
+        snap = self.table.get_item(
+            Key={"PK": PK_PROMPT, "SK": _prompt_sk(target.partition(":")[2], version)}
+        ).get("Item")
+        return (snap or {}).get("system_prompt", item.get("system_prompt", ""))
+
+    def _snapshot_prompt(self, agent_id: str, version: int, system_prompt: str) -> None:
+        """Store a version's system prompt once; later runs of it reuse it."""
+        from botocore.exceptions import ClientError
+
+        try:
+            self.table.put_item(
+                Item={
+                    "PK": PK_PROMPT,
+                    "SK": _prompt_sk(agent_id, version),
+                    "agent_id": agent_id,
+                    "version": int(version),
+                    "system_prompt": system_prompt,
+                    "captured_at": _now(),
+                },
+                ConditionExpression="attribute_not_exists(SK)",
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
 
     def _update_run(self, sk: str, **fields) -> None:
         # Alias every attribute name: "status" and "error" are DynamoDB
@@ -253,6 +351,7 @@ class EvalService:
                 raise KeyError("agent not found")
             agent_version = agent["version"]
             system_prompt = agent["system_prompt"]
+            self._snapshot_prompt(target.partition(":")[2], agent_version, system_prompt)
         item = {
             "PK": PK_RUN,
             "SK": sk,
@@ -264,15 +363,15 @@ class EvalService:
             "synthetic": bool(ds.get("synthetic", False)),
             "target": target,
             "agent_version": agent_version,
-            "system_prompt": system_prompt,
             "status": "running",
             "started_by": user,
             "started_at": _now(),
-            "results": [],
+            "evaluated": 0,
             "passed": 0,
             "total": len(ds.get("cases", [])),
         }
         self.table.put_item(Item=item)
+        self.table.put_item(Item={"PK": _run_pk(run_id), "SK": "META", "run_sk": sk})
         # fire-and-forget; progress lands in DDB. Requires a running event
         # loop, so the API route calling this must be ``async def`` (sync
         # routes run in a threadpool thread with no loop).
@@ -281,7 +380,7 @@ class EvalService:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return self._run_public(item)
+        return self._run_public(item, results=[], system_prompt=system_prompt)
 
     async def _execute(
         self, sk: str, user: str, ds: dict, target: str, agent_version: int | None = None,
@@ -361,7 +460,7 @@ class EvalService:
                     "case": idx,
                     "prompt": case["prompt"],
                     "expected": case["expected"],
-                    "answer": answer[:8000],
+                    "answer": answer[:MAX_ANSWER_CHARS],
                     "pass": verdict["pass"],
                     "score": verdict["score"],
                     "reason": verdict["reason"],
@@ -370,9 +469,10 @@ class EvalService:
                     row["predicted_value"] = predicted
                     row["expected_value"] = case["expected"].strip()
                 results.append(row)
+                self.table.put_item(Item={"PK": _run_pk(run_id), "SK": f"CASE#{idx:03d}", **row})
                 self._update_run(
                     sk,
-                    results=results,
+                    evaluated=len(results),
                     passed=sum(1 for r in results if r["pass"]),
                 )
             scores = [r["score"] for r in results]

@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import json
 import sys
 import types
 import unittest
@@ -9,21 +10,53 @@ from pathlib import Path
 from unittest.mock import patch
 
 import boto3
+from botocore.exceptions import ClientError
+
+RUN_SK = "ts#run1"
+RUN_ID = "run1"
 
 
 class FakeTable:
+    """Just enough of a DynamoDB Table: items keyed by (PK, SK), the Query
+    shapes eval_service uses, conditional puts, and SET updates."""
+
     def __init__(self):
-        self.fields = {}
-        self.item = None
+        self.items: dict[tuple[str, str], dict] = {}
+        self.item = None  # last put, for dataset assertions
 
     def put_item(self, **kwargs):
-        self.item = kwargs["Item"]
+        item = kwargs["Item"]
+        key = (item["PK"], item["SK"])
+        if kwargs.get("ConditionExpression") == "attribute_not_exists(SK)" and key in self.items:
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+        self.items[key] = dict(item)
+        self.item = item
+
+    def get_item(self, **kwargs):
+        key = (kwargs["Key"]["PK"], kwargs["Key"]["SK"])
+        return {"Item": dict(self.items[key])} if key in self.items else {}
 
     def update_item(self, **kwargs):
+        key = (kwargs["Key"]["PK"], kwargs["Key"]["SK"])
         names = kwargs["ExpressionAttributeNames"]
         values = kwargs["ExpressionAttributeValues"]
+        item = self.items.setdefault(key, {"PK": key[0], "SK": key[1]})
         for index in range(len(names)):
-            self.fields[names[f"#f{index}"]] = values[f":v{index}"]
+            item[names[f"#f{index}"]] = values[f":v{index}"]
+
+    def query(self, **kwargs):
+        values = kwargs["ExpressionAttributeValues"]
+        prefix = values.get(":p", "")
+        rows = [dict(v) for (pk, sk), v in self.items.items() if pk == values[":pk"] and sk.startswith(prefix)]
+        rows.sort(key=lambda r: r["SK"], reverse=not kwargs.get("ScanIndexForward", True))
+        return {"Items": rows[: kwargs["Limit"]] if "Limit" in kwargs else rows}
+
+    # helpers for assertions
+    def summary(self):
+        return self.items[("EVALRUN", RUN_SK)]
+
+    def cases(self):
+        return [v for (pk, sk), v in sorted(self.items.items()) if pk == f"EVALRUN#{RUN_ID}" and sk.startswith("CASE#")]
 
 
 def load_eval_module():
@@ -50,6 +83,7 @@ class EvalScenarioTests(unittest.TestCase):
     def setUp(self):
         self.service = self.module.EvalService.__new__(self.module.EvalService)
         self.service.table = FakeTable()
+        self.service._tasks = set()
 
     def execute(self, dataset, invoke, *, agent_version=None, agent_service=None):
         invocation_module = types.ModuleType("app.services.invocation_service")
@@ -66,9 +100,10 @@ class EvalScenarioTests(unittest.TestCase):
             self.module.asyncio, "to_thread", call_direct
         ):
             asyncio.run(self.service._execute(
-                "ts#run1", "tester", dataset, "agent:demo", agent_version=agent_version,
+                RUN_SK, "tester", dataset, "agent:demo", agent_version=agent_version,
             ))
-        return self.service.table.fields
+        table = self.service.table
+        return {**table.summary(), "results": table.cases()}
 
     def test_category_contract(self):
         parse = self.module._parse_category
@@ -172,6 +207,90 @@ class EvalScenarioTests(unittest.TestCase):
             )
         self.assertEqual(fields["status"], "failed")
         self.assertIn("version changed", fields["error"])
+
+
+class EvalStorageTests(unittest.TestCase):
+    """Run evidence is stored per case so no item nears the 400 KB limit."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_eval_module()
+
+    def setUp(self):
+        self.service = self.module.EvalService.__new__(self.module.EvalService)
+        self.service.table = FakeTable()
+        self.service._tasks = set()
+        self.agent = {"id": "ag1", "version": 3, "system_prompt": "You classify. " * 1500}
+        self.agents = types.SimpleNamespace(get_agent=lambda agent_id: dict(self.agent))
+        self.service.table.put_item(Item={
+            "PK": "EVAL", "SK": "DS#ds1", "name": "cjk", "scenario": "support",
+            "scoring": {"method": "llm_judge", "output_field": "category", "rubric": ""},
+            "cases": [{"prompt": "退款" * 1000, "expected": "转人工" * 300} for _ in range(20)],
+        })
+
+    def run_dataset(self):
+        invocation_module = types.ModuleType("app.services.invocation_service")
+
+        def invoke(**kwargs):
+            if kwargs["target"] == "agent-sdk":
+                return {"ok": True, "result": '{"pass":true,"score":9,"reason":"ok"}'}
+            return {"ok": True, "result": "请联系人工客服。" * 2000}
+
+        invocation_module.invoke = invoke
+        agent_module = types.ModuleType("app.services.agent_service")
+        agent_module.agent_service = self.agents
+
+        async def call_direct(function, **kwargs):
+            return function(**kwargs)
+
+        async def go():
+            run = self.service.start_run(user="tester", dataset_id="ds1", target="agent:ag1")
+            await asyncio.gather(*self.service._tasks)
+            return run
+
+        with patch.dict(sys.modules, {
+            "app.services.invocation_service": invocation_module,
+            "app.services.agent_service": agent_module,
+        }), patch.object(self.module.asyncio, "to_thread", call_direct):
+            return asyncio.run(go())
+
+    def test_worst_case_cjk_run_keeps_every_item_small(self):
+        run = self.run_dataset()
+        self.assertEqual(run["status"], "running")
+        sizes = {key: len(json.dumps(item, ensure_ascii=False, default=str).encode()) for key, item in self.service.table.items.items()}
+        # The dataset item holds the inputs (unchanged layout, ~180 KB at most);
+        # every run-side item stays small no matter how long the answers are.
+        self.assertLess(max(sizes.values()), 400_000)
+        self.assertLess(max(v for k, v in sizes.items() if k[0] != "EVAL"), 40_000)
+        summary = next(v for (pk, _), v in self.service.table.items.items() if pk == "EVALRUN")
+        self.assertNotIn("results", summary)
+        self.assertNotIn("system_prompt", summary)
+        self.assertEqual((summary["status"], summary["evaluated"], summary["passed"]), ("completed", 20, 20))
+
+    def test_get_run_by_id_returns_full_evidence_and_prompt(self):
+        run = self.run_dataset()
+        full = self.service.get_run(run["id"])
+        self.assertEqual(len(full["results"]), 20)
+        self.assertEqual(full["results"][0]["answer"], ("请联系人工客服。" * 2000)[:8000])
+        self.assertEqual(full["system_prompt"], self.agent["system_prompt"])
+        listed = self.service.list_runs(50)
+        self.assertEqual((listed[0]["results"], listed[0]["system_prompt"], listed[0]["evaluated"]), ([], "", 20))
+
+    def test_prompt_snapshot_is_stored_once_per_version(self):
+        self.run_dataset()
+        self.run_dataset()
+        prompts = [k for k in self.service.table.items if k[0] == "AGENTPROMPT"]
+        self.assertEqual(prompts, [("AGENTPROMPT", "ag1#V000003")])
+
+    def test_legacy_inline_run_is_still_readable(self):
+        self.service.table.put_item(Item={
+            "PK": "EVALRUN", "SK": "2026-01-01#old1", "run_id": "old1", "status": "completed",
+            "system_prompt": "legacy prompt", "passed": 1, "total": 1,
+            "results": [{"case": 0, "prompt": "p", "expected": "e", "answer": "a", "pass": True, "score": 10, "reason": "r"}],
+        })
+        run = self.service.get_run("old1")
+        self.assertEqual((run["evaluated"], run["system_prompt"], len(run["results"])), (1, "legacy prompt", 1))
+        self.assertIsNone(self.service.get_run("missing"))
 
 
 if __name__ == "__main__":

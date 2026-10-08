@@ -27,11 +27,19 @@ export default function EvalPage() {
   // run form
   const [runTarget, setRunTarget] = useState('agent-sdk')
   const [startingId, setStartingId] = useState('')
+  const [details, setDetails] = useState<Record<string, EvalRun>>({})
+  const detailsRef = useRef(details)
+  detailsRef.current = details
 
   const refresh = () => {
     api.listEvalDatasets().then(setDatasets).catch((e) => setError(String(e)))
     api.listEvalRuns().then((rs) => {
       setRuns(rs)
+      // refresh the evidence of a loaded run while it is still scoring
+      for (const r of rs) {
+        const shown = detailsRef.current[r.id]
+        if (shown && shown.evaluated !== r.evaluated) loadDetail(r.id)
+      }
       // keep polling while something is running
       if (rs.some((r) => r.status === 'running')) {
         if (pollRef.current == null) pollRef.current = window.setInterval(refresh, 5000)
@@ -42,6 +50,15 @@ export default function EvalPage() {
     }).catch(() => {})
     api.listAgents().then(setAgents).catch(() => {})
   }
+  const loadDetail = (id: string) => {
+    api.getEvalRun(id).then((full) => setDetails((prev) => ({ ...prev, [id]: full }))).catch(() => {})
+  }
+  const toggleRun = (id: string) => {
+    if (expandedRun === id) return setExpandedRun('')
+    setExpandedRun(id)
+    loadDetail(id)
+  }
+
   useEffect(() => {
     refresh()
     return () => {
@@ -157,7 +174,7 @@ export default function EvalPage() {
           <div key={r.id} className="card p-4">
             <div
               className="flex cursor-pointer flex-wrap items-center gap-3"
-              onClick={() => setExpandedRun(expandedRun === r.id ? '' : r.id)}
+              onClick={() => toggleRun(r.id)}
             >
               <span className={`badge ${r.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : r.status === 'running' ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'}`}>
                 {r.status}
@@ -167,14 +184,14 @@ export default function EvalPage() {
               <span className="badge bg-blue-50 text-blue-700">{r.scenario || 'general'}</span>
               {r.synthetic && <span className="badge bg-amber-50 text-amber-700">synthetic</span>}
               <p className="text-xs text-slate-500">
-                {r.passed}/{r.total} passed{r.avg_score != null && ` · avg score ${r.avg_score.toFixed(1)}/10`}
+                {r.passed}/{r.evaluated} passed{r.evaluated < r.total && ` (${r.total} cases)`}{r.avg_score != null && r.scoring?.method !== 'json_exact' && ` · avg score ${r.avg_score.toFixed(1)}/10`}
               </p>
               <p className="ml-auto text-[11px] text-slate-400">{fmtTs(r.started_at)}</p>
             </div>
             {r.error && <p className="mt-2 text-xs text-red-600">{r.error}</p>}
             {expandedRun === r.id && (
               <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
-                {r.results.map((c) => (
+                {(details[r.id]?.results ?? []).map((c) => (
                   <div key={c.case} className="rounded-lg bg-slate-50 p-3 text-xs">
                     <div className="flex items-center gap-2">
                       <span className={`badge ${c.pass ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
@@ -189,7 +206,8 @@ export default function EvalPage() {
                     <p className="mt-0.5 text-slate-500"><span className="text-slate-400">scoring:</span> {c.reason}</p>
                   </div>
                 ))}
-                {r.results.length === 0 && <p className="text-xs text-slate-400">No case results yet…</p>}
+                {!details[r.id] && <p className="text-xs text-slate-400">Loading…</p>}
+                {details[r.id] && details[r.id].results.length === 0 && <p className="text-xs text-slate-400">No case results yet…</p>}
               </div>
             )}
           </div>

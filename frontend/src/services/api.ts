@@ -220,6 +220,8 @@ export interface EvalRun {
     predicted_value?: string
     expected_value?: string
   }[]
+  /** cases scored so far; `results` is only filled by getEvalRun */
+  evaluated: number
   passed: number
   total: number
   avg_score: number | null
