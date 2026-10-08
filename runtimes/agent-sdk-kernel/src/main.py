@@ -796,7 +796,9 @@ async def invoke(payload: dict, context) -> dict:
         **extra,
     )
 
-    logger.info("invoke session=%s prompt=%.80r", session_id or "?", prompt)
+    # Length only: user prompt text must not land in the runtime log group,
+    # which everyone with logs:GetLogEvents on the account can read.
+    logger.info("invoke session=%s prompt_chars=%d", session_id or "?", len(prompt or ""))
 
     try:
         otel = otel_context((payload or {}).get("trace"), session_id)

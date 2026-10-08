@@ -157,6 +157,19 @@ save INTERACTIVE_RUNTIME_ARN "$INT_RT"
 save SDK_RUNTIME_ARN "$SDK_RT"
 save MCP_TOOLS_RUNTIME_ARN "$MCP_RT"
 
+# AgentCore creates each runtime's log group with no retention; cap it
+# (kernel stdout, and prompt/answer event records when observability is on).
+# RUNTIME_LOG_RETENTION_DAYS=0 leaves the groups as created.
+RUNTIME_LOG_RETENTION_DAYS="${RUNTIME_LOG_RETENTION_DAYS:-30}"
+if [ "$RUNTIME_LOG_RETENTION_DAYS" != "0" ]; then
+  for arn in "$INT_RT" "$SDK_RT" "$MCP_RT"; do
+    aws logs put-retention-policy --region "$AWS_REGION" \
+      --log-group-name "/aws/bedrock-agentcore/runtimes/${arn##*/}-DEFAULT" \
+      --retention-in-days "$RUNTIME_LOG_RETENTION_DAYS" \
+      || log "could not set retention on ${arn##*/} (the log group may not exist yet)"
+  done
+fi
+
 log "waiting for runtimes to become READY…"
 for rt in claude_code_kernel agent_sdk_kernel mcp_tools_kernel; do
   n="${rt}${RUNTIME_SUFFIX}"

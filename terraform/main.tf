@@ -68,6 +68,7 @@ module "runtime" {
   default_platform_version   = var.runtime_default_platform_version
   mcp_tools_platform_version = var.mcp_tools_platform_version
   platform_version_python    = var.platform_version_python
+  runtime_log_retention_days = var.runtime_log_retention_days
   # Kernel roles hold InvokeGateway on gateway/* for MCP tool gateways; the
   # inference gateway must only be reachable with a per-session credential.
   deny_gateway_arns   = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference${var.name_suffix}-*"] : []
