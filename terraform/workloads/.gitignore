@@ -1,0 +1,12 @@
+.terraform/
+*.tfplan
+plan.json
+terraform.tfvars
+backend.tf
+*.plan
+*.plan.json
+*.plan.log
+# per-environment adoption files written by migrate/gen_imports.py
+imports.*.tf
+imports.*.tf.json
+modules/portal/.schedule-runner-placeholder.zip

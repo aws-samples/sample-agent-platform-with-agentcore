@@ -133,68 +133,13 @@ resource "aws_iam_role_policy" "schedule_runner" {
   policy = data.aws_iam_policy_document.schedule_runner.json
 }
 
-# Placeholder package until scripts/deploy-schedule-lambda.sh uploads the
-# real one (backend `app` module + handler + dependencies). Out-of-band code
-# updates are invisible to Terraform because source_code_hash only changes
-# when this local placeholder changes.
-data "archive_file" "schedule_runner_placeholder" {
-  type        = "zip"
-  output_path = "${path.module}/.schedule-runner-placeholder.zip"
-
-  source {
-    filename = "index.py"
-    content  = <<-EOF
-      def handler(event, context):
-          raise RuntimeError('schedule-runner code not deployed - run scripts/deploy-schedule-lambda.sh')
-    EOF
-  }
-}
-
-resource "aws_lambda_function" "schedule_runner" {
-  function_name = "agent-platform-schedule-runner${var.name_suffix}"
-  role          = aws_iam_role.schedule_runner.arn
-  runtime       = "python3.13"
-  architectures = ["arm64"]
-  handler       = "index.handler"
-
-  filename         = data.archive_file.schedule_runner_placeholder.output_path
-  source_code_hash = data.archive_file.schedule_runner_placeholder.output_base64sha256
-
-  # a single agent run can legitimately take minutes
-  timeout     = 600
-  memory_size = 512
-
-  logging_config {
-    log_format = "Text"
-    log_group  = aws_cloudwatch_log_group.schedule_runner.name
-  }
-
-  # PLATFORM_PORTAL_API_URL is what puts this process on the pipeline
-  # delegation path (schedule_service._run_pipeline); it is deliberately set
-  # here and NOT on the backend, which runs pipelines in-process. The admin
-  # secret name has to be passed explicitly alongside it: config.py's default
-  # is unsuffixed, so a suffixed stack would otherwise read — and be denied —
-  # the wrong secret.
-  environment {
-    variables = {
-      PLATFORM_AWS_REGION               = local.region
-      PLATFORM_DYNAMO_TABLE             = var.platform_table.name
-      PLATFORM_WORKSPACE_BUCKET         = var.workspace_bucket.name
-      PLATFORM_INTERACTIVE_RUNTIME_ARN  = var.interactive_runtime_arn
-      PLATFORM_SDK_RUNTIME_ARN          = var.sdk_runtime_arn
-      PLATFORM_MCP_TOOLS_RUNTIME_ARN    = var.mcp_tools_runtime_arn
-      PLATFORM_INTERACTIVE_RUNTIME_ARNS = jsonencode(var.interactive_runtime_arns)
-      PLATFORM_SDK_RUNTIME_ARNS         = jsonencode(var.sdk_runtime_arns)
-      PLATFORM_DEFAULT_PLATFORM_VERSION = var.default_platform_version
-      PLATFORM_PORTAL_API_URL           = "https://${aws_cloudfront_distribution.portal.domain_name}"
-      PLATFORM_PORTAL_ADMIN_SECRET      = local.portal_admin_secret
-    }
-  }
-
-  lifecycle {
-    # the real code package is owned by scripts/deploy-schedule-lambda.sh
-    ignore_changes = [filename, source_code_hash]
-  }
+# The schedule-runner Lambda itself is a workload (terraform/workloads/modules/
+# portal): it runs the backend's code and moves with it. Its role, log group and
+# DLQ stay here; the scheduler role below names the function by its fixed name,
+# which is how the two layers meet without this one reading the other's state.
+locals {
+  schedule_runner_function_name = "agent-platform-schedule-runner${var.name_suffix}"
+  schedule_runner_function_arn  = "arn:aws:lambda:${local.region}:${local.account}:function:${local.schedule_runner_function_name}"
 }
 
 # ------------------------- scheduler -> Lambda role ------------------------
@@ -225,8 +170,8 @@ data "aws_iam_policy_document" "scheduler" {
     sid     = "InvokeRunner"
     actions = ["lambda:InvokeFunction"]
     resources = [
-      aws_lambda_function.schedule_runner.arn,
-      "${aws_lambda_function.schedule_runner.arn}:*",
+      local.schedule_runner_function_arn,
+      "${local.schedule_runner_function_arn}:*",
     ]
   }
 

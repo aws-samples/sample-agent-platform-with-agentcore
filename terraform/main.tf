@@ -1,3 +1,9 @@
+# The FOUNDATION layer: network, cluster, IAM, data stores, edges, identity.
+# The containers and AgentCore runtimes that run on it are a separate root,
+# terraform/workloads, which reads this root's published facts (ssm.tf) and
+# nothing else of it. Split 2026-10-08 so the application can roll at its own
+# pace while IAM and the network stay with the people who own them.
+#
 # Terraform port of infrastructure/ (CDK). One module per CDK stack:
 #   network   <- NetworkStack          platform <- PlatformStack
 #   runtime   <- RuntimeStack          portal   <- PortalStack
@@ -19,12 +25,14 @@ locals {
   # AgentCore runtime names only allow [a-zA-Z0-9_]
   runtime_suffix = replace(var.name_suffix, "-", "_")
 
-  kernel_tags = {
-    "claude-code-kernel" = coalesce(var.claude_code_image_tag, var.image_tag)
-    "agent-sdk-kernel"   = coalesce(var.sdk_image_tag, var.image_tag)
-    "mcp-tools-kernel"   = coalesce(var.mcp_tools_image_tag, var.image_tag)
-  }
+  # oidc_realm swaps only the realm segment of the issuer, so an environment can
+  # sign in against its own realm on the same Keycloak without restating the
+  # (deployment-specific) Keycloak URL. Empty = the issuer exactly as given.
+  oidc_issuer = (var.oidc_realm == "" || var.oidc_issuer == "" ? var.oidc_issuer :
+  "${split("/realms/", var.oidc_issuer)[0]}/realms/${var.oidc_realm}")
 
+  # team_demo runs the SDK image with the same model settings as the headless
+  # kernel; the kernels themselves are configured in terraform/workloads.
   model_env = {
     use_bedrock                    = var.use_bedrock
     anthropic_model                = var.anthropic_model
@@ -56,34 +64,48 @@ module "runtime" {
   source = "./modules/runtime"
   count  = var.enable_runtime ? 1 : 0
 
-  private_subnet_ids         = module.network.private_subnet_ids
-  runtime_sg_id              = module.network.runtime_sg_id
-  kernel_repos               = module.platform.kernel_repos
-  workspace_bucket           = module.platform.workspace_bucket
-  kernel_tags                = local.kernel_tags
-  model_env                  = local.model_env
-  async_artifact_prefixes    = var.async_artifact_prefixes
-  agent_observability        = var.agent_observability
-  platform_versions          = var.runtime_platform_versions
-  default_platform_version   = var.runtime_default_platform_version
-  mcp_tools_platform_version = var.mcp_tools_platform_version
-  platform_version_python    = var.platform_version_python
+  kernel_repos            = module.platform.kernel_repos
+  workspace_bucket        = module.platform.workspace_bucket
+  async_artifact_prefixes = var.async_artifact_prefixes
+  agent_observability     = var.agent_observability
   # Kernel roles hold InvokeGateway on gateway/* for MCP tool gateways; the
   # inference gateway must only be reachable with a per-session credential.
-  deny_gateway_arns   = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference${var.name_suffix}-*"] : []
-  name_suffix         = var.name_suffix
-  runtime_name_suffix = local.runtime_suffix
+  deny_gateway_arns = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference${var.name_suffix}-*"] : []
+  name_suffix       = var.name_suffix
 }
 
 # The cluster every platform container runs on. Created whenever a module
 # that ships containers is enabled; the AgentCore runtimes do not need it.
 locals {
   enable_eks = (var.enable_runtime && (var.enable_portal || var.enable_llm_edge)) || var.enable_team_auth
+  # A second environment (staging) can join a cluster another state owns
+  # instead of creating its own: workloads land in suffixed namespaces, and the
+  # cluster, its node group and the two controllers stay with the owner.
+  join_existing_eks = local.enable_eks && var.existing_eks_cluster_name != ""
+  create_eks        = local.enable_eks && !local.join_existing_eks
+
+  # Guard against applying one environment's tfvars to another's state. The
+  # production state lives in the default workspace; any other environment
+  # must run in a workspace named after it. Evaluated on every plan.
+  expected_workspace = var.environment == "production" ? "default" : var.environment
+  workspace_guard = terraform.workspace == local.expected_workspace ? true : tobool(
+    "workspace '${terraform.workspace}' does not match environment '${var.environment}' (expected workspace '${local.expected_workspace}')"
+  )
+}
+
+data "aws_eks_cluster" "existing" {
+  count = local.join_existing_eks ? 1 : 0
+  name  = var.existing_eks_cluster_name
+}
+
+data "aws_iam_openid_connect_provider" "existing" {
+  count = local.join_existing_eks ? 1 : 0
+  url   = data.aws_eks_cluster.existing[0].identity[0].oidc[0].issuer
 }
 
 module "eks" {
   source = "./modules/eks"
-  count  = local.enable_eks ? 1 : 0
+  count  = local.create_eks ? 1 : 0
 
   vpc_id                   = module.network.vpc_id
   private_subnet_ids       = module.network.private_subnet_ids
@@ -100,14 +122,28 @@ module "eks" {
 
 # What every workload module needs to know about the cluster.
 locals {
-  eks_facts = local.enable_eks ? {
+  eks_facts = local.create_eks ? {
     cluster_name              = module.eks[0].cluster_name
     cluster_security_group_id = module.eks[0].cluster_security_group_id
     oidc_provider_arn         = module.eks[0].oidc_provider_arn
     oidc_issuer_host          = module.eks[0].oidc_issuer_host
     log_group_prefix          = module.eks[0].log_group_prefix
     controllers_ready         = module.eks[0].controllers_ready
+    } : local.join_existing_eks ? {
+    cluster_name              = data.aws_eks_cluster.existing[0].name
+    cluster_security_group_id = data.aws_eks_cluster.existing[0].vpc_config[0].cluster_security_group_id
+    oidc_provider_arn         = data.aws_iam_openid_connect_provider.existing[0].arn
+    oidc_issuer_host          = replace(data.aws_eks_cluster.existing[0].identity[0].oidc[0].issuer, "https://", "")
+    # the owner's Fluent Bit writes /<prefix>/<namespace>.<app>; workloads
+    # pre-create their groups under the same prefix
+    log_group_prefix = coalesce(var.existing_eks_log_group_prefix, "/eks/${var.existing_eks_cluster_name}")
+    # the owning state installed the controllers (and their CRDs) already
+    controllers_ready = "existing-cluster"
   } : null
+
+  cluster_endpoint       = local.create_eks ? module.eks[0].cluster_endpoint : local.join_existing_eks ? data.aws_eks_cluster.existing[0].endpoint : ""
+  cluster_ca_certificate = local.create_eks ? module.eks[0].cluster_ca_certificate : local.join_existing_eks ? data.aws_eks_cluster.existing[0].certificate_authority[0].data : ""
+  cluster_name           = local.create_eks ? module.eks[0].cluster_name : local.join_existing_eks ? var.existing_eks_cluster_name : ""
 }
 
 # Required for the "litellm" model backend: it holds the gateway key so that
@@ -123,13 +159,10 @@ module "llm_edge" {
   vpc_id             = module.network.vpc_id
   private_subnet_ids = module.network.private_subnet_ids
   runtime_sg_id      = module.network.runtime_sg_id
-  llm_edge_repo      = module.platform.llm_edge_repo
-  image_tag          = coalesce(var.llm_edge_image_tag, var.image_tag)
   llm_gateway_secret = module.platform.llm_gateway_secret
   platform_table     = module.platform.platform_table
   log_bucket         = module.platform.log_bucket
   certificate_arn    = var.llm_edge_certificate_arn
-  desired_count      = var.llm_edge_desired_count
   eks                = local.eks_facts
   name_suffix        = var.name_suffix
 }
@@ -151,8 +184,8 @@ module "agentcore_gateway_backend" {
     oidc_issuer_host  = local.eks_facts.oidc_issuer_host
   }
   backend_service_accounts = [
-    "system:serviceaccount:portal:backend",
-    "system:serviceaccount:portal:entry",
+    "system:serviceaccount:portal${var.name_suffix}:backend",
+    "system:serviceaccount:portal${var.name_suffix}:entry",
   ]
   script_python = var.platform_version_python
   name_suffix   = var.name_suffix
@@ -166,28 +199,18 @@ module "portal" {
   vpc_cidr_block            = module.network.vpc_cidr_block
   public_subnet_ids         = module.network.public_subnet_ids
   private_subnet_ids        = module.network.private_subnet_ids
-  kernel_repos              = module.platform.kernel_repos
   workspace_bucket          = module.platform.workspace_bucket
   platform_table            = module.platform.platform_table
   log_bucket                = module.platform.log_bucket
   cf_log_destination_arn    = module.platform.cf_log_destination_arn
-  backend_image_tag         = coalesce(var.backend_image_tag, var.image_tag)
-  backend_desired_count     = var.backend_desired_count
-  entry_desired_count       = var.entry_desired_count
-  interactive_runtime_arn   = module.runtime[0].interactive_runtime_arn
-  sdk_runtime_arn           = module.runtime[0].sdk_runtime_arn
-  mcp_tools_runtime_arn     = module.runtime[0].mcp_tools_runtime_arn
-  interactive_runtime_arns  = module.runtime[0].interactive_runtime_arns
-  sdk_runtime_arns          = module.runtime[0].sdk_runtime_arns
-  default_platform_version  = var.runtime_default_platform_version
   workspace_access_role_arn = module.runtime[0].workspace_access_role_arn
-  oidc_issuer               = var.oidc_issuer
-  oidc_client_id            = var.oidc_client_id
-  oidc_audience             = var.oidc_audience
-  # external caller VPCs' endpoints, plus the platform VPC's own when the
-  # mcp-hub demo is on (the demo app calls the private API from in-VPC)
-  service_api_allowed_vpces         = concat(var.service_api_allowed_vpces, aws_vpc_endpoint.service_entry[*].id)
-  llm_edge_url                      = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].edge_url : ""
+  # external caller VPCs' endpoints, plus the platform VPC's own: created here
+  # when the mcp-hub demo is on, the owner's when joining its cluster
+  service_api_allowed_vpces = concat(
+    var.service_api_allowed_vpces,
+    aws_vpc_endpoint.service_entry[*].id,
+    data.aws_vpc_endpoint.owner_service_entry[*].id,
+  )
   agentcore_gateway_caller_role_arn = try(module.agentcore_gateway_backend[0].caller_role_arn, "")
   enable_agentcore_gateway_backend  = var.enable_agentcore_gateway_backend
   eks                               = local.eks_facts
@@ -266,6 +289,22 @@ resource "aws_vpc_endpoint" "service_entry" {
   }
 }
 
+# An environment that joins another state's cluster (staging) does not create
+# that endpoint (it comes with the demo stack, which staging leaves off); it
+# reuses the owner's, so its private API stays reachable from inside the VPC
+# (the CI checks call it from there). No match fails the plan rather than
+# leaving the API without a caller endpoint.
+data "aws_vpc_endpoint" "owner_service_entry" {
+  count = local.join_existing_eks && !local.mcp_hub_demo_on ? 1 : 0
+
+  vpc_id       = module.network.vpc_id
+  service_name = "com.amazonaws.${var.aws_region}.execute-api"
+  state        = "available"
+  tags = {
+    Name = "agent-platform-service-entry"
+  }
+}
+
 # AgentCore Gateway interface endpoint. With private DNS on, every
 # *.gateway.bedrock-agentcore.<region> name resolved inside this VPC lands on
 # the endpoint ENIs, so runtimes reach their gateways (MCP tools today, the
@@ -273,7 +312,16 @@ resource "aws_vpc_endpoint" "service_entry" {
 # without any URL change. The policy narrows the endpoint to InvokeGateway
 # on this account's gateways; Principal stays "*" because the team gateway
 # authorizes with CUSTOM_JWT, which endpoint policies cannot match on.
-data "aws_caller_identity" "current" {}
+data "aws_caller_identity" "current" {
+  # Puts the workspace guard (locals above) in the dependency graph explicitly:
+  # an unreferenced local being evaluated is a Terraform implementation detail.
+  lifecycle {
+    precondition {
+      condition     = local.workspace_guard
+      error_message = "Terraform workspace does not match var.environment."
+    }
+  }
+}
 
 resource "aws_security_group" "gateway_vpce" {
   count = var.enable_gateway_vpce ? 1 : 0

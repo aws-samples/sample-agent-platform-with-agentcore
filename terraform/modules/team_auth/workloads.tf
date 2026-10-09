@@ -9,7 +9,7 @@
 # Kubernetes Secrets rendered from the same Terraform-managed values.
 
 locals {
-  namespace = "team-auth"
+  namespace = "team-auth${var.name_suffix}"
 }
 
 # --------------------------------- logs ------------------------------------

@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-platform-workloads
+  labels:
+    app.kubernetes.io/name: platform-rbac
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: Group
+    name: {{ required "group is required" .Values.group }}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: agent-platform-workloads
+  apiGroup: rbac.authorization.k8s.io

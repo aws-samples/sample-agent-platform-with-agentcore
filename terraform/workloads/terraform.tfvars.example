@@ -1,0 +1,37 @@
+# Copy to terraform.tfvars (gitignored). What the application team owns: image
+# tags, replicas, model settings, AgentCore platform versions. Nothing about
+# accounts, VPCs or roles — that is the foundation's and arrives through its
+# facts parameter.
+
+aws_region = "ap-northeast-1"
+
+# ---- images (scripts/build-and-push.sh pushes them) ----
+# Pin per-kernel tags as they evolve independently; image_tag is the default.
+image_tag = "latest"
+# claude_code_image_tag = ""
+# sdk_image_tag         = ""
+# mcp_tools_image_tag   = ""
+# backend_image_tag     = ""
+# llm_edge_image_tag    = ""
+
+# ---- model settings the kernels see ----
+use_bedrock                    = "1"
+anthropic_model                = "global.anthropic.claude-sonnet-5-5"
+anthropic_small_fast_model     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+anthropic_default_opus_model   = "global.anthropic.claude-opus-5-5"
+anthropic_default_sonnet_model = "global.anthropic.claude-sonnet-5-5"
+anthropic_default_haiku_model  = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# ---- replicas ----
+backend_desired_count  = 2
+entry_desired_count    = 1
+llm_edge_desired_count = 2
+
+# ---- AgentCore platform versions ----
+runtime_platform_versions        = ["V1"]
+runtime_default_platform_version = "V1"
+mcp_tools_platform_version       = "V1"
+# platform_version_python = "python3"   # needs botocore >= 1.43.98
+
+# Must match the foundation's agent_observability.
+agent_observability = false

@@ -1,0 +1,3 @@
+# Kubernetes group the workloads deploy role is mapped to by its EKS access
+# entry (ci/infra: agent-platform-workloads<suffix>).
+group: ""

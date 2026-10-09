@@ -22,7 +22,8 @@ with `kubectl`, from the same Helm charts the Terraform path uses
 CloudFront standard logging v2 exist on the Terraform path and are deliberately
 not ported — details in [§6.6](#66-what-this-port-deliberately-leaves-out).
 The verification suite, on the other hand, is **not** CLI-only: pointed at the
-`terraform/` directory (`TF_DIR=... bash tests/verify.sh`) it runs the same 50
+`terraform/` directory (`TF_DIR=... bash tests/verify.sh`) or at the facts the
+foundation publishes (`FACTS_FILE=... bash tests/verify.sh`) it runs the same 50
 checks against a Terraform deployment, including one adapted to an in-house
 standard.
 
@@ -460,9 +461,13 @@ LAYER=1 bash tests/verify.sh
 #            ~3 minutes, roughly $0.15 of model spend
 PORTAL_PASSWORD='ChangeMe-12+chars' bash tests/verify.sh
 
-# Against a TERRAFORM deployment (no .state file): ids resolve from
-# `terraform output` + the fixed naming convention. The same checks — this is
-# the acceptance test for any deployment of the platform, however built.
+# Against a TERRAFORM deployment (no .state file): ids resolve from the
+# foundation's published facts (SSM /agent-platform<suffix>/foundation; what CI
+# does, no access to the state) or from `terraform output`, plus the fixed
+# naming convention. The same checks — this is the acceptance test for any
+# deployment of the platform, however built.
+aws ssm get-parameter --name /agent-platform/foundation --query Parameter.Value --output text > /tmp/facts.json
+FACTS_FILE=/tmp/facts.json LAYER=1 bash tests/verify.sh
 TF_DIR=../../terraform LAYER=1 bash tests/verify.sh
 ```
 

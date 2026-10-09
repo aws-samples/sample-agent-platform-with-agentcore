@@ -17,9 +17,17 @@
 #   PORTAL_PASSWORD='...' bash tests/verify.sh            # L1 + L2
 #   LAYER=1 bash tests/verify.sh                          # L1 only (free)
 #
-#   # Against a TERRAFORM deployment (no .state file needed): point TF_DIR at
-#   # the terraform/ directory and ids resolve from `terraform output` plus
-#   # the platform's fixed naming convention.
+#   # Against a TERRAFORM deployment (no .state file needed), two ways to
+#   # resolve its ids (scripts/foundation_facts.py maps the names for both):
+#   #  - FACTS_FILE: the facts the foundation publishes to SSM
+#   #    (/agent-platform<suffix>/foundation, terraform/ssm.tf) saved to a file.
+#   #    What CI does: no access to the foundation state, which holds secrets.
+#   #  - TF_DIR: the terraform/ directory with the workspace selected;
+#   #    `terraform output -json` is the source. Local use.
+#   # Either way the suffix and the backend namespace come from the document,
+#   # so the same invocation verifies production or staging, whichever it is.
+#   aws ssm get-parameter --name /agent-platform-staging/foundation --query Parameter.Value --output text > /tmp/facts.json
+#   FACTS_FILE=/tmp/facts.json LAYER=1 bash tests/verify.sh
 #   TF_DIR=../../terraform LAYER=1 bash tests/verify.sh
 #
 # Exit codes are distinct so a wrapper can tell the cases apart:
@@ -34,19 +42,49 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../lib/common.sh" 2>/dev/null || { echo "cannot load lib/common.sh"; exit 2; }
 
-if [ -n "${TF_DIR:-}" ]; then
+if [ -n "${FACTS_FILE:-}" ] || [ -n "${TF_DIR:-}" ]; then
   # ------------------------------------------------ terraform id source
-  # Resolve the same ids the CLI path records, from `terraform output` plus
-  # the platform's fixed naming convention (the suffix keeps both in step).
-  # This makes the suite the acceptance test for ANY deployment of the
+  # Resolve the same ids the CLI path records, from the Terraform deployment
+  # plus the platform's fixed naming convention (the suffix keeps both in
+  # step). This makes the suite the acceptance test for ANY deployment of the
   # platform, not just one built by these scripts.
-  TFO="$(cd "$TF_DIR" && terraform output -json 2>/dev/null)" \
-    || { echo "terraform output failed in $TF_DIR"; exit 2; }
-  tfo() { printf '%s' "$TFO" | python3 -c "
+  #
+  # tfo NAME      a value that may be absent ("" then)
+  # tfo_req NAME  a value that must be PRESENT (it may be empty: production has
+  #               no suffix). A document without it does not say which
+  #               environment it is, and the fallback would be production's
+  #               names: refuse instead.
+  FACTS_PY="$HERE/../../scripts/foundation_facts.py"
+  if [ -n "${FACTS_FILE:-}" ]; then
+    # the foundation's published facts (SSM, terraform/ssm.tf): the mapping
+    # from output names to the document lives in scripts/foundation_facts.py
+    [ -s "$FACTS_FILE" ] || { echo "FACTS_FILE $FACTS_FILE is missing or empty"; exit 2; }
+    [ -f "$FACTS_PY" ] || { echo "cannot find $FACTS_PY"; exit 2; }
+    tfo() { python3 "$FACTS_PY" get "$FACTS_FILE" "$1"; }
+    tfo_req() { python3 "$FACTS_PY" get "$FACTS_FILE" "$1" --required \
+      || { echo "the facts in $FACTS_FILE lack '$1': the document does not say which environment it is (refusing to fall back to production names)" >&2; return 2; }; }
+  else
+    TFO="$(cd "$TF_DIR" && terraform output -json 2>/dev/null)" \
+      || { echo "terraform output failed in $TF_DIR"; exit 2; }
+    tfo() { printf '%s' "$TFO" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 v=d.get('$1',{}).get('value','')
 print(v if isinstance(v,str) else json.dumps(v))"; }
+    tfo_req() { printf '%s' "$TFO" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if '$1' not in d: sys.exit(3)
+v=d['$1'].get('value')
+print('' if v is None else (v if isinstance(v,str) else json.dumps(v)))" \
+      || { echo "terraform output '$1' is missing in $TF_DIR: this state does not say which environment it is (refusing to fall back to production names)" >&2; return 2; }; }
+  fi
+
+  # Which environment: the state decides, not the caller's SUFFIX.
+  SUFFIX="$(tfo_req name_suffix)" || exit 2
+  if [ -n "$SUFFIX" ]; then RUNTIME_SUFFIX="_$(echo "$SUFFIX" | tr -d -- '-')"; else RUNTIME_SUFFIX=""; fi
+  NAME="agent-platform${SUFFIX}"
+  KUBECONFIG_FILE="$STATE_DIR/${NAME}.kubeconfig"
 
   STATE_FILE=/dev/null          # skip the .state preflight
   VPC_ID="$(tfo vpc_id)"
@@ -58,7 +96,7 @@ print(v if isinstance(v,str) else json.dumps(v))"; }
   ALB_DNS="$(tfo alb_dns_name)"
   # Fixed names (suffix-aware), then describe for the ARNs the checks need.
   EKS_CLUSTER="$(tfo eks_cluster_name)"
-  BACKEND_NAMESPACE=portal
+  BACKEND_NAMESPACE="$(tfo_req backend_namespace)" || exit 2
   BACKEND_DEPLOYMENT=backend
   TASK_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/agent-platform-backend-task${SUFFIX}"
   OIDC_PROVIDER_ARN="$(tfo eks_oidc_provider_arn)"
@@ -89,6 +127,18 @@ skip() { SKIP=$((SKIP+1)); printf '  \033[33mSKIP\033[0m %s (%s)\n' "$1" "${2:-}
 check() {
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
 }
+# jq is not assumed; python3 stdlib does the parsing. errors="replace" matters
+# because agent output can carry control characters that break strict json.
+jget() {  # json-string  python-expression-on-d
+  python3 -c "
+import json,sys
+raw=sys.stdin.read()
+try: d=json.loads(raw)
+except Exception: print(''); sys.exit()
+try: print($1)
+except Exception: print('')"
+}
+
 # check_not NAME FORBIDDEN ACTUAL — the negative form
 check_not() {
   if [ "$2" != "$3" ]; then ok "$1"; else bad "$1" "value must not be '$2'"; fi
@@ -100,7 +150,7 @@ check_contains() {
 
 # ---------------------------------------------------------------- preflight
 printf '\n=== preflight ===\n'
-[ -n "${TF_DIR:-}" ] || [ -s "$STATE_FILE" ] || { echo "no state at $STATE_FILE — deploy first (or set TF_DIR)"; exit 2; }
+[ -n "${FACTS_FILE:-}" ] || [ -n "${TF_DIR:-}" ] || [ -s "$STATE_FILE" ] || { echo "no state at $STATE_FILE — deploy first (or set FACTS_FILE / TF_DIR)"; exit 2; }
 aws sts get-caller-identity >/dev/null 2>&1 || { echo "AWS credentials not usable"; exit 2; }
 : "${DIST_DOMAIN:?state has no DIST_DOMAIN — deployment incomplete}"
 PORTAL="https://$DIST_DOMAIN"
@@ -165,10 +215,15 @@ done
 ##############################################################################
 printf '\n=== L1 · runtimes ===\n'
 ##############################################################################
+# list-agent-runtimes is account-wide and paginates. With --output text the CLI
+# applies --query to every page and prints one line per page, so once the
+# account holds more runtimes than one page (prod + staging + other projects)
+# a scalar query comes back as "READY\nNone". --output json buffers the full
+# result before the query runs, which is why it is used here and not text.
 for rt in claude_code_kernel agent_sdk_kernel mcp_tools_kernel; do
   n="${rt}${RUNTIME_SUFFIX}"
-  ST="$(aws bedrock-agentcore-control list-agent-runtimes \
-    --query "agentRuntimes[?agentRuntimeName=='$n'].status | [0]" --output text 2>/dev/null)"
+  ST="$(aws bedrock-agentcore-control list-agent-runtimes --output json 2>/dev/null \
+    | jget "next((r.get('status','') for r in d.get('agentRuntimes',[]) if r.get('agentRuntimeName')=='$n'), 'absent')")"
   check "runtime READY: $n" READY "$ST"
 done
 
@@ -368,18 +423,6 @@ api() {  # method path [json-file]
     curl -s -X "$m" -H "Authorization: Bearer $TOKEN" --max-time 240 "$PORTAL$p" 2>/dev/null
   fi
 }
-# jq is not assumed; python3 stdlib does the parsing. errors="replace" matters
-# because agent output can carry control characters that break strict json.
-jget() {  # json-string  python-expression-on-d
-  python3 -c "
-import json,sys
-raw=sys.stdin.read()
-try: d=json.loads(raw)
-except Exception: print(''); sys.exit()
-try: print($1)
-except Exception: print('')"
-}
-
 ME="$(api GET /api/v1/me)"
 check "identity resolves to admin" admin "$(printf '%s' "$ME" | jget "d['user']")"
 check "admin has the admin role" True "$(printf '%s' "$ME" | jget "str(d['is_admin'])")"

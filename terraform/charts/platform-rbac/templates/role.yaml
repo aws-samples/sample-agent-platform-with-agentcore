@@ -1,0 +1,30 @@
+# Namespaced on purpose: no ClusterRole, no namespaces/nodes/CRD definitions.
+# Rules follow what the two workload charts ship (Deployment, Service,
+# ServiceAccount, Secret, TargetGroupBinding, SecurityGroupPolicy) and what
+# Helm reads to store a release and to wait for / roll back a rollout.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-platform-workloads
+  labels:
+    app.kubernetes.io/name: platform-rbac
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "services", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status", "events", "endpoints", "replicationcontrollers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/status", "deployments/scale", "replicasets", "replicasets/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["elbv2.k8s.aws"]
+    resources: ["targetgroupbindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["vpcresources.k8s.aws"]
+    resources: ["securitygrouppolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]

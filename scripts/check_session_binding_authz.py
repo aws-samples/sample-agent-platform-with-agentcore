@@ -28,7 +28,9 @@ import re
 import sys
 import types
 
-ROOT = os.path.join(os.path.dirname(__file__), "..", "backend", "app")
+# QA_TARGET_ROOT: the checkout under review, when this proof runs from a
+# trusted copy of the repository (CI runs it from the default branch)
+ROOT = os.path.join(os.environ.get("QA_TARGET_ROOT") or os.path.join(os.path.dirname(__file__), ".."), "backend", "app")
 
 
 def _load_session_binding(secret: str = "test-secret"):

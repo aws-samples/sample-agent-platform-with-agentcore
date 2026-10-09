@@ -20,8 +20,13 @@ Asserts, with real credentials:
   11. a bogus robot token → 401 (fail fast, nothing forwarded)
   12. non-admin (bob) cannot create channels → 403
 
-Environment: PORTAL_URL (CloudFront origin; default: PortalUrl stack output).
-Run with credentials that can read the team-demo-users / robot secrets.
+Environment (required, no defaults; see scripts/qa_env.py):
+  PORTAL_URL, SERVICE_ENTRY_API_URL, QA_TEST_USERS_SECRET, AWS_REGION, QA_ENV
+  SERVICE_ENTRY_VPCE_ID  the in-VPC execute-api endpoint: when set (CI runs
+                         inside the VPC) the signed submit/poll leg goes through
+                         the endpoint-specific hostname and is asserted; unset,
+                         the private API is expected to be unreachable from here
+  QA_ROBOT_SECRET        robot client secret (only environments with team-auth)
 """
 
 import json
@@ -36,7 +41,9 @@ import boto3
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
-REGION = os.environ.get("AWS_REGION", "ap-northeast-1")
+import qa_env
+
+REGION = qa_env.region()
 
 PASS = 0
 FAIL = 0
@@ -92,31 +99,19 @@ def sigv4(method: str, url: str, body: str = "", headers: dict | None = None):
         return 0, {"unreachable": str(e)[:120]}
 
 
-def stack_output(stack: str, key: str) -> str:
-    cfn = boto3.client("cloudformation", region_name=REGION)
-    outputs = cfn.describe_stacks(StackName=stack)["Stacks"][0]["Outputs"]
-    return next(o["OutputValue"] for o in outputs if o["OutputKey"] == key)
-
-
-def idp_token(username: str) -> str:
-    sm = boto3.client("secretsmanager", region_name=REGION)
-    users = json.loads(sm.get_secret_value(SecretId="agent-platform/team-demo-users")["SecretString"])
-    body = urllib.parse.urlencode({
-        "grant_type": "password", "client_id": users["client_id"],
-        "username": username, "password": users["users"][username], "scope": "openid",
-    }).encode()
-    req = urllib.request.Request(f"{users['issuer']}/protocol/openid-connect/token", data=body)
-    with urllib.request.urlopen(req) as resp:  # nosec B310
-        return json.load(resp)["access_token"]
-
-
 def main() -> int:
-    portal = (os.environ.get("PORTAL_URL") or stack_output("AgentPlatformPortal", "PortalUrl")).rstrip("/")
-    api_url = stack_output("AgentPlatformPortal", "ServiceEntryApiUrl").rstrip("/")
-    print(f"portal: {portal}\nservice entry: {api_url}\n")
+    qa_env.check_same_environment()
+    portal = qa_env.portal()
+    api_url = qa_env.require("SERVICE_ENTRY_API_URL").rstrip("/")
+    vpce = os.environ.get("SERVICE_ENTRY_VPCE_ID", "")
+    # A PRIVATE API has no public DNS. From inside the VPC it is reached through
+    # the endpoint-specific hostname {api-id}-{vpce-id}.execute-api..., which the
+    # API<->endpoint association publishes (private DNS stays off on purpose).
+    signed_base = api_url.replace(".execute-api.", f"-{vpce}.execute-api.", 1) if vpce else api_url
+    print(f"portal: {portal}\nservice entry: {api_url}" + (f"\nin-VPC endpoint: {vpce}" if vpce else "") + "\n")
 
-    admin = {"Authorization": f"Bearer {idp_token('admin')}"}
-    bob = {"Authorization": f"Bearer {idp_token('bob')}"}
+    admin = {"Authorization": f"Bearer {qa_env.token_for('admin')}"}
+    bob = {"Authorization": f"Bearer {qa_env.token_for('bob')}"}
 
     print("[admin surface]")
     status, err = http("POST", f"{portal}/api/v1/channels", {
@@ -174,26 +169,35 @@ def main() -> int:
           (not reached_backend) or status == 401, f"{status} {str(resp)[:80]}")
 
     print("[submit/poll]")
+    signed_submit = f"{signed_base}/service/v1/channels/{channel_id}/invocations"
     conversation = f"e2e-{int(time.time())}"
     body = json.dumps({"message": "Reply with exactly: SERVICE-ENTRY-OK", "conversation_id": conversation})
-    status, sub = sigv4("POST", submit_url, body)
+    status, sub = sigv4("POST", signed_submit, body)
 
     if status == 0 or (status == 403 and "orbidden" in str(sub)):
+        if vpce:
+            # the build runs inside the VPC and was given the endpoint: the signed
+            # leg must work, anything else is a real defect (association, resource
+            # policy's aws:SourceVpce, endpoint security group)
+            check("in-VPC SigV4 submit through the environment's endpoint", False, f"{status} {sub} via {signed_submit}")
+            http("DELETE", f"{portal}/api/v1/channels/{channel_id}", headers=admin)
+            print(f"\n{PASS} passed, {FAIL} failed")
+            return 1
         # PRIVATE API: unreachable from the internet even with valid SigV4 —
-        # exactly the network property the design promises. The in-VPC leg
-        # (submit/poll, conversation continuity, robot identity) is exercised
-        # by the demo workload: demo/eks-pod-identity, whose traffic we can
-        # still verify in the ledger from here.
+        # exactly the network property the design promises.
         check("private API rejects internet callers even with valid SigV4", True)
-        status, ledger = http("GET", f"{portal}/api/v1/observability/invocations", headers=admin)
-        entries = ledger if isinstance(ledger, list) else ledger.get("items", [])
-        pod_calls = [e for e in entries
-                     if str(e.get("ref", "")).endswith(":iam")
-                     and ":role/" in str(e.get("user", ""))]
-        check("ledger shows iam-channel calls attributed to a workload role",
-              len(pod_calls) > 0, "no :iam entries — is the demo pod running?")
-        print("  - in-VPC submit/poll, continuity and robot checks run inside the")
-        print("    cluster: kubectl -n agent-demo logs deploy/order-service")
+        if qa_env.env_name() == "prod":
+            # production's in-VPC leg is exercised by the demo workload
+            # (demo/eks-pod-identity), whose traffic shows in the ledger
+            status, ledger = http("GET", f"{portal}/api/v1/observability/invocations", headers=admin)
+            entries = ledger if isinstance(ledger, list) else ledger.get("items", [])
+            pod_calls = [e for e in entries
+                         if str(e.get("ref", "")).endswith(":iam")
+                         and ":role/" in str(e.get("user", ""))]
+            check("ledger shows iam-channel calls attributed to a workload role",
+                  len(pod_calls) > 0, "no :iam entries — is the demo pod running?")
+        else:
+            print("  - no in-VPC caller from here: set SERVICE_ENTRY_VPCE_ID to run the submit/poll leg")
         http("DELETE", f"{portal}/api/v1/channels/{channel_id}", headers=admin)
         print(f"\n{PASS} passed, {FAIL} failed")
         return 1 if FAIL else 0
@@ -205,7 +209,7 @@ def main() -> int:
     deadline = time.time() + 420
     while time.time() < deadline:
         time.sleep(8)
-        status, record = sigv4("GET", f"{api_url}/service/v1/invocations/{inv_id}")
+        status, record = sigv4("GET", f"{signed_base}/service/v1/invocations/{inv_id}")
         if record.get("status") in ("succeeded", "failed"):
             break
     check("invocation succeeded", record.get("status") == "succeeded", str(record)[:200])
@@ -220,14 +224,14 @@ def main() -> int:
           any(":role/" in str(e.get("user", "")) or "assumed-role" in str(e.get("user", "")) for e in mine),
           str(mine[:1]))
 
-    status, sub2 = sigv4("POST", submit_url, json.dumps(
+    status, sub2 = sigv4("POST", signed_submit, json.dumps(
         {"message": "Reply with exactly: SECOND-OK", "conversation_id": conversation}))
     inv2 = sub2.get("invocation_id", "")
     record2: dict = {}
     deadline = time.time() + 420
     while time.time() < deadline:
         time.sleep(8)
-        status, record2 = sigv4("GET", f"{api_url}/service/v1/invocations/{inv2}")
+        status, record2 = sigv4("GET", f"{signed_base}/service/v1/invocations/{inv2}")
         if record2.get("status") in ("succeeded", "failed"):
             break
     check("same conversation reuses the runtime session",
@@ -235,11 +239,11 @@ def main() -> int:
           f"{first_session} vs {record2.get('runtime_session_id')}")
 
     print("[robot identity]")
-    sm = boto3.client("secretsmanager", region_name=REGION)
-    try:
-        robot = json.loads(sm.get_secret_value(SecretId="agent-platform/robot-order-service")["SecretString"])
-    except Exception:  # noqa: BLE001
-        robot = None
+    robot_secret = os.environ.get("QA_ROBOT_SECRET", "")  # only environments with team-auth have a robot client
+    robot = None
+    if robot_secret:
+        sm = boto3.client("secretsmanager", region_name=REGION)
+        robot = json.loads(sm.get_secret_value(SecretId=robot_secret)["SecretString"])
     if robot:
         tok_body = urllib.parse.urlencode({
             "grant_type": "client_credentials",
@@ -249,15 +253,15 @@ def main() -> int:
             f"{robot['issuer']}/protocol/openid-connect/token", data=tok_body)
         with urllib.request.urlopen(req) as resp:  # nosec B310
             robot_token = json.load(resp)["access_token"]
-        status, sub3 = sigv4("POST", submit_url,
+        status, sub3 = sigv4("POST", signed_submit,
                              json.dumps({"message": "hello"}), {"x-robot-token": robot_token})
         check("submit with a valid robot token accepted", status == 202, f"{status} {sub3}")
 
-        status, _ = sigv4("POST", submit_url,
+        status, _ = sigv4("POST", signed_submit,
                           json.dumps({"message": "hello"}), {"x-robot-token": "not-a-jwt"})
         check("bogus robot token rejected (401)", status == 401, str(status))
     else:
-        print("  - robot secret absent — skipped (run seed_team_idp.py)")
+        print("  - QA_ROBOT_SECRET not set (no robot client in this environment) — skipped")
 
     # cleanup
     http("DELETE", f"{portal}/api/v1/channels/{channel_id}", headers=admin)

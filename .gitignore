@@ -54,3 +54,4 @@ cdk.context.json
 CLAUDE.md
 .kiro/
 .cfn-archive/
+.qa-runs/

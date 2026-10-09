@@ -38,26 +38,7 @@ output "llm_gateway_secret_name" {
 }
 
 # ------------------------------- runtime -----------------------------------
-
-output "interactive_runtime_arn" {
-  value = try(module.runtime[0].interactive_runtime_arn, null)
-}
-
-output "sdk_runtime_arn" {
-  value = try(module.runtime[0].sdk_runtime_arn, null)
-}
-
-output "mcp_tools_runtime_arn" {
-  value = try(module.runtime[0].mcp_tools_runtime_arn, null)
-}
-
-output "interactive_runtime_arns" {
-  value = try(module.runtime[0].interactive_runtime_arns, null)
-}
-
-output "sdk_runtime_arns" {
-  value = try(module.runtime[0].sdk_runtime_arns, null)
-}
+# The runtime ARNs are outputs of terraform/workloads; this root owns the roles.
 
 output "workspace_access_role_arn" {
   value = try(module.runtime[0].workspace_access_role_arn, null)
@@ -66,16 +47,16 @@ output "workspace_access_role_arn" {
 # --------------------------------- eks -------------------------------------
 
 output "eks_cluster_name" {
-  value = try(module.eks[0].cluster_name, null)
+  value = local.cluster_name != "" ? local.cluster_name : null
 }
 
 output "eks_cluster_endpoint" {
-  value = try(module.eks[0].cluster_endpoint, null)
+  value = local.cluster_endpoint != "" ? local.cluster_endpoint : null
 }
 
 output "eks_oidc_provider_arn" {
   description = "IRSA identity provider — what every workload role's trust policy names."
-  value       = try(module.eks[0].oidc_provider_arn, null)
+  value       = try(local.eks_facts.oidc_provider_arn, null)
 }
 
 output "kubeconfig_command" {
@@ -110,7 +91,8 @@ output "user_pool_client_id" {
 }
 
 output "schedule_runner_function" {
-  value = try(module.portal[0].schedule_runner_function, null)
+  description = "Fixed name of the schedule-runner Lambda (the function is the workloads root's)."
+  value       = try(module.portal[0].schedule_runner_function, null)
 }
 
 output "schedule_dlq_url" {
@@ -127,6 +109,30 @@ output "service_entry_api_url" {
 
 output "service_entry_api_id" {
   value = try(module.portal[0].service_entry_api_id, null)
+}
+
+# --------------------------- environment facts ------------------------------
+# What the acceptance checks need to address THIS environment and no other:
+# the suffix every fixed name carries, the namespace the backend runs in, the
+# issuer its tokens must come from, and the in-VPC endpoint through which the
+# private service-entry API is reachable (own, or the cluster owner's when
+# joining). The checks refuse to run without them rather than fall back to
+# production names (scripts/qa_env.py, deploy-cli/tests/verify.sh).
+
+output "name_suffix" {
+  value = var.name_suffix
+}
+
+output "backend_namespace" {
+  value = try(module.portal[0].namespace, null)
+}
+
+output "oidc_issuer" {
+  value = local.oidc_issuer
+}
+
+output "service_entry_vpce_id" {
+  value = try(aws_vpc_endpoint.service_entry[0].id, data.aws_vpc_endpoint.owner_service_entry[0].id, null)
 }
 
 # ------------------------------- team auth ---------------------------------
