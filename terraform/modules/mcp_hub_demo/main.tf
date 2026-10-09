@@ -44,12 +44,23 @@ resource "aws_security_group" "hub" {
   description = "MCP hub - AgentCore runtime callers only"
   vpc_id      = var.vpc_id
 
+  # Direct HMAC path. Retire this rule once every mcp-hub registry entry has
+  # moved to auth = iam (then the entry below is the only way in).
   ingress {
     description     = "MCP over HTTP from AgentCore runtimes"
     from_port       = 8000
     to_port         = 8000
     protocol        = "tcp"
     security_groups = [var.runtime_sg_id]
+  }
+
+  # IAM entry path: API Gateway -> VPC Link -> the entry NLB (entry.tf).
+  ingress {
+    description     = "MCP over HTTP from the hub entry NLB"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.entry_nlb.id]
   }
 
   egress {
@@ -86,6 +97,14 @@ data "aws_iam_policy_document" "hub" {
     actions   = ["secretsmanager:GetSecretValue"]
     resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:${local.actor_secret_prefix}/*"]
   }
+
+  # IAM entry: the shared header secret API Gateway stamps on forwarded
+  # requests; the hub reads it once at boot (entry.tf).
+  statement {
+    sid       = "EntrySecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.entry.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "hub" {
@@ -117,11 +136,15 @@ resource "aws_instance" "hub" {
   }
 
   user_data = templatefile("${path.module}/templates/hub_user_data.sh.tftpl", {
-    bucket       = var.workspace_bucket.name
-    source_key   = var.hub_source_s3_key
-    resource_url = var.hub_resource_url
-    issuer       = var.keycloak_issuer_url
-    region       = local.region
+    bucket            = var.workspace_bucket.name
+    source_key        = var.hub_source_s3_key
+    resource_url      = var.hub_resource_url
+    issuer            = var.keycloak_issuer_url
+    region            = local.region
+    entry_secret_name = aws_secretsmanager_secret.entry.name
+    # the caller role's NAME (entry.tf); the hub accepts actors only from
+    # sessions of this role
+    caller_role_name = "agent-platform-mcp-hub-caller${var.name_suffix}"
   })
   user_data_replace_on_change = true
 

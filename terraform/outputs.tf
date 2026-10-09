@@ -187,6 +187,16 @@ output "mcp_hub_instance_id" {
   value = try(module.mcp_hub_demo[0].hub_instance_id, null)
 }
 
+output "mcp_hub_entry_url" {
+  description = "The hub's IAM entry (private API Gateway) — the mcp-hub target for auth = iam registry entries."
+  value       = try(module.mcp_hub_demo[0].hub_entry_url, null)
+}
+
+output "mcp_hub_caller_role_arn" {
+  description = "Role the kernels assume per agent to call the hub entry (PLATFORM_MCP_HUB_CALLER_ROLE_ARN on the backend)."
+  value       = try(module.mcp_hub_demo[0].hub_caller_role_arn, null)
+}
+
 output "demo_app_instance_id" {
   value = try(module.mcp_hub_demo[0].app_instance_id, null)
 }

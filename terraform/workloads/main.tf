@@ -124,6 +124,8 @@ module "portal" {
   controllers_ready                 = local.facts.eks.controllers_ready
   llm_edge_url                      = local.facts.portal.llm_edge_url
   agentcore_gateway_caller_role_arn = local.facts.portal.agentcore_gateway_caller_role_arn
-  oidc                              = local.facts.portal.oidc
-  name_suffix                       = var.name_suffix
+  # the MCP hub IAM entry's caller role; "" when this environment runs no hub demo
+  mcp_hub_caller_role_arn = try(local.facts.mcp_hub.caller_role_arn, "")
+  oidc                    = local.facts.portal.oidc
+  name_suffix             = var.name_suffix
 }

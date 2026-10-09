@@ -20,9 +20,12 @@ def list_mcp_servers(user: str = Depends(get_current_user)):
 
 @router.post("/mcp-servers", response_model=EcosystemEntry)
 def create_mcp_server(req: McpServerCreateRequest, user: str = Depends(require_admin)):
-    return ecosystem_service.create_mcp_server(
-        req.name, req.description, req.kind, req.target, headers=req.headers
-    )
+    try:
+        return ecosystem_service.create_mcp_server(
+            req.name, req.description, req.kind, req.target, headers=req.headers, auth=req.auth
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/mcp-servers/{server_id}")

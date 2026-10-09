@@ -98,6 +98,12 @@ variable "oidc" {
   })
 }
 
+variable "mcp_hub_caller_role_arn" {
+  description = "Caller role of the MCP hub IAM entry (foundation facts mcp_hub.caller_role_arn). Empty = iam hub attachments are unavailable and the backend refuses them."
+  type        = string
+  default     = ""
+}
+
 variable "name_suffix" {
   type    = string
   default = ""

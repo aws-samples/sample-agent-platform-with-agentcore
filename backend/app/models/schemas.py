@@ -79,6 +79,11 @@ class McpServerCreateRequest(BaseModel):
     # {"X-MCPHUB-SSO-TOKEN": "{{user_token}}"}; its HMAC signing credentials
     # are per published agent and never appear in the registry at all.
     headers: dict[str, str] = Field(default_factory=dict)
+    # How an ``mcp-hub`` server authenticates the application: ``hmac`` (the
+    # per-agent key pair, target = the hub itself) or ``iam`` (the kernel's
+    # IAM identity through the hub's private API Gateway entry, target = the
+    # entry URL; needs PLATFORM_MCP_HUB_CALLER_ROLE_ARN). Ignored for other kinds.
+    auth: str = Field(default="hmac", pattern="^(hmac|iam)$")
 
 
 class SkillCreateRequest(BaseModel):
@@ -96,6 +101,7 @@ class EcosystemEntry(BaseModel):
     target: str = ""
     # header names/placeholders only — see McpServerCreateRequest.headers
     headers: dict[str, str] = Field(default_factory=dict)
+    auth: str = ""  # mcp-hub only: hmac | iam
     s3_prefix: str = ""
     builtin: bool = False
     created_at: str = ""

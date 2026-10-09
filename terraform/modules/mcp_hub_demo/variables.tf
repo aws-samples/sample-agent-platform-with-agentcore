@@ -64,3 +64,31 @@ variable "name_suffix" {
   type    = string
   default = ""
 }
+
+variable "vpc_cidr_block" {
+  description = "Platform VPC CIDR: the entry NLB admits MCP traffic from inside the VPC only."
+  type        = string
+}
+
+variable "service_api_vpce_id" {
+  description = "The platform VPC's execute-api interface endpoint: the only path into the hub entry API (resource policy + association)."
+  type        = string
+}
+
+variable "backend_role_arn" {
+  description = "Backend IRSA role: mints the hub caller sessions (plain AssumeRole path, used off EKS)."
+  type        = string
+}
+
+variable "backend_service_accounts" {
+  description = "IRSA subjects (system:serviceaccount:<ns>:<sa>) of the backend pods that may exchange their web-identity token for the hub caller role."
+  type        = list(string)
+}
+
+variable "eks" {
+  description = "EKS IRSA facts: the caller role trusts the backend's ServiceAccount web-identity token directly (first hop, up to MaxSessionDuration)."
+  type = object({
+    oidc_provider_arn = string
+    oidc_issuer_host  = string
+  })
+}

@@ -55,6 +55,16 @@ FROZEN_OUTPUTS = {
     "service_entry_vpce_id": ("portal", "service_entry_vpce_id"),
     "backend_namespace": ("portal", "namespace"),
     "oidc_issuer": ("portal", "oidc", "issuer"),
+    # the MCP hub demo and its IAM entry (2026-10-10)
+    "mcp_hub_endpoint": ("mcp_hub", "hub_endpoint"),
+    "mcp_hub_resource_url": ("mcp_hub", "hub_resource_url"),
+    "mcp_hub_instance_id": ("mcp_hub", "hub_instance_id"),
+    "demo_app_instance_id": ("mcp_hub", "app_instance_id"),
+    "demo_app_role_arn": ("mcp_hub", "app_role_arn"),
+    "demo_app_credentials_secret_name": ("mcp_hub", "app_credentials_secret_name"),
+    "keycloak_issuer": ("mcp_hub", "keycloak_issuer"),
+    "mcp_hub_entry_url": ("mcp_hub", "entry_url"),
+    "mcp_hub_caller_role_arn": ("mcp_hub", "caller_role_arn"),
 }
 
 

@@ -18,8 +18,14 @@ Payload contract::
             {"name": "ext", "kind": "url", "target": "https://...",
              "headers": {"Authorization": "Bearer ..."}},  // optional (e.g. user JWT for a gateway)
             {"name": "corp-hub", "kind": "mcp-hub",  // customer MCP hub, HMAC-signed
-             "target": "http://hub.internal:8000/mcp",
+             "target": "http://hub.internal:8000/mcp", "auth": "hmac",
              "credentials_secret": "agent-platform/mcp-hub/<agent-id>",
+             "headers": {"X-MCPHUB-SSO-TOKEN": "<caller's SSO token>"}},
+            {"name": "corp-hub-iam", "kind": "mcp-hub",  // same hub through its IAM entry
+             "target": "https://<api>-<vpce>.execute-api.<region>.amazonaws.com/mcp/mcp",
+             "auth": "iam", "actor": "agent-<agent-id>",
+             "credentials": {"access_key_id": "…", "secret_access_key": "…",   // the caller-role
+                             "session_token": "…", "expiration": "…"},        // session the backend minted
              "headers": {"X-MCPHUB-SSO-TOKEN": "<caller's SSO token>"}},
             {"name": "browser", "kind": "builtin", "target": "browser"}
         ],
@@ -443,8 +449,20 @@ def build_mcp_config(servers: list[dict]) -> dict:
                 "MCPHUB_SSO_TOKEN": headers.get("x-mcphub-sso-token", ""),
                 "AWS_REGION": region,
             }
-            if s.get("credentials_secret"):
-                env["MCPHUB_CREDENTIALS_SECRET"] = str(s["credentials_secret"])
+            if s.get("auth") == "iam":
+                # IAM entry: the backend minted a hub caller-role session
+                # named after this actor (agent-<id>) and sent it in the
+                # payload, like llm_credentials; the proxy SigV4-signs through
+                # the platform's private API Gateway with it. This container
+                # cannot assume that role itself, and the gateway, not this
+                # container, sets x-caller-arn for the hub. No key pair.
+                env["MCPHUB_AUTH"] = "iam"
+                env["MCPHUB_ACTOR"] = str(s.get("actor", ""))
+                env["MCPHUB_CALLER_CREDENTIALS"] = json.dumps(s.get("credentials") or {})
+            else:
+                env["MCPHUB_AUTH"] = "hmac"
+                if s.get("credentials_secret"):
+                    env["MCPHUB_CREDENTIALS_SECRET"] = str(s["credentials_secret"])
             cfg[name] = {
                 "type": "stdio",
                 "command": "python3",

@@ -377,7 +377,21 @@ module "mcp_hub_demo" {
   # endpoint-specific URL: resolvable without private DNS on the endpoint
   service_api_url           = "https://${module.portal[0].service_entry_api_id}-${aws_vpc_endpoint.service_entry[0].id}.execute-api.${var.aws_region}.amazonaws.com/svc/"
   service_api_execution_arn = module.portal[0].service_entry_api_execution_arn
-  name_suffix               = var.name_suffix
+  # the IAM entry (modules/mcp_hub_demo/entry.tf): same execute-api endpoint
+  # as the service entry; the backend (IRSA) mints the caller sessions, the
+  # same trust shape as the inference caller role above
+  vpc_cidr_block      = module.network.vpc_cidr_block
+  service_api_vpce_id = aws_vpc_endpoint.service_entry[0].id
+  backend_role_arn    = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/agent-platform-backend-task${var.name_suffix}"
+  eks = {
+    oidc_provider_arn = local.eks_facts.oidc_provider_arn
+    oidc_issuer_host  = local.eks_facts.oidc_issuer_host
+  }
+  backend_service_accounts = [
+    "system:serviceaccount:portal${var.name_suffix}:backend",
+    "system:serviceaccount:portal${var.name_suffix}:entry",
+  ]
+  name_suffix = var.name_suffix
 }
 
 module "team_demo" {

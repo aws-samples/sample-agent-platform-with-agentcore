@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     # (see mcp_hub_credentials_service). The runtime role is granted reads on
     # exactly this prefix.
     mcp_hub_secret_prefix: str = "agent-platform/mcp-hub"
+    # The MCP hub IAM entry's caller role (foundation facts mcp_hub.caller_role_arn):
+    # kernels assume it per agent to call the hub through the private API
+    # Gateway. Empty = no IAM entry in this deployment; an mcp-hub registry
+    # entry with auth = iam is then refused rather than silently signed HMAC.
+    mcp_hub_caller_role_arn: str = ""
 
     # Pipeline delegation: the schedule-runner Lambda cannot execute workflow
     # scripts (no Node in its runtime), so when this is set (Lambda env) a

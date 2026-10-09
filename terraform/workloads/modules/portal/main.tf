@@ -46,6 +46,7 @@ locals {
       PLATFORM_SERVICE_API_URL           = "https://${var.portal.service_entry_api_id}.execute-api.${local.region}.amazonaws.com/svc/"
       PLATFORM_SERVICE_API_ARN_BASE      = "arn:aws:execute-api:${local.region}:${var.account_id}:${var.portal.service_entry_api_id}/svc"
       PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
+      PLATFORM_MCP_HUB_CALLER_ROLE_ARN   = var.mcp_hub_caller_role_arn
     },
     var.oidc.issuer != "" ? {
       PLATFORM_OIDC_ISSUER    = var.oidc.issuer
