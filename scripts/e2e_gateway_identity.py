@@ -21,14 +21,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import boto3
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qa_env import check_same_environment, portal as _portal, users as _users  # noqa: E402  (PORTAL_URL, AWS_REGION, QA_TEST_USERS_SECRET: no defaults)
 
-PORTAL = os.environ.get("PORTAL_URL", "").rstrip("/")
-if not PORTAL:
-    raise SystemExit("set PORTAL_URL=https://<portal-distribution>.cloudfront.net")
-
-sm = boto3.client("secretsmanager")
-cfg = json.loads(sm.get_secret_value(SecretId="agent-platform/team-demo-users")["SecretString"])
+# the environment under test names its own users (realm per environment); a
+# fixed production secret here once pointed a staging run at production's users.
+# The portal must accept the issuer those users sign in to (the same guard as
+# every sibling check): refuse to run across environments.
+PORTAL = _portal()
+check_same_environment()
+cfg = _users()
 ISSUER = cfg["issuer"]
 GATEWAY_NAME = os.environ.get("GATEWAY_NAME", "agent-platform-team")
 

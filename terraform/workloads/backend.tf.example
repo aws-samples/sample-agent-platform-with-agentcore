@@ -1,0 +1,11 @@
+# Copy to backend.tf (gitignored) and fill in. Same bucket as the foundation,
+# its own key: the two roots never share a state.
+terraform {
+  backend "s3" {
+    bucket       = "agent-platform-tfstate-<account>-<region>"
+    key          = "agent-platform-workloads/terraform.tfstate"
+    region       = "<region>"
+    encrypt      = true
+    use_lockfile = true
+  }
+}

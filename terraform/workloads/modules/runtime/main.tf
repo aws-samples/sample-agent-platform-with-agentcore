@@ -1,4 +1,6 @@
-# Port of RuntimeStack: the three AgentCore Runtimes.
+# The three AgentCore Runtimes (workloads layer). Their execution roles,
+# subnets and security group come from the foundation facts; this module only
+# decides which image each runtime runs and how it is configured.
 #
 # All run in VPC mode so egress leaves via the network module's fixed-EIP NAT
 # Gateway (docs/architecture.md — Networking).
@@ -10,7 +12,10 @@
 # the same image; the backend picks the runtime per session / published agent.
 # V1 keeps the original runtime names, V2 runtimes carry a `_v2` suffix.
 
+data "aws_region" "current" {}
+
 locals {
+  region              = data.aws_region.current.region
   version_name_suffix = { V1 = "", V2 = "_v2" }
 
   # Neither the gateway address nor the name of its secret is passed to a
@@ -45,7 +50,7 @@ resource "aws_bedrockagentcore_agent_runtime" "interactive" {
 
   agent_runtime_name = "claude_code_kernel${local.version_name_suffix[each.key]}${var.runtime_name_suffix}"
   description        = "Interactive Claude Code kernel with browser web terminal"
-  role_arn           = aws_iam_role.interactive.arn
+  role_arn           = var.roles.interactive
 
   agent_runtime_artifact {
     container_configuration {
@@ -66,14 +71,9 @@ resource "aws_bedrockagentcore_agent_runtime" "interactive" {
   }
 
   environment_variables = merge(local.common_env, {
-    WORKSPACE_S3_BUCKET = var.workspace_bucket.name
+    WORKSPACE_S3_BUCKET = var.workspace_bucket_name
     WORKSPACE_S3_PREFIX = "workspaces"
   })
-
-  # AgentCore validates image access with the execution role at create/update
-  # time — depend on the policy, not just the role, or the create races the
-  # policy attachment and fails with "image identifier does not exist".
-  depends_on = [aws_iam_role_policy.interactive]
 }
 
 # ------------------------- headless kernel ---------------------------------
@@ -83,7 +83,7 @@ resource "aws_bedrockagentcore_agent_runtime" "sdk" {
 
   agent_runtime_name = "agent_sdk_kernel${local.version_name_suffix[each.key]}${var.runtime_name_suffix}"
   description        = "Headless Claude Agent SDK kernel behind the /invocations contract"
-  role_arn           = aws_iam_role.sdk.arn
+  role_arn           = var.roles.sdk
 
   agent_runtime_artifact {
     container_configuration {
@@ -104,8 +104,6 @@ resource "aws_bedrockagentcore_agent_runtime" "sdk" {
   }
 
   environment_variables = local.common_env
-
-  depends_on = [aws_iam_role_policy.sdk]
 }
 
 # ------------------------- MCP tools server --------------------------------
@@ -115,7 +113,7 @@ resource "aws_bedrockagentcore_agent_runtime" "sdk" {
 resource "aws_bedrockagentcore_agent_runtime" "mcp_tools" {
   agent_runtime_name = "mcp_tools_kernel${var.runtime_name_suffix}"
   description        = "Demo MCP server (mock internal tools) hosted on AgentCore"
-  role_arn           = aws_iam_role.mcp_tools.arn
+  role_arn           = var.roles.mcp_tools
 
   agent_runtime_artifact {
     container_configuration {
@@ -138,6 +136,4 @@ resource "aws_bedrockagentcore_agent_runtime" "mcp_tools" {
   environment_variables = {
     AWS_REGION = local.region
   }
-
-  depends_on = [aws_iam_role_policy.mcp_tools]
 }

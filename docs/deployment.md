@@ -535,7 +535,7 @@ between the tiers, and no IAM permission changes.
 Out of the box that means **only the `admin` user** holds the tier: the portal
 module creates the `platform-admin` Cognito group but *not*
 `platform-super-admin`, and neither `PLATFORM_SUPER_ADMIN_*` variable is set in
-`terraform/modules/portal/workloads.tf` — the backend falls back to the defaults
+`terraform/workloads/modules/portal/main.tf` — the backend falls back to the defaults
 in `config.py`. To put real people in the tier, either create the group and add
 them (`aws cognito-idp create-group --group-name platform-super-admin …`, which
 needs no backend change since the name is the default), or add the variable to

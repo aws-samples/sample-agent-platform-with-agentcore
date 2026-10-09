@@ -5,20 +5,24 @@ Exercises, against a deployed portal:
   Scheduler / Observability / Memory / Evaluation / Channels / Governance
   and the self-service publish flow (workspace -> agent.yaml -> publish).
 
-Environment (all optional, defaults target the sample deployment):
-  PORTAL_URL          e.g. https://dxxxx.cloudfront.net
-  PORTAL_USER         Cognito username (default: admin)
-  PORTAL_PASSWORD     if unset, read from Secrets Manager PORTAL_ADMIN_SECRET
-  PORTAL_ADMIN_SECRET secret with {"username","password"} (default: agent-platform/portal-admin)
-  AWS_REGION          default ap-northeast-1
+Environment (required, no defaults; see scripts/qa_env.py):
+  PORTAL_URL, QA_TEST_USERS_SECRET, AWS_REGION, QA_ENV
+  WORKSPACE_BUCKET    the environment's workspace bucket (agent.yaml is seeded there)
 
-The harness needs AWS credentials for two things only: reading the admin
-password from Secrets Manager and seeding agent.yaml into a session workspace
+Signs in as the environment's ``admin`` test user through its OIDC realm and
+refuses to run if the portal accepts tokens from a different issuer than the
+one the test users sign in to (the cross-environment guard).
+
+The harness needs AWS credentials for two things only: reading the test
+users from Secrets Manager and seeding agent.yaml into a session workspace
 (simulating what a developer does inside the web terminal).
+
+Everything it creates is deleted at the end, also when a step raises
+(atexit), so an aborted run leaves no schedule firing every minute.
 """
 
+import atexit
 import json
-import os
 import sys
 import time
 import urllib.error
@@ -26,14 +30,33 @@ import urllib.request
 
 import boto3
 
-REGION = os.environ.get("AWS_REGION", "ap-northeast-1")
-BASE = os.environ.get("PORTAL_URL", "").rstrip("/")
-USER = os.environ.get("PORTAL_USER", "admin")
+import qa_env
+
+REGION = qa_env.region()
+BASE = qa_env.portal()
+USER = "admin"
 RUN_TAG = time.strftime("%H%M%S")  # unique per run so reruns don't collide
 
 PASSED: list[str] = []
 FAILED: list[str] = []
 WARNED: list[str] = []
+
+# DELETE paths of everything this run created, removed at the end and on any
+# early exit (a schedule left enabled fires a model call every minute).
+CLEANUP: list[str] = []
+_TOKEN = ""
+
+
+def _cleanup() -> None:
+    while CLEANUP:
+        path = CLEANUP.pop()
+        try:
+            http("DELETE", path, token=_TOKEN)
+        except Exception as e:  # noqa: BLE001 - best effort, report and go on
+            print(f"  cleanup {path} failed: {e}")
+
+
+atexit.register(_cleanup)
 
 
 def report(name: str, ok: bool, detail: str = "", warn: bool = False) -> None:
@@ -77,35 +100,18 @@ def http(method: str, path: str, body: dict | None = None, headers: dict | None 
     raise RuntimeError(f"{method} {path} failed after retries: {last}")
 
 
-def get_password() -> str:
-    if os.environ.get("PORTAL_PASSWORD"):
-        return os.environ["PORTAL_PASSWORD"]
-    secret_name = os.environ.get("PORTAL_ADMIN_SECRET", "agent-platform/portal-admin")
-    sm = boto3.client("secretsmanager", region_name=REGION)
-    val = json.loads(sm.get_secret_value(SecretId=secret_name)["SecretString"])
-    return val["password"]
-
-
 def sign_in() -> str:
-    _, cfg = http("GET", "/api/v1/config")
-    assert cfg["auth_mode"] == "cognito", f"unexpected auth mode: {cfg}"
-    idp = boto3.client("cognito-idp", region_name=cfg["cognito_region"])
-    resp = idp.initiate_auth(
-        ClientId=cfg["cognito_client_id"],
-        AuthFlow="USER_PASSWORD_AUTH",
-        AuthParameters={"USERNAME": USER, "PASSWORD": get_password()},
-    )
-    return resp["AuthenticationResult"]["IdToken"]
+    global _TOKEN
+    cfg = qa_env.check_same_environment()
+    _TOKEN = qa_env.token_for(USER)
+    print(f"  signed in (OIDC, {cfg['oidc_issuer']})")
+    return _TOKEN
 
 
 def main() -> int:
-    if not BASE:
-        print("PORTAL_URL is required")
-        return 2
-
-    print(f"== E2E against {BASE} as {USER} ==")
+    env = qa_env.env_name()
+    print(f"== E2E against {BASE} ({env}) as {USER} ==")
     token = sign_in()
-    print("  signed in (Cognito)")
 
     # ---------------------------------------------------------- memory store
     # kick off first: store creation takes minutes
@@ -156,15 +162,15 @@ def main() -> int:
     # simulate the developer dropping agent.yaml in /workspace (the kernel
     # syncs /workspace to this prefix; we write it directly for the test)
     s3 = boto3.client("s3", region_name=REGION)
-    bucket = os.environ.get("WORKSPACE_BUCKET")
-    if not bucket:  # default bucket name from PlatformStack: account-scoped
-        account = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
-        bucket = f"agent-platform-workspaces-{account}-{REGION}"
+    bucket = qa_env.require("WORKSPACE_BUCKET")  # this environment's bucket, never a guessed name
+    CLEANUP.append(f"/api/v1/sessions/{session['session_id']}")
     s3.put_object(Bucket=bucket, Key=f"workspaces/{rsid}/agent.yaml", Body=manifest.encode())
     status, agent = http("POST", "/api/v1/agents/publish-from-session", {"session_id": session["session_id"]}, token=token)
     report("publish.from-session", status == 200 and agent.get("name") == f"e2e-shouter-{RUN_TAG}", str(agent)[:120])
     agent_id = agent.get("id", "")
     v1 = agent.get("version", 0)
+    if agent_id:
+        CLEANUP.append(f"/api/v1/agents/{agent_id}")
 
     status, res = http("POST", f"/api/v1/agents/{agent_id}/invoke", {"prompt": "say hello"}, token=token, timeout=120)
     ok = status == 200 and "E2E_AGENT_OK" in res.get("result", "")
@@ -178,6 +184,7 @@ def main() -> int:
     print("\n[channels] webhook auth + routed reply")
     _, ch = http("POST", "/api/v1/channels", {"name": f"e2e-hook-{RUN_TAG}", "target": f"agent:{agent_id}"}, token=token)
     ch_id, ch_token = ch["id"], ch["token"]
+    CLEANUP.append(f"/api/v1/channels/{ch_id}")
     status, _ = http("POST", f"/api/v1/channels/{ch_id}/webhook", {"message": "ping"},
                      headers={"X-Channel-Token": "wrong-token"})
     report("channels.reject-bad-token", status == 401, f"status {status}")
@@ -193,20 +200,27 @@ def main() -> int:
         "prompt": "Reply with exactly: SCHED_E2E_OK", "expression": "rate(1 minute)",
     }, token=token)
     sched_id = sched["id"]
+    CLEANUP.append(f"/api/v1/schedules/{sched_id}")
     status, res = http("POST", f"/api/v1/schedules/{sched_id}/run-now", token=token, timeout=120)
     report("scheduler.run-now", status == 200 and "SCHED_E2E_OK" in res.get("result", ""), res.get("result", "")[:60])
-    # timed fire: EventBridge Scheduler fires ~1 min after creation (or the
-    # local dev loop ticks every 30 s) and the run itself takes a while
-    deadline = time.time() + 300
-    ticked = False
-    while time.time() < deadline:
-        _, all_s = http("GET", "/api/v1/schedules", token=token)
-        me = next((s for s in all_s if s["id"] == sched_id), {})
-        if me.get("run_count", 0) >= 2:  # run-now + at least one tick
-            ticked = True
-            break
-        time.sleep(15)  # nosemgrep: arbitrary-sleep  (intentional poll interval in E2E harness)
-    report("scheduler.timed-tick", ticked, f"run_count={me.get('run_count')}")
+    if env == "prod":
+        # timed fire: EventBridge Scheduler fires ~1 min after creation (or the
+        # local dev loop ticks every 30 s) and the run itself takes a while
+        deadline = time.time() + 300
+        ticked = False
+        while time.time() < deadline:
+            _, all_s = http("GET", "/api/v1/schedules", token=token)
+            me = next((s for s in all_s if s["id"] == sched_id), {})
+            if me.get("run_count", 0) >= 2:  # run-now + at least one tick
+                ticked = True
+                break
+            time.sleep(15)  # nosemgrep: arbitrary-sleep  (intentional poll interval in E2E harness)
+        report("scheduler.timed-tick", ticked, f"run_count={me.get('run_count')}")
+    else:
+        # the timed path goes through the schedule-runner Lambda, which Terraform
+        # creates as a placeholder; only production has the real code deployed
+        # (scripts/deploy-schedule-lambda.sh) until that deploy is per-environment
+        report("scheduler.timed-tick", False, f"schedule-runner Lambda is a placeholder in {env}; run-now path verified", warn=True)
     http("POST", f"/api/v1/schedules/{sched_id}/disable", token=token)
 
     # -------------------------------------------------------------- eval run
@@ -218,6 +232,7 @@ def main() -> int:
             {"prompt": "What is the capital of France? One word.", "expected": "Paris"},
         ],
     }, token=token)
+    CLEANUP.append(f"/api/v1/evals/datasets/{ds['id']}")
     _, run = http("POST", "/api/v1/evals/runs", {"dataset_id": ds["id"], "target": "agent-sdk"}, token=token)
     deadline = time.time() + 600
     final = {}
@@ -231,7 +246,12 @@ def main() -> int:
 
     # ------------------------------------------------------ memory roundtrip
     print("\n[memory] cross-session recall")
-    if store:
+    if store and env != "prod":
+        # memory stores are account-wide (one platform_default), so a staging
+        # run would write its events into the store production reads; skipped
+        # until stores are per-environment
+        report("memory.cross-session-recall", False, f"memory store is shared with production; not written from {env}", warn=True)
+    elif store:
         deadline = time.time() + 360
         while time.time() < deadline:
             _, store = http("GET", f"/api/v1/memory/stores/{store['id']}", token=token)
@@ -294,11 +314,7 @@ def main() -> int:
 
     # ---------------------------------------------------------------- cleanup
     print("\n[cleanup]")
-    http("DELETE", f"/api/v1/schedules/{sched_id}", token=token)
-    http("DELETE", f"/api/v1/channels/{ch_id}", token=token)
-    http("DELETE", f"/api/v1/evals/datasets/{ds['id']}", token=token)
-    http("DELETE", f"/api/v1/agents/{agent_id}", token=token)
-    http("DELETE", f"/api/v1/sessions/{session['session_id']}", token=token)
+    _cleanup()
     print("  test resources removed")
 
     print(f"\n== RESULT: {len(PASSED)} passed, {len(FAILED)} failed, {len(WARNED)} warnings ==")

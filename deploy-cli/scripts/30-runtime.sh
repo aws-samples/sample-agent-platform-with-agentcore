@@ -115,8 +115,8 @@ NET_CFG="{\"networkMode\":\"VPC\",\"networkModeConfig\":{\"securityGroups\":[\"$
 runtime_ensure() {  # logical-name image-repo role-arn protocol env-json
   local lname="$1" repo="$2" role="$3" proto="$4" env="$5"
   local rt_name="${lname}${RUNTIME_SUFFIX}" arn
-  arn="$(aws bedrock-agentcore-control list-agent-runtimes \
-        --query "agentRuntimes[?agentRuntimeName=='$rt_name'].agentRuntimeArn | [0]" --output text 2>/dev/null || echo None)"
+  arn="$(aws bedrock-agentcore-control list-agent-runtimes --output json \
+        --query "agentRuntimes[?agentRuntimeName=='$rt_name'].agentRuntimeArn | [0]" 2>/dev/null | python3 -c 'import sys,json; v=json.load(sys.stdin); print(v if isinstance(v,str) else "None")' 2>/dev/null || echo None)"
   if [ "$arn" != "None" ] && [ -n "$arn" ]; then
     log "runtime exists $rt_name" >&2; echo "$arn"; return 0
   fi
@@ -161,8 +161,8 @@ log "waiting for runtimes to become READY…"
 for rt in claude_code_kernel agent_sdk_kernel mcp_tools_kernel; do
   n="${rt}${RUNTIME_SUFFIX}"
   for i in $(seq 1 40); do
-    st="$(aws bedrock-agentcore-control list-agent-runtimes \
-      --query "agentRuntimes[?agentRuntimeName=='$n'].status | [0]" --output text 2>/dev/null)"
+    st="$(aws bedrock-agentcore-control list-agent-runtimes --output json \
+      --query "agentRuntimes[?agentRuntimeName=='$n'].status | [0]" 2>/dev/null | python3 -c 'import sys,json; v=json.load(sys.stdin); print(v if isinstance(v,str) else "None")' 2>/dev/null)"
     [ "$st" = "READY" ] && { log "  $n READY"; break; }
     case "$st" in
       CREATE_FAILED|UPDATE_FAILED|DELETING) warn "  $n -> $st"; break ;;

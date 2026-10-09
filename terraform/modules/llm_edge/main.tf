@@ -13,10 +13,13 @@
 # The edge runs on the platform's EKS cluster. Its pods carry
 # aws_security_group.task through a SecurityGroupPolicy (strict enforcing
 # mode, so the 443-only egress below is the pod's real egress), and register
-# into the target group through a TargetGroupBinding.
+# into the target group through a TargetGroupBinding. The Deployment itself is
+# the workloads layer's (terraform/workloads/modules/llm_edge); this module
+# owns the role, the listener, the target group and the security groups it
+# plugs into, published as facts.
 
 locals {
-  namespace = "llm-edge"
+  namespace = "llm-edge${var.name_suffix}"
 }
 
 # ------------------------------ security groups -----------------------------
@@ -192,70 +195,22 @@ resource "aws_lb_listener" "https" {
 }
 
 # --------------------------------- workload ---------------------------------
+# Fluent Bit routes the pod's output here; creating the group pins retention.
 
 resource "aws_cloudwatch_log_group" "edge" {
   name              = "${var.eks.log_group_prefix}/${local.namespace}.edge"
   retention_in_days = 30
 }
 
-resource "helm_release" "edge_sg" {
-  name             = "edge-sg"
-  chart            = "${path.module}/../../charts/pod-security-group"
+# The foundation owns the namespace and the application pipeline's rights in it
+# (see modules/portal/workloads.tf, helm_release.rbac).
+resource "helm_release" "rbac" {
+  name             = "platform-rbac"
+  chart            = "${path.module}/../../charts/platform-rbac"
   namespace        = local.namespace
   create_namespace = true
 
   values = [yamlencode({
-    name             = "edge"
-    securityGroupIds = [aws_security_group.task.id]
+    group = "agent-platform-workloads${var.name_suffix}"
   })]
-}
-
-resource "helm_release" "edge" {
-  name      = "edge"
-  chart     = "${path.module}/../../charts/platform-workload"
-  namespace = local.namespace
-
-  values = [yamlencode({
-    name     = "edge"
-    image    = "${var.llm_edge_repo.url}:${var.image_tag}"
-    replicas = var.desired_count
-    port     = 8080
-    # The gateway key is NOT injected here. It is fetched by the workload role
-    # at request time from the secret named on the session's token item, so a
-    # per-backend secret override in the model control plane keeps working
-    # and the key is never part of the pod spec.
-    env = {
-      PLATFORM_TABLE = var.platform_table.name
-      AWS_REGION     = local.region
-    }
-    serviceAccount = {
-      roleArn = aws_iam_role.edge.arn
-    }
-    probe = {
-      path      = "/healthz"
-      readiness = { initialDelaySeconds = 5, periodSeconds = 10, failureThreshold = 3 }
-      liveness  = { initialDelaySeconds = 30, periodSeconds = 20, failureThreshold = 3 }
-      startup   = { enabled = false, periodSeconds = 10, failureThreshold = 30 }
-    }
-    # ECS ran the edge at 0.5 vCPU / 1 GiB.
-    resources = {
-      requests = { cpu = "500m", memory = "1Gi" }
-      limits   = { memory = "1Gi" }
-    }
-    targetGroups    = [{ arn = aws_lb_target_group.edge.arn, port = 8080 }]
-    dependencyToken = var.eks.controllers_ready
-  })]
-
-  wait            = true
-  timeout         = 600
-  atomic          = true
-  cleanup_on_fail = true
-
-  depends_on = [
-    helm_release.edge_sg,
-    aws_iam_role_policy.edge,
-    aws_cloudwatch_log_group.edge,
-    aws_lb_listener.http,
-    aws_lb_listener.https,
-  ]
 }

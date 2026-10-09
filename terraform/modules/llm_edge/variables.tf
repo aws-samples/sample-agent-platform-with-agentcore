@@ -11,18 +11,6 @@ variable "runtime_sg_id" {
   type        = string
 }
 
-variable "llm_edge_repo" {
-  description = "ECR repository for the llm-edge image"
-  type = object({
-    url = string
-    arn = string
-  })
-}
-
-variable "image_tag" {
-  type = string
-}
-
 variable "llm_gateway_secret" {
   description = "Secrets Manager secret holding the upstream gateway API key. This module's workload role is the only kernel-path principal granted read on it."
   type = object({
@@ -57,12 +45,6 @@ variable "certificate_arn" {
   EOT
   type        = string
   default     = ""
-}
-
-variable "desired_count" {
-  description = "Replicas of the edge Deployment."
-  type        = number
-  default     = 2
 }
 
 variable "eks" {

@@ -5,19 +5,69 @@ stacks in `infrastructure/` (one module per stack) and has since moved the
 containers from ECS Fargate to an EKS cluster; the CDK stacks remain the
 legacy ECS variant.
 
+## Two layers, two roots
+
+Since 2026-10 the configuration is two Terraform roots with separate states.
+This project holds the foundation; the workloads root (`terraform/workloads/`)
+lives in the application project, `sample-agent-platform-with-agentcore`:
+
+| Root | Owns | Changes when | Applied by |
+|---|---|---|---|
+| `terraform/` — the **foundation** | network, EKS cluster and controllers, every IAM role and policy, security groups, load balancers and target groups, Cognito, CloudFront, the private service-entry API, DynamoDB, S3, ECR, Secrets Manager, RDS, log groups, Keycloak and the team demos | the platform's shape changes (new role, new edge, new environment) | the people who own IAM and the network (`deploy:staging` / `deploy:production`) |
+| `terraform/workloads/` — the **workloads** | the three AgentCore runtimes and their platform-version hooks, the backend / entry / llm-edge Deployments (Helm), the schedule-runner Lambda, the session-binding key, image tags, replica counts, model settings | the application changes (a new image, a new runtime version) | the application pipeline (`deploy:workloads:*`), with a role that cannot create IAM, security groups or load balancers |
+
+The foundation publishes what the workloads need as one SSM document,
+`/agent-platform<suffix>/foundation` (`ssm.tf`): names, ARNs, ids, feature
+flags — nothing secret. The workloads root reads that parameter and nothing
+else of the foundation's; in particular it never opens the foundation state,
+which carries secrets. Apply order is foundation first, then workloads, in the
+same workspace (`default` = production, `staging` = staging); both roots refuse
+a workspace that does not match their `environment` variable, and the workloads
+root also refuses facts published for another environment.
+
+The acceptance checks read the same document: `ci/codebuild/run.sh` and
+`deploy-cli/tests/verify.sh` take the portal URL, bucket, table, API and
+cluster names from it through `scripts/foundation_facts.py` (one mapping from
+the old `terraform output` names to paths in the document), so a verify build
+never opens a state either. In the pipeline the foundation's plan and deploy
+jobs appear only when a foundation path changed and its deploys stay manual;
+the workloads root deploys to staging on every merge to the default branch,
+`verify:staging` follows, and production waits for a hand.
+
+`terraform/tests/test_layer_isolation.py` holds the boundary: the workloads
+root may declare only workload resource types, may read the foundation only
+through the facts parameter, and the foundation keeps none of what moved.
+
+Adopting an existing deployment (one that predates the split): the foundation's
+`removed.tf` forgets the moved resources without destroying them; the workloads
+root imports them with blocks generated from the foundation state by
+`workloads/migrate/gen_imports.py`; `ci/codebuild/run.sh` has the
+`adopt-<env>` modes that plan (imports and no-op hooks only) and apply it.
+Both environments were adopted on 2026-10-08 and the `adopt:*` jobs were
+removed from the pipeline afterwards (merge request !7 has them, should a
+new environment ever need the same).
+
+The application pipeline applies the workloads root with its own roles
+(`ci/infra/workloads_roles.tf`): an allowlist with no managed policy, no IAM
+beyond passing the foundation's execution roles to AgentCore and Lambda, and
+Kubernetes rights only through a group the foundation binds to a namespaced
+Role in each workload namespace (`charts/platform-rbac`, installed by
+`modules/portal` and `modules/llm_edge`, which also own the namespaces now).
+`ci/infra/tests/test_workloads_role_isolation.py` holds those properties.
+
 | Module | CDK stack | Contents |
 |---|---|---|
 | `modules/network` | AgentPlatformNetwork | VPC (fresh or reuse) + fixed-EIP NAT + runtime SG |
 | `modules/platform` | AgentPlatformPlatform | workspace S3 + access-log S3, DynamoDB, 7 ECR repos (4 kernel/backend, `llm-edge`, 2 team-auth), LLM-gateway secret |
-| `modules/runtime` | AgentPlatformRuntime | 3 AgentCore runtimes + kernel IAM roles + workspace-access role |
+| `modules/runtime` | AgentPlatformRuntime | kernel IAM roles + workspace-access role + the X-Ray trace destination (the runtimes themselves: `workloads/modules/runtime`) |
 | `modules/eks` | — | The EKS cluster every container runs on: Graviton managed node group, OIDC provider for IRSA, VPC CNI in security-groups-for-Pods mode, CoreDNS/kube-proxy, AWS Load Balancer Controller and Fluent Bit (Helm) |
-| `modules/portal` | AgentPlatformPortal | Cognito, frontend S3+OAC, backend + entry Deployments, ALB, CloudFront, EventBridge Scheduler + runner Lambda + DLQ, private service-entry API (API GW → VPC Link → internal NLB) |
-| `modules/llm_edge` | — | The gateway-key holder: internal ALB + edge Deployment |
+| `modules/portal` | AgentPlatformPortal | Cognito, frontend S3+OAC, the backend's IAM role, ALB, CloudFront, EventBridge Scheduler group + roles + DLQ, private service-entry API (API GW → VPC Link → internal NLB); the backend + entry Deployments and the runner Lambda: `workloads/modules/portal` |
+| `modules/llm_edge` | — | The gateway-key holder's role, internal ALB, target group and security groups; the edge Deployment: `workloads/modules/llm_edge` |
 | `modules/team_auth` | AgentPlatformTeamAuth | Keycloak (RDS PostgreSQL) + 3 team APIs as Deployments behind one ALB + CloudFront |
 | `modules/team_demo` | AgentPlatformTeamDemo | JWT-inbound demo runtime |
 | `modules/mcp_hub_demo` | — | Customer-owned MCP hub + calling-app EC2 demo |
 
-`charts/` holds the two Helm charts the workload modules instantiate —
+`charts/` holds the two Helm charts the workload modules (both roots) instantiate —
 `platform-workload` (Deployment, Service, IRSA service account, optional
 Secret, TargetGroupBinding) and `pod-security-group` (SecurityGroupPolicy).
 The AWS-CLI runbook in `deploy-cli/` installs the same charts, so there is one
@@ -85,6 +135,44 @@ python3 ../scripts/deploy_team_gateway.py
 `enable_team_demo` is gated separately because AgentCore validates the
 Keycloak discovery URL when it creates the JWT authorizer — Keycloak must be
 serving before that apply.
+
+## A second environment in the same cluster (staging)
+
+A staging copy runs from the same configuration in its own state (Terraform
+workspace `staging`) and joins the production cluster instead of creating one.
+`envs/staging.tfvars` is an overlay on `terraform.tfvars`: staging inherits
+production's settings and changes only what it lists.
+
+| What | Production (`default` workspace) | Staging (`staging` workspace) |
+|---|---|---|
+| Names | as before | every fixed name gets `-staging` (`name_suffix`) |
+| EKS | owns cluster, node group, controllers, Fluent Bit | `existing_eks_cluster_name`: reads the cluster, owns only its workloads |
+| Namespaces | `portal`, `llm-edge`, `team-auth` | `portal-staging`, `llm-edge-staging` |
+| Gateway VPC endpoint | owns it (private DNS, one per VPC) | off, resolves to production's |
+| Identity | Keycloak (team_auth) | signs in against the production realm |
+
+```
+terraform workspace new staging            # once
+bash ../ci/tf-plan.sh staging              # refuses if import blocks or the wrong workspace are present
+terraform apply staging.plan
+```
+
+Guards:
+
+- `environment` must match the workspace (production = `default`). A plan with
+  staging overrides in the default workspace, or production tfvars in the
+  staging workspace, fails before a plan file is written. Terraform still
+  prints the actions it computed first, then refuses.
+- Import blocks cannot be made conditional on the workspace. A leftover
+  adoption file with `import` blocks would import production resources into the
+  staging state. `ci/tf-plan.sh` refuses non-production plans while any `.tf`
+  file in this directory contains one; run them from a clean checkout.
+
+First apply, in this order: the staging ECR repositories are new and empty, and
+an AgentCore runtime cannot be created without its image. Apply with
+`enable_runtime = false` and `enable_portal = false` (repos only), push images
+with the suffix, then apply the full overlay. Check CPU headroom first: the
+staging backend, entry and edge request about 1.5 vCPU.
 
 ## Testing / migration validation
 

@@ -39,6 +39,8 @@ variable "vpc_cidr" {
 }
 
 # ----------------------------- model backend -------------------------------
+# use_bedrock / anthropic_* stay here for the team-demo runtime (SDK image);
+# the kernels in terraform/workloads carry their own copies.
 
 variable "llm_gateway_url" {
   description = <<-EOT
@@ -91,36 +93,19 @@ variable "anthropic_default_haiku_model" {
 
 # ------------------------------ image tags ---------------------------------
 
+# The kernel, backend and llm-edge image tags are the workloads root's
+# (terraform/workloads/variables.tf). What stays here tags the images the
+# foundation still runs: Keycloak, the team APIs, the team-demo runtime.
 variable "image_tag" {
-  description = "Shared default tag for all images."
+  description = "Default tag for the foundation's own images (team_auth, team_demo)."
   type        = string
   default     = "latest"
 }
 
-variable "claude_code_image_tag" {
-  type    = string
-  default = ""
-}
-
-variable "sdk_image_tag" {
-  type    = string
-  default = ""
-}
-
 variable "agent_observability" {
-  description = "Opt in to AgentCore Observability for the headless kernel: creates the runtime trace delivery to X-Ray and grants the telemetry IAM statements. Pair with sdk_image_tag pointing at the observability image variant (Dockerfile.otel, tag <tag>-otel); the base image emits no spans."
+  description = "Opt in to AgentCore Observability for the headless kernel: grants the telemetry IAM statements and creates the X-Ray delivery destination. Set the same value in terraform/workloads (which creates the delivery sources and runs the observability image variant)."
   type        = bool
   default     = false
-}
-
-variable "mcp_tools_image_tag" {
-  type    = string
-  default = ""
-}
-
-variable "backend_image_tag" {
-  type    = string
-  default = ""
 }
 
 variable "team_auth_image_tag" {
@@ -156,6 +141,16 @@ variable "oidc_issuer" {
   default     = ""
 }
 
+variable "oidc_realm" {
+  description = "Use this realm of the oidc_issuer Keycloak instead of the issuer's own (e.g. a staging realm with its own test users). Empty = issuer as given."
+  type        = string
+  default     = ""
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]*$", var.oidc_realm))
+    error_message = "oidc_realm must be a bare realm name."
+  }
+}
+
 variable "oidc_client_id" {
   type    = string
   default = "portal-web"
@@ -170,25 +165,23 @@ variable "service_api_allowed_vpces" {
   description = "Caller interface-VPC-endpoint IDs pinned in (and associated with) the private service-entry API."
   type        = list(string)
   default     = []
+  # Empty means no aws:SourceVpce condition at all. A second environment in a
+  # shared account (staging) must not run its private API that open; one that
+  # joins another state's cluster gets that owner's in-VPC endpoint added
+  # (main.tf, data.aws_vpc_endpoint.owner_service_entry), so the list is never
+  # empty there either.
+  validation {
+    condition     = var.environment == "production" || length(var.service_api_allowed_vpces) > 0 || var.existing_eks_cluster_name != ""
+    error_message = "service_api_allowed_vpces must not be empty outside production (empty = no aws:SourceVpce restriction), unless the environment joins an existing cluster (its in-VPC endpoint is added)."
+  }
 }
 
 # ----------------------------- deploy staging ------------------------------
 # CDK deployed stacks one at a time (repos -> push images -> runtimes -> ...).
-# These flags reproduce that order inside a single configuration:
-#   phase 1: terraform apply -var enable_runtime=false -var enable_portal=false
-#   phase 2: push images (scripts/build-and-push.sh)
-#   phase 3: terraform apply
-
-variable "backend_desired_count" {
-  description = "Backend replica count. 2 (spread across nodes/AZs) keeps the control plane serving through rollouts and single-pod failures; 1 is enough for evaluation setups that can tolerate a brief outage on every deploy."
-  type        = number
-  default     = 2
-
-  validation {
-    condition     = var.backend_desired_count >= 1
-    error_message = "backend_desired_count must be at least 1."
-  }
-}
+# These flags reproduce that order across the two roots: the foundation with
+# enable_runtime = false creates repos, roles and edges only; push images; then
+# the full foundation and terraform/workloads. The flags are published in the
+# facts parameter, so the workloads root follows them without restating them.
 
 variable "enable_runtime" {
   description = "Create the AgentCore runtimes (requires kernel images pushed)."
@@ -208,26 +201,10 @@ variable "enable_llm_edge" {
   default     = false
 }
 
-variable "llm_edge_image_tag" {
-  type    = string
-  default = ""
-}
-
 variable "llm_edge_certificate_arn" {
   description = "ACM certificate for the internal llm-edge listener. Empty serves plain HTTP inside the VPC; set this to encrypt the leg carrying prompt content."
   type        = string
   default     = ""
-}
-
-variable "llm_edge_desired_count" {
-  description = "llm-edge replica count. Every gateway-mode model call goes through this service, so 2 keeps it serving through rollouts."
-  type        = number
-  default     = 2
-
-  validation {
-    condition     = var.llm_edge_desired_count >= 1
-    error_message = "llm_edge_desired_count must be at least 1."
-  }
 }
 
 variable "enable_agentcore_gateway_backend" {
@@ -275,17 +252,6 @@ variable "enable_team_demo" {
   description = "Optional JWT-inbound demo runtime (requires enable_team_auth and a live Keycloak — AgentCore validates the discovery URL at create time)."
   type        = bool
   default     = false
-}
-
-variable "entry_desired_count" {
-  description = "Replica count for the data-plane (ENTRY_ONLY) backend Deployment behind the private service-entry API. Published-agent traffic lands here instead of on the management backend."
-  type        = number
-  default     = 1
-
-  validation {
-    condition     = var.entry_desired_count >= 1
-    error_message = "entry_desired_count must be at least 1."
-  }
 }
 
 variable "enable_gateway_vpce" {
@@ -377,6 +343,29 @@ variable "eks_fluent_bit_chart_version" {
 
 # ------------------------------ test isolation -----------------------------
 
+variable "environment" {
+  description = "Which environment this state is. production lives in the default workspace; any other value must run in a Terraform workspace of the same name (checked on every plan), so one environment's tfvars cannot be applied to another's state."
+  type        = string
+  default     = "production"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]*$", var.environment))
+    error_message = "environment must be a lowercase name, e.g. production or staging."
+  }
+}
+
+variable "existing_eks_cluster_name" {
+  description = "Join an EKS cluster that another state owns instead of creating one. Workloads go into namespaces suffixed with name_suffix; the cluster, node group and controllers stay with the owner. Empty = create the cluster."
+  type        = string
+  default     = ""
+}
+
+variable "existing_eks_log_group_prefix" {
+  description = "Log group prefix the owning cluster's Fluent Bit writes under (only with existing_eks_cluster_name). Empty = /eks/<cluster name>."
+  type        = string
+  default     = ""
+}
+
 variable "name_suffix" {
   description = "Appended to every fixed resource name (IAM roles, table, repos, runtimes, ...) so a test copy can coexist with the CDK deployment in the same account. Lowercase alphanumerics and hyphens; keep it short. Empty for production parity."
   type        = string
@@ -388,26 +377,8 @@ variable "name_suffix" {
   }
 }
 
-variable "runtime_platform_versions" {
-  description = "AgentCore Runtime platform versions to deploy the interactive and headless kernels on (one runtime per kernel per version). V2 restores each session from a snapshot: faster, steadier cold starts at a higher unit price; available only in some Regions."
-  type        = list(string)
-  default     = ["V1"]
-}
-
-variable "runtime_default_platform_version" {
-  description = "Platform version for sessions and published agents that do not pick one. Must be in runtime_platform_versions."
-  type        = string
-  default     = "V1"
-}
-
-variable "mcp_tools_platform_version" {
-  description = "Platform version of the single MCP tools runtime."
-  type        = string
-  default     = "V1"
-}
-
 variable "platform_version_python" {
-  description = "Python interpreter Terraform uses to run scripts/set_platform_version.py (needs botocore >= 1.43.98)."
+  description = "Python interpreter Terraform uses for scripts/set_inference_target.py (the agentcore_gateway backend). The runtimes' set_platform_version.py runs from terraform/workloads with its own setting."
   type        = string
   default     = "python3"
 }

@@ -45,7 +45,7 @@ reads as one tree:
    is the one to trust (see gotchas).
 4. **Service span.** AgentCore rewrites the trace parent on the way into the
    microVM and emits an `InvokeAgentRuntime` span carrying that id **only if
-   trace delivery is enabled on the runtime** (`terraform/modules/runtime/observability.tf`,
+   trace delivery is enabled on the runtime** (`terraform/workloads/modules/runtime/observability.tf` for the delivery sources, `terraform/modules/runtime/observability.tf` for the X-Ray destination,
    the console's *Tracing → Enable*). Without it the kernel subtree is in the
    trace but detached from the agent subsegment.
 5. **IAM.** The kernel role needs `xray:PutTraceSegments` /
@@ -137,7 +137,7 @@ correlated by `spanId`; the kernel's stdout lines in the same group also carry
    `agent-sdk-kernel:<tag>` and `agent-sdk-kernel:<tag>-otel`.
 2. In `terraform.tfvars` set `sdk_image_tag = "<tag>-otel"` and
    `agent_observability = true`. The flag creates the runtime trace delivery
-   (`terraform/modules/runtime/observability.tf`) and adds the X-Ray /
+   (`terraform/workloads/modules/runtime/observability.tf`) and adds the X-Ray /
    CloudWatch telemetry statements to the sdk kernel role; without it the
    variant's spans have nowhere to go, and with it but the base image there is
    nothing to deliver.

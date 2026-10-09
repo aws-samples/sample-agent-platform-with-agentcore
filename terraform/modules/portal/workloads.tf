@@ -1,21 +1,18 @@
-# Port of PortalStack (part 2): the backend on EKS behind the ALB (public path
-# via CloudFront) and an internal NLB (private service-entry path).
+# Port of PortalStack (part 2): what the backend on EKS needs around it — the
+# workload IAM role, the ALB (public path via CloudFront) and the internal NLB
+# (private service-entry path), their target groups and security groups.
 #
-# Two Deployments of the same image: `backend` is the management console's API,
-# `entry` runs in ENTRY_ONLY mode and only mounts the IAM service entry
-# (submit/poll for published agents). The private service-entry API lands on
-# `entry`, so production agent traffic never traverses the console's rollout,
-# and the console can be locked down or scaled to zero without touching the
-# serving path.
-#
-# The load balancers, target groups and listeners are Terraform resources; the
-# AWS Load Balancer Controller registers pod IPs into the target groups through
-# a TargetGroupBinding that the workload chart ships. Pods carry
-# aws_security_group.service through a SecurityGroupPolicy, so the reachability
-# rules below read exactly as they did for the ECS tasks.
+# The Deployments themselves (`backend`, the management console's API, and
+# `entry`, the ENTRY_ONLY data plane behind the private service-entry API)
+# are the workloads layer's: terraform/workloads/modules/portal instantiates
+# the Helm charts with the role ARN, target group ARNs and security group id
+# published below. The AWS Load Balancer Controller registers pod IPs into the
+# target groups through a TargetGroupBinding that the workload chart ships;
+# pods carry aws_security_group.service through a SecurityGroupPolicy, so the
+# reachability rules below read exactly as they did for the ECS tasks.
 
 locals {
-  namespace = "portal"
+  namespace = "portal${var.name_suffix}"
 }
 
 # ------------------------------ workload role ------------------------------
@@ -455,137 +452,18 @@ resource "aws_lb_listener" "service_entry" {
   }
 }
 
-# ------------------------------- workloads ---------------------------------
-
-locals {
-  backend_env = merge(
-    {
-      PLATFORM_AWS_REGION                        = local.region
-      PLATFORM_DYNAMO_TABLE                      = var.platform_table.name
-      PLATFORM_WORKSPACE_BUCKET                  = var.workspace_bucket.name
-      PLATFORM_INTERACTIVE_RUNTIME_ARN           = var.interactive_runtime_arn
-      PLATFORM_SDK_RUNTIME_ARN                   = var.sdk_runtime_arn
-      PLATFORM_MCP_TOOLS_RUNTIME_ARN             = var.mcp_tools_runtime_arn
-      PLATFORM_INTERACTIVE_RUNTIME_ARNS          = jsonencode(var.interactive_runtime_arns)
-      PLATFORM_SDK_RUNTIME_ARNS                  = jsonencode(var.sdk_runtime_arns)
-      PLATFORM_DEFAULT_PLATFORM_VERSION          = var.default_platform_version
-      PLATFORM_WORKSPACE_ACCESS_ROLE_ARN         = var.workspace_access_role_arn
-      PLATFORM_LLM_EDGE_URL                      = var.llm_edge_url
-      PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN = var.agentcore_gateway_caller_role_arn
-      # Scoped to the portal's own origin. The API sits behind the same
-      # CloudFront domain as the SPA, so same-origin calls need no CORS at
-      # all — this only readmits the one legitimate cross-origin caller
-      # while ending the reflect-any-Origin + allow-credentials combination.
-      PLATFORM_CORS_ORIGINS              = "https://${aws_cloudfront_distribution.portal.domain_name}"
-      PLATFORM_COGNITO_POOL_ID           = aws_cognito_user_pool.portal.id
-      PLATFORM_COGNITO_CLIENT_ID         = aws_cognito_user_pool_client.portal.id
-      PLATFORM_SCHEDULER_GROUP           = aws_scheduler_schedule_group.portal.name
-      PLATFORM_SCHEDULER_LAMBDA_ARN      = aws_lambda_function.schedule_runner.arn
-      PLATFORM_SCHEDULER_ROLE_ARN        = aws_iam_role.scheduler.arn
-      PLATFORM_SCHEDULER_DLQ_ARN         = aws_sqs_queue.schedule_dlq.arn
-      PLATFORM_SERVICE_ENTRY_SECRET_NAME = aws_secretsmanager_secret.service_entry.name
-      PLATFORM_SERVICE_API_URL           = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
-      PLATFORM_SERVICE_API_ARN_BASE      = "arn:aws:execute-api:${local.region}:${local.account}:${aws_api_gateway_rest_api.service_entry.id}/svc"
-      PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
-    },
-    var.oidc_issuer != "" ? {
-      PLATFORM_OIDC_ISSUER    = var.oidc_issuer
-      PLATFORM_OIDC_CLIENT_ID = var.oidc_client_id
-      PLATFORM_OIDC_AUDIENCE  = var.oidc_audience
-    } : {},
-  )
-
-  backend_image = "${var.kernel_repos["backend"].url}:${var.backend_image_tag}"
-
-  # ECS ran the backend at 0.5 vCPU / 1 GiB.
-  backend_resources = {
-    requests = { cpu = "500m", memory = "1Gi" }
-    limits   = { memory = "1Gi" }
-  }
-
-  workloads = {
-    backend = {
-      replicas      = var.backend_desired_count
-      env           = local.backend_env
-      target_groups = [{ arn = aws_lb_target_group.backend.arn, port = 8000 }]
-    }
-    entry = {
-      replicas      = var.entry_desired_count
-      env           = merge(local.backend_env, { PLATFORM_ENTRY_ONLY = "1" })
-      target_groups = [{ arn = aws_lb_target_group.service_entry.arn, port = 8000 }]
-    }
-  }
-}
-
-# Security groups first: a SecurityGroupPolicy only applies to pods created
-# after it exists, so it is its own release the workload depends on.
-resource "helm_release" "workload_sg" {
-  for_each = local.workloads
-
-  name             = "${each.key}-sg"
-  chart            = "${path.module}/../../charts/pod-security-group"
+# ------------------------------- namespace ---------------------------------
+# The foundation owns the namespace and what the application pipeline may do
+# in it: this release creates the namespace and binds the pipeline's group
+# (ci/infra, access entry kubernetes_groups) to a namespaced Role covering the
+# workload charts' kinds. The Deployments themselves are terraform/workloads'.
+resource "helm_release" "rbac" {
+  name             = "platform-rbac"
+  chart            = "${path.module}/../../charts/platform-rbac"
   namespace        = local.namespace
   create_namespace = true
 
   values = [yamlencode({
-    name             = each.key
-    securityGroupIds = [aws_security_group.service.id]
+    group = "agent-platform-workloads${var.name_suffix}"
   })]
-}
-
-resource "helm_release" "workload" {
-  for_each = local.workloads
-
-  name      = each.key
-  chart     = "${path.module}/../../charts/platform-workload"
-  namespace = local.namespace
-
-  values = [yamlencode({
-    name     = each.key
-    image    = local.backend_image
-    replicas = each.value.replicas
-    port     = 8000
-    env      = each.value.env
-    serviceAccount = {
-      roleArn = aws_iam_role.backend.arn
-    }
-    probe = {
-      path      = "/health"
-      readiness = { initialDelaySeconds = 5, periodSeconds = 10, failureThreshold = 3 }
-      liveness  = { initialDelaySeconds = 30, periodSeconds = 20, failureThreshold = 3 }
-      startup   = { enabled = false, periodSeconds = 10, failureThreshold = 30 }
-    }
-    resources       = local.backend_resources
-    targetGroups    = each.value.target_groups
-    dependencyToken = var.eks.controllers_ready
-  })]
-
-  # Secret values travel base64-encoded straight into the Secret's `data`
-  # (see the chart). The session-binding key must be identical on every
-  # backend/entry replica or a caller's session would resolve differently
-  # depending on which pod answered.
-  set_sensitive = [
-    {
-      name  = "secretEnv.PLATFORM_SESSION_BINDING_SECRET"
-      value = base64encode(random_password.session_binding.result)
-      type  = "string"
-    },
-  ]
-
-  # Like the ECS deployment circuit breaker: a rollout whose pods never become
-  # ready is rolled back to the previous revision instead of left half-done.
-  wait            = true
-  timeout         = 600
-  atomic          = true
-  cleanup_on_fail = true
-
-  depends_on = [
-    helm_release.workload_sg,
-    aws_iam_role_policy.backend,
-    aws_cloudwatch_log_group.workloads,
-    # the target groups must already hang off a listener rule before pods
-    # register into them
-    aws_lb_listener_rule.origin_verify,
-    aws_lb_listener.service_entry,
-  ]
 }

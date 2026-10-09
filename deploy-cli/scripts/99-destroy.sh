@@ -66,8 +66,8 @@ t aws cloudfront delete-function --name "$NAME-spa-rewrite" \
 
 # ---- AgentCore runtimes ----
 for n in claude_code_kernel agent_sdk_kernel mcp_tools_kernel; do
-  id="$(aws bedrock-agentcore-control list-agent-runtimes \
-        --query "agentRuntimes[?agentRuntimeName=='${n}${RUNTIME_SUFFIX}'].agentRuntimeId | [0]" --output text 2>/dev/null)"
+  id="$(aws bedrock-agentcore-control list-agent-runtimes --output json \
+        --query "agentRuntimes[?agentRuntimeName=='${n}${RUNTIME_SUFFIX}'].agentRuntimeId | [0]" 2>/dev/null | python3 -c 'import sys,json; v=json.load(sys.stdin); print(v if isinstance(v,str) else "None")' 2>/dev/null)"
   [ -n "$id" ] && [ "$id" != "None" ] && t aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id "$id"
 done
 
