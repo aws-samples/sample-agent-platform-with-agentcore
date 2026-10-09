@@ -111,8 +111,9 @@ def check_same_environment() -> dict:
     portal_issuer = (cfg.get("oidc_issuer") or "").rstrip("/")
     users_issuer = users()["issuer"].rstrip("/")
     if not portal_issuer or portal_issuer != users_issuer:
+        # the test users' issuer comes out of the secret payload and is kept out of the log
         print("refusing to run: the portal accepts tokens from "
-              f"{portal_issuer or '<no oidc_issuer in /api/v1/config>'} but QA_TEST_USERS_SECRET signs in to "
-              f"{users_issuer}: PORTAL_URL and the test users are not the same environment", file=sys.stderr)
+              f"{portal_issuer or '<no oidc_issuer in /api/v1/config>'} but the test users in QA_TEST_USERS_SECRET "
+              "sign in to a different issuer: PORTAL_URL and the test users are not the same environment", file=sys.stderr)
         sys.exit(2)
     return cfg

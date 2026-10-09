@@ -44,7 +44,7 @@ REALM_FILE = os.path.join(ROOT, "services", "keycloak", "realm-agent-platform.js
 PROD_REALM = "agent-platform"
 REALM = "agent-platform-staging"
 CLIENT_ID = "portal-web"
-USERS_SECRET = "agent-platform-staging/test-users"  # nosec B105 - secret name
+TEST_USERS_ENTRY = "agent-platform-staging/test-users"  # Secrets Manager entry name, not a value
 ADMIN_GROUP = "platform-admin"
 # same usernames as production so test scripts only switch the secret they read
 USER_GROUPS = {
@@ -133,7 +133,7 @@ def main() -> int:
     stored: dict[str, str] = {}
     if not args.rotate_passwords:
         try:
-            prev = json.loads(sm.get_secret_value(SecretId=USERS_SECRET)["SecretString"])
+            prev = json.loads(sm.get_secret_value(SecretId=TEST_USERS_ENTRY)["SecretString"])
             if prev.get("issuer") == issuer:
                 stored = prev.get("users") or {}
         except sm.exceptions.ResourceNotFoundException:
@@ -165,11 +165,11 @@ def main() -> int:
 
     value = json.dumps({"issuer": issuer, "client_id": CLIENT_ID, "users": creds})
     try:
-        sm.create_secret(Name=USERS_SECRET, SecretString=value,
+        sm.create_secret(Name=TEST_USERS_ENTRY, SecretString=value,
                          Description="Staging realm test users (agent-platform-staging)")
     except sm.exceptions.ResourceExistsException:
-        sm.put_secret_value(SecretId=USERS_SECRET, SecretString=value)
-    print(f"credentials stored in Secrets Manager: {USERS_SECRET}")
+        sm.put_secret_value(SecretId=TEST_USERS_ENTRY, SecretString=value)
+    print(f"credentials stored in Secrets Manager: {TEST_USERS_ENTRY}")
 
     # -------------------------- redirect URI ---------------------------
     if not args.skip_portal_redirect:

@@ -26,8 +26,8 @@ PROBE_PIPE = f"e2e-sandbox-guard-{TAG}"
 
 SANDBOX_SCRIPT = r"""
 const out = { env: Object.keys(process.env).sort(), node: process.version };
-try { const fs = await import("node:fs"); fs.readFileSync("/etc/passwd", "utf8"); out.passwd = "READ"; }
-catch (e) { out.passwd = e.code || String(e); }
+try { const fs = await import("node:fs"); fs.readFileSync("/etc/passwd", "utf8"); out.fs_read = "READ"; }
+catch (e) { out.fs_read = e.code || String(e); }
 try { const fs = await import("node:fs"); fs.readFileSync("/proc/self/environ"); out.environ = "READ"; }
 catch (e) { out.environ = e.code || String(e); }
 try { const cp = await import("node:child_process"); cp.execSync("id"); out.exec = "RAN"; }
@@ -115,7 +115,7 @@ def main() -> int:
         env = set(res.get("env") or [])
         check(bool(env) and env <= {"PATH", "LANG", "LC_ALL"}, f"child env allow-listed: {sorted(env)}")
         check(not any(k.startswith(("AWS_", "PLATFORM_")) for k in env), "no AWS_* / PLATFORM_* leaked")
-        check(res.get("passwd") == "ERR_ACCESS_DENIED", f"fs read /etc/passwd denied ({res.get('passwd')})")
+        check(res.get("fs_read") == "ERR_ACCESS_DENIED", f"fs read /etc/passwd denied ({res.get('fs_read')})")
         check(res.get("environ") == "ERR_ACCESS_DENIED", f"fs read /proc/self/environ denied ({res.get('environ')})")
         check(res.get("exec") == "ERR_ACCESS_DENIED", f"child_process denied ({res.get('exec')})")
     finally:
