@@ -83,7 +83,7 @@ def list_runs(
 
 @router.get("/pipeline-runs/{run_id}")
 def get_run(run_id: str, user: str = Depends(get_current_user)):
-    run = pipeline_service.get_run(run_id)
+    run = pipeline_service.get_run_full(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return run

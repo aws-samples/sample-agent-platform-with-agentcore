@@ -34,7 +34,10 @@ PK = "SVCINV"
 
 # Result payloads are capped so one chatty agent can't blow the 400KB
 # DynamoDB item ceiling.
-RESULT_CHAR_CAP = 200_000
+# Bytes, not characters: the whole item must stay under DynamoDB's 400 KB, and
+# CJK text is three bytes per character, so a 200,000-character cap could fail
+# the final write and turn a successful call into a "failed" one.
+RESULT_BYTES_CAP = 300_000
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="svc-inv")
 
@@ -42,6 +45,11 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="svc-inv")
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
+
+def _utf8_prefix(text: str, max_bytes: int) -> str:
+    """The longest prefix of ``text`` that encodes to at most ``max_bytes``."""
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
 
 class ServiceInvocationService:
     def __init__(self) -> None:
@@ -56,6 +64,8 @@ class ServiceInvocationService:
             "status": item.get("inv_status", "queued"),
             "conversation_id": item.get("conversation_id", ""),
             "result": item.get("result", ""),
+            # true when the agent's answer exceeded RESULT_BYTES_CAP and was cut
+            "result_truncated": bool(item.get("result_truncated", False)),
             "error": item.get("error", ""),
             # stored JSON-encoded: DynamoDB rejects raw floats (cost figures)
             "usage": json.loads(item.get("usage") or "{}"),
@@ -145,7 +155,8 @@ class ServiceInvocationService:
             self._update(
                 inv_id,
                 inv_status="succeeded" if result.get("ok") else "failed",
-                result=str(result.get("result", ""))[:RESULT_CHAR_CAP],
+                result=_utf8_prefix(str(result.get("result", "")), RESULT_BYTES_CAP),
+                result_truncated=len(str(result.get("result", "")).encode("utf-8")) > RESULT_BYTES_CAP,
                 error="" if result.get("ok") else str(result.get("raw", {}))[:2000],
                 usage=json.dumps(result.get("usage") or {}),
                 runtime_session_id=result.get("runtime_session_id", ""),

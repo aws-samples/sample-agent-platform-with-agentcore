@@ -243,7 +243,12 @@ export interface PipelineRun {
   finished_at: string
   phase: string
   trace_id: string
+  /** In run lists, the first 100 calls; GET /pipeline-runs/{id} returns all of them. */
   agents: PipelineRunAgent[]
+  /** Every agent call of the run, including those beyond the preview. */
+  agents_total: number
+  /** Exact sum over every call; null for runs recorded before the total existed. */
+  cost_usd_total: number | null
   logs: string[]
   result: Record<string, unknown> | null
   error: string
