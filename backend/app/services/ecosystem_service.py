@@ -81,7 +81,7 @@ class EcosystemService:
         )
         return resp.get("Items", [])
 
-    def _put_mcp(self, name, description, kind, target, builtin=False, headers=None) -> dict:
+    def _put_mcp(self, name, description, kind, target, builtin=False, headers=None, auth="") -> dict:
         item = {
             "PK": PK,
             "SK": f"MCP#{uuid.uuid4().hex[:12]}",
@@ -89,6 +89,10 @@ class EcosystemService:
             "description": description,
             "kind": kind,  # agentcore-runtime | agentcore-gateway | url | mcp-hub | builtin
             "target": target,  # runtime ARN | gateway MCP URL | http(s) URL
+            # mcp-hub only: how the application authenticates — hmac (per-agent
+            # key pair, target = the hub) | iam (kernel IAM identity through the
+            # hub's private API Gateway entry, target = the entry URL)
+            "auth": auth if kind == "mcp-hub" else "",
             # optional request headers for ``url`` servers. Values may contain
             # {{secret:name}} (resolved in the kernel) or {{user_token}}
             # (resolved per invocation from the caller's own token) — no
@@ -129,6 +133,7 @@ class EcosystemService:
             "kind": item.get("kind", ""),
             "target": item.get("target", ""),
             "headers": dict(item.get("headers") or {}),
+            "auth": item.get("auth", "") or ("hmac" if item.get("kind") == "mcp-hub" else ""),
             "s3_prefix": item.get("s3_prefix", ""),
             "builtin": bool(item.get("builtin")),
             "created_at": item.get("created_at", ""),
@@ -150,14 +155,22 @@ class EcosystemService:
             key=lambda x: x["created_at"],
         )
 
-    def create_mcp_server(self, name, description, kind, target, headers=None) -> dict:
+    def create_mcp_server(self, name, description, kind, target, headers=None, auth="hmac") -> dict:
         if kind == "mcp-hub" and not headers:
             # the hub resolves the acting user from this header; default the
             # standard identity-forwarding placeholder so a console-registered
             # hub works without hand-writing header JSON
             headers = {"X-MCPHUB-SSO-TOKEN": "{{user_token}}"}
+        if kind == "mcp-hub" and auth == "iam":
+            # fail the registration, not every later session, when this
+            # deployment has no IAM entry to sign for
+            from app.services.mcp_hub_credentials_service import (
+                mcp_hub_credentials_service,
+            )
+
+            mcp_hub_credentials_service.require_iam_available()
         return self._to_public(
-            self._put_mcp(name, description, kind, target, headers=headers)
+            self._put_mcp(name, description, kind, target, headers=headers, auth=auth)
         )
 
     def create_skill(self, name, description, skill_md) -> dict:
@@ -175,9 +188,12 @@ class EcosystemService:
         return True
 
     def resolve_session_config(
-        self, mcp_server_ids: list[str], skill_ids: list[str]
+        self, mcp_server_ids: list[str], skill_ids: list[str], with_credentials: bool = True
     ) -> dict:
-        """Resolve registry IDs into the config the kernel applies at warmup."""
+        """Resolve registry IDs into the config the kernel applies at warmup.
+
+        ``with_credentials=False`` only validates the attachments (session
+        creation): no caller-role session is minted for an iam hub entry."""
         self._ensure_seeded()
         mcp = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("MCP#")}
         skills = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("SKILL#")}
@@ -191,20 +207,33 @@ class EcosystemService:
             }
             if entry.get("kind") == "mcp-hub":
                 # A hub attachment outside a published agent (workbench
-                # session, Debug console) signs as the shared dev-workbench
-                # Actor — one platform-owned pair, lazily minted here, that
-                # the hub operator registers once. The acting user still
-                # rides in the forwarded SSO token, so hub-side permissions
-                # stay per-user.
+                # session, Debug console) acts as the shared dev-workbench
+                # Actor. The acting user still rides in the forwarded SSO
+                # token, so hub-side permissions stay per-user.
                 from app.services.mcp_hub_credentials_service import (
                     WORKBENCH_ACTOR_ID,
                     mcp_hub_credentials_service,
                 )
 
-                mcp_hub_credentials_service.ensure_workbench()
-                server["credentials_secret"] = mcp_hub_credentials_service.secret_name(
-                    WORKBENCH_ACTOR_ID
-                )
+                if (entry.get("auth") or "hmac") == "iam":
+                    # this backend mints a dev-workbench session of the hub
+                    # caller role for the kernel (like llm_credentials); the
+                    # kernel signs through the IAM entry with it. No key pair.
+                    mcp_hub_credentials_service.require_iam_available()
+                    server["auth"] = "iam"
+                    server["actor"] = mcp_hub_credentials_service.iam_actor(WORKBENCH_ACTOR_ID)
+                    if with_credentials:
+                        server["credentials"] = mcp_hub_credentials_service.mint_iam_session(
+                            server["actor"], entry.get("target", "")
+                        )
+                else:
+                    # one platform-owned pair, lazily minted here, that the
+                    # hub operator registers once
+                    mcp_hub_credentials_service.ensure_workbench()
+                    server["auth"] = "hmac"
+                    server["credentials_secret"] = mcp_hub_credentials_service.secret_name(
+                        WORKBENCH_ACTOR_ID
+                    )
             return server
 
         return {

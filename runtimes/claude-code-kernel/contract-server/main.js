@@ -555,7 +555,23 @@ function applySessionConfig(config) {
           MCPHUB_SSO_TOKEN_FILE: tokenFile,
           AWS_REGION: region,
         };
-        if (s.credentials_secret) env.MCPHUB_CREDENTIALS_SECRET = String(s.credentials_secret);
+        if (s.auth === "iam") {
+          // IAM entry: the backend minted a hub caller-role session named after
+          // this actor (dev-workbench for a workbench session) and sent it in the
+          // warmup payload, like llm_credentials; the proxy SigV4-signs through
+          // the platform's private API Gateway with it. Like the token, the
+          // credentials go into a 0600 file under /tmp — never into .mcp.json
+          // (which syncs to S3) — and a re-warmup rewrites the file in place.
+          const credsFile = `/tmp/.mcp-hub-creds-${safeName}`;
+          // nosemgrep: detect-non-literal-fs-filename  (fixed /tmp prefix, name stripped to [a-zA-Z0-9_-])
+          fs.writeFileSync(credsFile, JSON.stringify(s.credentials || {}), { mode: 0o600 });
+          env.MCPHUB_AUTH = "iam";
+          env.MCPHUB_ACTOR = String(s.actor || "");
+          env.MCPHUB_CALLER_CREDENTIALS_FILE = credsFile;
+        } else {
+          env.MCPHUB_AUTH = "hmac";
+          if (s.credentials_secret) env.MCPHUB_CREDENTIALS_SECRET = String(s.credentials_secret);
+        }
         servers[s.name] = {
           type: "stdio",
           command: "python3",

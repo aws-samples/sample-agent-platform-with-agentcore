@@ -33,15 +33,11 @@ Run after scripts/seed_mcp_hub_demo.py.
 import base64
 import json
 import os
-import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import time
 
 import boto3
 
-TERRAFORM_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "terraform"
-)
 DEMO_CHANNEL_NAME = "mcp-hub-demo-app"
 
 failures: list[str] = []
@@ -53,15 +49,39 @@ def check(tag: str, ok: bool, detail: str) -> None:
         failures.append(tag)
 
 
+# The foundation (network, hub EC2s, IAM entry) lives in the operations
+# project; its state is not ours to open. Everything these scripts need is
+# published as the facts document (scripts/foundation_facts.py maps the names).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import foundation_facts  # noqa: E402
+
+_FACTS: dict | None = None
+
+
+def _facts() -> dict:
+    global _FACTS
+    if _FACTS is None:
+        name = os.environ.get("QA_FACTS_PARAMETER", "/agent-platform/foundation")
+        doc = json.loads(boto3.client("ssm").get_parameter(Name=name)["Parameter"]["Value"])
+        if doc.get("schema_version") != 1:
+            raise SystemExit(f"{name}: not a foundation facts document")
+        _FACTS = doc
+    return _FACTS
+
+
+def _fact(name: str) -> str:
+    present, value = foundation_facts.lookup(_facts(), name)
+    if not present or value in (None, ""):
+        raise SystemExit(
+            f"foundation fact {name} is absent — is the operations stack applied with "
+            f"enable_mcp_hub_demo=true (facts section mcp_hub)?"
+        )
+    return value if isinstance(value, str) else json.dumps(value)
+
+
 def tf_output(name: str) -> str:
-    proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-        ["terraform", f"-chdir={TERRAFORM_DIR}", "output", "-raw", name],
-        capture_output=True, text=True, timeout=120, check=False,
-    )
-    value = proc.stdout.strip()
-    if proc.returncode != 0 or not value or value == "null":
-        raise SystemExit(f"terraform output {name} unavailable")
-    return value
+    """Kept under its old name: the values now come from the facts document."""
+    return _fact(name)
 
 
 def run_on(ssm, instance_id: str, script: str, timeout_s: int = 900) -> tuple[bool, str, str]:
@@ -235,6 +255,32 @@ def main() -> int:
             "WB-USER",
             bool(res.get("ok")) and "L5" in res.get("result", ""),
             f"ok={res.get('ok')} result={res.get('result', '')[:160]!r}",
+        )
+
+    # ---- which application-auth path did the hub actually see? ------------
+    # The hub logs the verified actor on every request: "entry actor verified"
+    # on the IAM path (x-caller-arn behind the gateway's shared secret), "hmac
+    # actor verified" on the HMAC path. The registry entry says which one this
+    # deployment is on; the log must agree, and the other path must be silent.
+    if hub_entry:
+        auth = hub_entry.get("auth") or "hmac"
+        want, other = ("entry", "hmac") if auth == "iam" else ("hmac", "entry")
+        ok, out, err = run_on(
+            ssm, hub_instance,
+            "journalctl -u mcp-hub --since '-20 min' --no-pager -o cat | "
+            f"grep -c '{want} actor verified' ; "
+            "journalctl -u mcp-hub --since '-20 min' --no-pager -o cat | "
+            f"grep -c '{other} actor verified' || true",
+            timeout_s=60,
+        )
+        counts = [c.strip() for c in out.strip().splitlines() if c.strip()]
+        seen = int(counts[0]) if counts and counts[0].isdigit() else -1
+        stray = int(counts[1]) if len(counts) > 1 and counts[1].isdigit() else 0
+        check(
+            "HUB-AUTH-PATH",
+            ok and seen >= 3 and stray == 0,
+            f"registry auth={auth}: {seen} '{want} actor verified' lines, {stray} '{other}' lines in the last 20 min"
+            + ("" if ok else f" ({err.strip()[:200]})"),
         )
 
     print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'all passed'}")

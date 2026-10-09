@@ -28,6 +28,7 @@ export interface EcosystemEntry {
   kind: string
   target: string
   headers?: Record<string, string>
+  auth?: string // mcp-hub only: 'hmac' | 'iam'
   s3_prefix: string
   builtin: boolean
   created_at: string
@@ -133,8 +134,10 @@ export interface PublishedAgent {
   model: string
   platform_version: PlatformVersion | '' // '' = platform default
   // MCP hub Actor identity ('' unless an mcp-hub server is attached).
-  // The access key identifies this agent to the hub — register it there.
+  // HMAC path: the access key identifies this agent to the hub — register it there.
   mcp_hub_access_key: string
+  // IAM path: the AssumeRole session name the hub sees (agent-<id>); nothing to register.
+  mcp_hub_actor: string
   version: number
   source: string
   created_by: string
@@ -603,7 +606,7 @@ export const api = {
   getUsageToday: () => request<UsageToday>('/api/v1/governance/usage'),
   listAuditEvents: () => request<AuditEvent[]>('/api/v1/governance/audit'),
   listMcpServers: () => request<EcosystemEntry[]>('/api/v1/ecosystem/mcp-servers'),
-  createMcpServer: (body: { name: string; description: string; kind: string; target: string }) =>
+  createMcpServer: (body: { name: string; description: string; kind: string; target: string; auth?: string }) =>
     request<EcosystemEntry>('/api/v1/ecosystem/mcp-servers', { method: 'POST', body: JSON.stringify(body) }),
   deleteMcpServer: (id: string) =>
     request<{ ok: boolean }>(`/api/v1/ecosystem/mcp-servers/${id}`, { method: 'DELETE' }),

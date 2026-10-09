@@ -250,6 +250,14 @@ export default function PublishPage() {
                   hub actor: {a.mcp_hub_access_key}
                 </span>
               )}
+              {a.mcp_hub_actor && (
+                <span
+                  className="badge bg-emerald-50 font-mono text-emerald-700"
+                  title="This agent reaches the MCP hub through its IAM entry: the kernel assumes the hub caller role under this session name, which the hub sees as the actor. Nothing to register."
+                >
+                  hub actor (IAM): {a.mcp_hub_actor}
+                </span>
+              )}
             </div>
             <p className="mt-2 font-mono text-[10px] text-slate-400">
               POST /api/v1/agents/{a.id}/invoke · {a.source} · by {a.created_by}

@@ -29,9 +29,34 @@ servers:
   - name: hr
     url: http://127.0.0.1:9002/mcp
     allowed_departments: [hr]
+
+# IAM entry (the platform's private API Gateway in front of this hub): a
+# request that carries the shared header secret is trusted to come through the
+# API, and the actor is the assumed-role session name in x-caller-arn
+# (agent-<id> / dev-workbench of the caller role). Any other principal, or a
+# missing/wrong secret, is refused. Department routing still follows the SSO
+# token the request carries, exactly as on the HMAC path.
+entry_identity:
+  identity_header: x-caller-arn
+  secret_header: x-mcp-hub-entry-secret
+  secret_env: HUB_ENTRY_SECRET
+  caller_role: ${caller_role_name}
 EOF
 
 touch /etc/mcp-hub/actors.env
+
+# IAM entry shared secret: pulled under the instance role at boot (never in
+# user_data in clear), loaded into the hub's environment by systemd. The
+# value never appears in a command line: this script runs under xtrace, which
+# would echo it into the cloud-init log (readable with ec2:GetConsoleOutput).
+# The fetch writes straight to a 0600 file and the key name is prepended in
+# place; xtrace is off around it as well.
+set +x
+( umask 077; aws secretsmanager get-secret-value --region ${region} --secret-id "${entry_secret_name}" \
+    --query SecretString --output text > /etc/mcp-hub/entry.env )
+sed -i 's/^/HUB_ENTRY_SECRET=/' /etc/mcp-hub/entry.env
+chmod 600 /etc/mcp-hub/entry.env
+set -x
 
 # Actor sync: invoked over SSM with secret NAMES as arguments (the values are
 # pulled here, under the instance role, so they never transit the SSM command
@@ -72,6 +97,7 @@ Wants=network-online.target
 Environment=HUB_CONFIG=/opt/mcp-hub/config.yaml
 Environment=PORT=8000
 EnvironmentFile=-/etc/mcp-hub/actors.env
+EnvironmentFile=-/etc/mcp-hub/entry.env
 WorkingDirectory=/opt/mcp-hub/src/hub
 ExecStart=/opt/mcp-hub/venv/bin/python app.py
 Restart=always

@@ -103,7 +103,8 @@ def create_session(req: SessionCreateRequest, user: str = Depends(get_current_us
     # Secrets Manager round-trip here rather than at warmup.
     if req.mcp_server_ids or req.skill_ids:
         try:
-            ecosystem_service.resolve_session_config(req.mcp_server_ids, req.skill_ids)
+            # validation only: the hub caller session (iam) is minted at warmup
+            ecosystem_service.resolve_session_config(req.mcp_server_ids, req.skill_ids, with_credentials=False)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     # The platform version is fixed for the session's life: AgentCore scopes a

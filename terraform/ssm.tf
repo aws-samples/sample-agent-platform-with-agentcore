@@ -76,6 +76,21 @@ locals {
     }) : null
 
     llm_edge = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].workload_facts : null
+
+    # the optional customer-owned MCP hub demo and its IAM entry (null when the
+    # demo is off). The backend's mcp-hub iam mode needs caller_role_arn; the
+    # seed/e2e scripts read the rest here instead of this state.
+    mcp_hub = local.mcp_hub_demo_on ? {
+      hub_endpoint                = module.mcp_hub_demo[0].hub_endpoint
+      hub_resource_url            = module.mcp_hub_demo[0].hub_resource_url
+      hub_instance_id             = module.mcp_hub_demo[0].hub_instance_id
+      app_instance_id             = module.mcp_hub_demo[0].app_instance_id
+      app_role_arn                = module.mcp_hub_demo[0].app_role_arn
+      app_credentials_secret_name = module.mcp_hub_demo[0].app_credentials_secret_name
+      keycloak_issuer             = module.team_auth[0].issuer_url
+      entry_url                   = module.mcp_hub_demo[0].hub_entry_url
+      caller_role_arn             = module.mcp_hub_demo[0].hub_caller_role_arn
+    } : null
   }
 }
 

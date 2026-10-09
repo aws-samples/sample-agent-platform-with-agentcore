@@ -25,3 +25,24 @@ output "app_client_secret_name" {
   description = "Secrets Manager name the seed script writes the app's IdP client credentials to."
   value       = local.app_client_secret
 }
+
+output "app_credentials_secret_name" {
+  description = "Same as app_client_secret_name, under the name the foundation facts publish it as."
+  value       = local.app_client_secret
+}
+
+# ------------------------------ IAM entry -----------------------------------
+
+output "hub_entry_url" {
+  description = "The hub's IAM entry: the private API's endpoint-specific invoke URL (resolvable without private DNS on the endpoint). Register this as an mcp-hub target with auth = iam."
+  value       = "https://${aws_api_gateway_rest_api.entry.id}-${var.service_api_vpce_id}.execute-api.${local.region}.amazonaws.com/${local.entry_stage}/mcp"
+}
+
+output "hub_entry_api_id" {
+  value = aws_api_gateway_rest_api.entry.id
+}
+
+output "hub_caller_role_arn" {
+  description = "The role the kernels assume per agent to call the entry (session name = actor)."
+  value       = aws_iam_role.caller.arn
+}

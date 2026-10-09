@@ -43,7 +43,6 @@ import base64
 import json
 import os
 import secrets
-import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 import time
 import urllib.error
@@ -52,9 +51,6 @@ import urllib.request
 
 import boto3
 
-TERRAFORM_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "terraform"
-)
 
 REALM = "agent-platform"
 APP_CLIENT = "mcp-hub-demo-app"
@@ -102,18 +98,34 @@ def _claims(token: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
-def _terraform_output(name: str) -> str:
-    proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-        ["terraform", f"-chdir={TERRAFORM_DIR}", "output", "-raw", name],
-        capture_output=True, text=True, timeout=120, check=False,
-    )
-    value = proc.stdout.strip()
-    if proc.returncode != 0 or not value or value == "null":
+# The foundation (network, hub EC2s, IAM entry) lives in the operations
+# project; its state is not ours to open. Everything these scripts need is
+# published as the facts document (scripts/foundation_facts.py maps the names).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import foundation_facts  # noqa: E402
+
+_FACTS: dict | None = None
+
+
+def _facts() -> dict:
+    global _FACTS
+    if _FACTS is None:
+        name = os.environ.get("QA_FACTS_PARAMETER", "/agent-platform/foundation")
+        doc = json.loads(boto3.client("ssm").get_parameter(Name=name)["Parameter"]["Value"])
+        if doc.get("schema_version") != 1:
+            raise SystemExit(f"{name}: not a foundation facts document")
+        _FACTS = doc
+    return _FACTS
+
+
+def _fact(name: str) -> str:
+    present, value = foundation_facts.lookup(_facts(), name)
+    if not present or value in (None, ""):
         raise SystemExit(
-            f"terraform output {name} unavailable — is the stack applied with "
-            f"enable_mcp_hub_demo=true? ({proc.stderr.strip()[:200]})"
+            f"foundation fact {name} is absent — is the operations stack applied with "
+            f"enable_mcp_hub_demo=true (facts section mcp_hub)?"
         )
-    return value
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 def main() -> int:
@@ -122,17 +134,26 @@ def main() -> int:
         "--platform-audience", default="agent-platform",
         help="OIDC audience the platform API verifies (PLATFORM_OIDC_AUDIENCE)",
     )
+    parser.add_argument(
+        "--auth", choices=("iam", "hmac"), default="iam",
+        help="how the platform authenticates to the hub: iam = through the hub's "
+             "private API Gateway entry with the kernel's IAM identity (default); "
+             "hmac = MCPHUB-HMAC-SHA256 straight to the hub with per-agent key pairs",
+    )
     args = parser.parse_args()
 
-    issuer = _terraform_output("keycloak_issuer")
-    hub_endpoint = _terraform_output("mcp_hub_endpoint")
-    hub_resource_url = _terraform_output("mcp_hub_resource_url")
-    app_role_arn = _terraform_output("demo_app_role_arn")
-    app_secret_name = _terraform_output("demo_app_client_secret_name")
-    hub_instance_id = _terraform_output("mcp_hub_instance_id")
-    portal_url = _terraform_output("portal_url").rstrip("/")
+    issuer = _fact("keycloak_issuer")
+    hub_endpoint = _fact("mcp_hub_endpoint")
+    hub_resource_url = _fact("mcp_hub_resource_url")
+    app_role_arn = _fact("demo_app_role_arn")
+    app_secret_name = _fact("demo_app_credentials_secret_name")
+    hub_instance_id = _fact("mcp_hub_instance_id")
+    portal_url = _fact("portal_url").rstrip("/")
+    # the registry target: the hub itself (hmac) or its IAM entry (iam)
+    hub_target = _fact("mcp_hub_entry_url") if args.auth == "iam" else hub_endpoint
     base_url = issuer.rsplit("/realms/", 1)[0]
-    print(f"IdP: {issuer}\nhub: {hub_endpoint} (audience {hub_resource_url})")
+    print(f"IdP: {issuer}\nhub: {hub_endpoint} (audience {hub_resource_url})\n"
+          f"platform -> hub auth: {args.auth} (target {hub_target})")
 
     sm = boto3.client("secretsmanager")
 
@@ -348,8 +369,9 @@ def main() -> int:
 
     servers = _api(f"{portal_url}/api/v1/ecosystem/mcp-servers", portal_token)
     entry = next((s for s in servers if s["name"] == HUB_ENTRY_NAME), None)
-    if entry and entry.get("target") != hub_endpoint:
-        # the hub instance was replaced — re-register with the new endpoint
+    if entry and (entry.get("target") != hub_target or (entry.get("auth") or "hmac") != args.auth):
+        # the hub instance was replaced, or the auth scheme changed —
+        # re-register (the entry carries both)
         _api(f"{portal_url}/api/v1/ecosystem/mcp-servers/{entry['id']}",
              portal_token, method="DELETE")
         entry = None
@@ -358,12 +380,17 @@ def main() -> int:
             f"{portal_url}/api/v1/ecosystem/mcp-servers", portal_token, method="POST",
             payload={
                 "name": HUB_ENTRY_NAME,
-                "description": "Self-hosted MCP hub (MCPHUB-HMAC-SHA256 inbound) — replaces AgentCore Gateway as the tool backend",
+                "description": (
+                    "Self-hosted MCP hub through its IAM entry (private API Gateway; the kernel's IAM identity is the actor)"
+                    if args.auth == "iam" else
+                    "Self-hosted MCP hub (MCPHUB-HMAC-SHA256 inbound) — replaces AgentCore Gateway as the tool backend"
+                ),
                 "kind": "mcp-hub",
-                "target": hub_endpoint,
+                "target": hub_target,
+                "auth": args.auth,
             },
         )
-    print(f"registry entry: {HUB_ENTRY_NAME} -> {entry['target']}")
+    print(f"registry entry: {HUB_ENTRY_NAME} -> {entry['target']} (auth {entry.get('auth') or 'hmac'})")
 
     agent = _api(
         f"{portal_url}/api/v1/agents", portal_token, method="POST",
@@ -378,7 +405,7 @@ def main() -> int:
     access_key = agent.get("mcp_hub_access_key", "")
     actor_secret = agent.get("mcp_hub_secret_name", "")
     print(f"agent published: {DEMO_AGENT_NAME} v{agent['version']} "
-          f"(hub actor {access_key})")
+          f"(hub actor {agent.get('mcp_hub_actor') or access_key})")
 
     channels = _api(f"{portal_url}/api/v1/channels", portal_token)
     channel = next((c for c in channels if c["name"] == DEMO_CHANNEL_NAME), None)
@@ -400,40 +427,46 @@ def main() -> int:
     print(f"channel ready: {channel['id']} (allowlist: {app_role_arn})")
 
     # -------------------------- hub actor sync --------------------------
-    # The shared dev-workbench Actor (workbench sessions + Debug console).
-    # The backend lazy-mints this same pair on first use; creating it here —
-    # same name, same shape — just guarantees the hub learns it in this sync
-    # instead of failing until the next one.
-    workbench_secret = f"{actor_secret.rsplit('/', 1)[0]}/dev-workbench"
-    try:
-        sm.create_secret(
-            Name=workbench_secret,
-            Description="MCP hub HMAC credentials (Actor) for dev-workbench",
-            SecretString=json.dumps({"access_key": "dev-workbench",
-                                     "secret_key": secrets.token_urlsafe(32)}),
-        )
-        print("workbench actor minted: dev-workbench")
-    except sm.exceptions.ResourceExistsException:
-        print("workbench actor exists: dev-workbench")
+    # HMAC only: the hub must learn the key pairs. On the IAM path there is
+    # nothing to sync — the hub takes the actor from the identity the gateway
+    # forwards, and its config names the caller role (foundation user_data).
+    if args.auth == "hmac":
+        # The shared dev-workbench Actor (workbench sessions + Debug console).
+        # The backend lazy-mints this same pair on first use; creating it here
+        # — same name, same shape — just guarantees the hub learns it in this
+        # sync instead of failing until the next one.
+        workbench_secret = f"{actor_secret.rsplit('/', 1)[0]}/dev-workbench"
+        try:
+            sm.create_secret(
+                Name=workbench_secret,
+                Description="MCP hub HMAC credentials (Actor) for dev-workbench",
+                SecretString=json.dumps({"access_key": "dev-workbench",
+                                         "secret_key": secrets.token_urlsafe(32)}),
+            )
+            print("workbench actor minted: dev-workbench")
+        except sm.exceptions.ResourceExistsException:
+            print("workbench actor exists: dev-workbench")
 
-    ssm = boto3.client("ssm")
-    command_id = ssm.send_command(
-        InstanceIds=[hub_instance_id],
-        DocumentName="AWS-RunShellScript",
-        Parameters={"commands": [
-            f"/usr/local/bin/mcp-hub-refresh-actors {actor_secret} {workbench_secret}"
-        ]},
-    )["Command"]["CommandId"]
-    for _ in range(30):
-        time.sleep(2)
-        result = ssm.get_command_invocation(CommandId=command_id, InstanceId=hub_instance_id)
-        if result["Status"] in ("Success", "Failed", "Cancelled", "TimedOut"):
-            break
-    if result["Status"] != "Success":
-        print(f"actor sync failed on the hub host: {result['Status']}\n"
-              f"{result.get('StandardErrorContent', '')[:500]}", file=sys.stderr)
-        return 1
-    print(f"hub actors synced: {result['StandardOutputContent'].strip()}")
+        ssm = boto3.client("ssm")
+        command_id = ssm.send_command(
+            InstanceIds=[hub_instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": [
+                f"/usr/local/bin/mcp-hub-refresh-actors {actor_secret} {workbench_secret}"
+            ]},
+        )["Command"]["CommandId"]
+        for _ in range(30):
+            time.sleep(2)
+            result = ssm.get_command_invocation(CommandId=command_id, InstanceId=hub_instance_id)
+            if result["Status"] in ("Success", "Failed", "Cancelled", "TimedOut"):
+                break
+        if result["Status"] != "Success":
+            print(f"actor sync failed on the hub host: {result['Status']}\n"
+                  f"{result.get('StandardErrorContent', '')[:500]}", file=sys.stderr)
+            return 1
+        print(f"hub actors synced: {result['StandardOutputContent'].strip()}")
+    else:
+        print("hub actor sync: nothing to do on the IAM path (the hub trusts the entry's identity header)")
 
     # ----------------------------- verify -------------------------------
     token = _post_form(

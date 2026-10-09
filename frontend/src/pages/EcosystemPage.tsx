@@ -46,7 +46,7 @@ function EntryCard({ e, onDelete }: { e: EcosystemEntry; onDelete: () => void })
               : e.kind === 'builtin'
                 ? 'AgentCore Built-in · '
                 : e.kind === 'mcp-hub'
-                  ? 'MCP Hub (HMAC-signed) · '
+                  ? `MCP Hub (${e.auth === 'iam' ? 'IAM entry' : 'HMAC-signed'}) · `
                   : 'HTTP · '}
           {e.target}
         </p>
@@ -70,6 +70,7 @@ export default function EcosystemPage() {
   const [mDesc, setMDesc] = useState('')
   const [mKind, setMKind] = useState('agentcore-runtime')
   const [mTarget, setMTarget] = useState('')
+  const [mAuth, setMAuth] = useState('iam') // mcp-hub only
 
   const [sName, setSName] = useState('')
   const [sDesc, setSDesc] = useState('')
@@ -95,7 +96,13 @@ export default function EcosystemPage() {
   const saveMcp = async () => {
     setSaving(true)
     try {
-      await api.createMcpServer({ name: mName, description: mDesc, kind: mKind, target: mTarget })
+      await api.createMcpServer({
+        name: mName,
+        description: mDesc,
+        kind: mKind,
+        target: mTarget,
+        ...(mKind === 'mcp-hub' ? { auth: mAuth } : {}),
+      })
       setModal(null)
       setMName('')
       setMDesc('')
@@ -202,15 +209,33 @@ export default function EcosystemPage() {
           <option value="agentcore-runtime">AgentCore Runtime (ARN, SigV4 via kernel role)</option>
           <option value="agentcore-gateway">AgentCore Gateway (MCP URL, SigV4 via kernel role)</option>
           <option value="url">HTTP URL (streamable-http, no auth)</option>
-          <option value="mcp-hub">MCP Hub (HMAC-signed)</option>
+          <option value="mcp-hub">MCP Hub (self-hosted)</option>
         </select>
         {mKind === 'mcp-hub' && (
-          <p className="mt-1.5 text-xs text-slate-500">
-            A self-hosted MCP hub with MCPHUB-HMAC-SHA256 inbound auth. Published agents sign
-            with per-agent credentials minted at publish time (register the agent's access key
-            with the hub after publishing); workbench sessions and the Debug console sign as the
-            shared <span className="font-mono">dev-workbench</span> actor.
-          </p>
+          <>
+            <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">Application auth</label>
+            <select className="input" value={mAuth} onChange={(e) => setMAuth(e.target.value)}>
+              <option value="iam">IAM entry (kernel IAM identity through the hub's private API Gateway)</option>
+              <option value="hmac">MCPHUB-HMAC-SHA256 (per-agent key pair, straight to the hub)</option>
+            </select>
+            <p className="mt-1.5 text-xs text-slate-500">
+              {mAuth === 'iam' ? (
+                <>
+                  The kernel assumes the hub caller role as <span className="font-mono">agent-&lt;id&gt;</span>{' '}
+                  (or <span className="font-mono">dev-workbench</span>) and signs through the platform's private
+                  API Gateway; the hub reads the actor from the forwarded identity. No key pair to mint or
+                  register. The target is the entry's invoke URL.
+                </>
+              ) : (
+                <>
+                  Published agents sign with per-agent credentials minted at publish time (register the
+                  agent's access key with the hub after publishing); workbench sessions and the Debug console
+                  sign as the shared <span className="font-mono">dev-workbench</span> actor. The target is the
+                  hub itself.
+                </>
+              )}
+            </p>
+          </>
         )}
         <label className="mb-1 mt-3 block text-sm font-medium text-slate-700">
           {mKind === 'agentcore-runtime' ? 'Runtime ARN' : mKind === 'agentcore-gateway' ? 'Gateway MCP URL' : mKind === 'mcp-hub' ? 'Hub MCP URL' : 'URL'}
@@ -223,7 +248,9 @@ export default function EcosystemPage() {
               : mKind === 'agentcore-gateway'
                 ? 'https://<id>.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp'
                 : mKind === 'mcp-hub'
-                  ? 'http://<hub-host>:8000/mcp'
+                  ? mAuth === 'iam'
+                    ? 'https://<api>-<vpce>.execute-api.<region>.amazonaws.com/mcp/mcp'
+                    : 'http://<hub-host>:8000/mcp'
                   : 'https://…/mcp'
           }
           value={mTarget}

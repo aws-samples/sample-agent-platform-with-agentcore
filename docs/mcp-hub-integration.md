@@ -165,6 +165,92 @@ add a nonce cache keyed by actor if your threat model cares), and **TLS on
 the hub listener** (the demo runs HTTP inside private subnets; terminate TLS
 in front of the hub before carrying real data).
 
+## The IAM entry: no key pair at all
+
+The HMAC scheme above authenticates the application with a key pair the
+platform mints per agent and the hub operator registers. The platform also
+offers a second path in which the application's identity **is its IAM role**
+and no key material exists anywhere:
+
+```
+runtime ──SigV4 (execute-api; session agent-<id> of agent-platform-mcp-hub-caller)──►
+  private REST API Gateway (AWS_IAM, this VPC's execute-api endpoint only)
+  ──VPC Link──► internal NLB ──► MCP hub :8000
+      + x-caller-arn (set by API Gateway from the authenticated identity)
+      + x-mcp-hub-entry-secret (a shared secret only the gateway knows)
+      + X-MCPHUB-SSO-TOKEN (the acting user, exactly as on the HMAC path)
+```
+
+The pieces, and where each lives:
+
+- **The entry** (`agent-platform-ops`, `modules/mcp_hub_demo/entry.tf`): a
+  PRIVATE REST API whose three `/mcp` methods (POST, GET, DELETE) are
+  `AWS_IAM`, reachable only through the platform VPC's execute-api endpoint
+  (resource policy `aws:SourceVpce` + association), integrated over a VPC Link
+  to an internal NLB in front of the hub. The integrations **stream**
+  (`response_transfer_mode = STREAM`, MCP responses may be SSE) with the
+  15-minute streaming timeout. API Gateway stamps `x-caller-arn` from the
+  authenticated identity and a shared entry secret; the caller cannot set
+  either. The same shape as the platform's own service entry.
+- **The caller role** (`agent-platform-mcp-hub-caller`): one role whose
+  **session name is the actor** — the hub reads it out of
+  `arn:aws:sts::<acct>:assumed-role/agent-platform-mcp-hub-caller/agent-<id>`.
+  It trusts only the **backend**: the backend pod's IRSA web-identity token
+  directly (a first hop, so an 8-hour grant is possible; a session minted
+  from another role session would be capped at one hour) and the backend role
+  for runs outside a pod, both only for session names shaped `agent-*` or
+  `dev-workbench`. The kernel roles cannot assume it at all. The role may do
+  nothing but `execute-api:Invoke` on this one API. Same trust shape as the
+  platform's inference caller role for the AgentCore Gateway model backend.
+- **The backend** (`mcp_hub_credentials_service.mint_iam_session`): when it
+  resolves an `iam` attachment for an invocation (or a workbench warmup) it
+  mints an 8-hour caller-role session named after the actor it is serving,
+  narrowed by a session policy to the one entry, and hands the credentials to
+  the kernel in the warmup payload — the way the model-gateway grant
+  (`llm_credentials`) already travels. The backend is the one component that
+  knows which agent an invocation belongs to, so the session name is chosen
+  there and nowhere else; a kernel cannot present another agent's identity.
+  A re-warmup (workbench reconnect) mints a fresh session.
+- **The kernel proxy** (`mcp_hub_proxy.py`, `MCPHUB_AUTH=iam`): SigV4-signs
+  every POST (service `execute-api`, body and SSO token inside the signature)
+  with the session it was handed — env JSON in the headless kernel, a 0600
+  file under `/tmp` in the interactive kernel (never `.mcp.json`, which syncs
+  to S3; re-read per request so a rotation lands in place). It holds no STS
+  code and never sends `x-caller-arn` itself — that is the gateway's to set.
+- **The hub** (`sample-mcp-hub-sso-auth`, `hub/entry_identity.py`): a third
+  inbound branch next to Bearer and HMAC. On a request carrying the entry
+  secret header (constant-time compare against `HUB_ENTRY_SECRET`, pulled
+  by the hub host under its own role at boot), it trusts `x-caller-arn`,
+  requires it to be a session of the configured `caller_role`, and takes the
+  actor from the session name. Then the SSO token is verified exactly as on
+  the other paths. A missing or wrong secret, a non-assumed-role ARN, another
+  role, or (with `allowed_actors` set) an unregistered session is refused.
+- **The registry entry**: `kind: mcp-hub` gains `auth: hmac | iam`. With
+  `iam`, the target is the entry's invoke URL (facts `mcp_hub.entry_url`), the
+  backend mints no key pair at publish (the agent card shows the actor
+  `agent-<id>` instead of an access key), and the kernel payload carries
+  `auth`, `actor` and `caller_role_arn` rather than a credentials secret. A
+  deployment without a caller role (`PLATFORM_MCP_HUB_CALLER_ROLE_ARN`
+  empty, i.e. no hub demo in that environment) refuses `iam` entries at
+  registration and at publish rather than falling back to HMAC.
+
+What changes in the trust model: on the HMAC path the runtime role can read
+every agent's key pair, so any kernel could act as any agent. On the IAM path
+a kernel holds exactly one session — the one the backend minted for the agent
+it is running — and has no way to obtain another: per-agent identity becomes
+a boundary the kernel cannot cross, with nothing left to leak or rotate (a
+leaked session names its own actor and dies within eight hours). What is
+lost: the HMAC signature covered the body and the token hash end to end; on
+the IAM path the gateway verifies the SigV4 signature (which also covers body
+and token) and the hub trusts the gateway's headers, so the hub's listener
+must be reachable only through the gateway's path (the hub security group
+admits the entry NLB; the runtime SG rule stays only while HMAC entries
+remain). Keep the demo's HTTP-inside-the-VPC caveat in mind for both.
+
+Both paths coexist per registry entry; `seed_mcp_hub_demo.py --auth iam|hmac`
+registers either, and `e2e_mcp_hub.py` asserts from the hub's log which path
+actually served the run (`HUB-AUTH-PATH`).
+
 ## Deploying the demo
 
 ```bash
@@ -175,8 +261,9 @@ scripts/package_mcp_hub.sh ../sample-mcp-hub-sso-auth
 #    tokens against the platform's Keycloak)
 terraform -chdir=terraform apply -var enable_mcp_hub_demo=true
 
-# 3. wire everything: IdP client, registry entry, demo agent (mints its
-#    Actor pair), iam channel + allowlist, hub actor sync
+# 3. wire everything: IdP client, registry entry (through the IAM entry by
+#    default; --auth hmac for the key-pair path), demo agent, iam channel +
+#    allowlist, hub actor sync (hmac only)
 python3 scripts/seed_mcp_hub_demo.py
 
 # 4. drive the whole chain from the calling application's seat
@@ -203,12 +290,17 @@ satisfy:
 1. **Transport**: MCP streamable HTTP, stateless JSON responses (one POST in,
    one JSON-RPC response out; 202 for notifications). SSE responses are
    tolerated by the proxy but not required.
-2. **Auth**: verify `MCPHUB-HMAC-SHA256` exactly as
-   `hub/mcphub_hmac.py` does in the hub sample (the same file signs on the
-   kernel side, so the two cannot drift), then validate `X-MCPHUB-SSO-TOKEN`
-   against your IdP.
-3. **Actor registry**: accept the per-agent access keys the platform mints
-   and look up their secrets from wherever you keep them.
+2. **Auth**, one of:
+   - verify `MCPHUB-HMAC-SHA256` exactly as `hub/mcphub_hmac.py` does in the
+     hub sample (the same file signs on the kernel side, so the two cannot
+     drift), or
+   - sit behind the platform's IAM entry and trust `x-caller-arn` on requests
+     carrying the entry secret, taking the actor from the assumed-role
+     session name (`hub/entry_identity.py` in the sample);
+   then validate `X-MCPHUB-SSO-TOKEN` against your IdP either way.
+3. **Actor registry** (HMAC only): accept the per-agent access keys the
+   platform mints and look up their secrets from wherever you keep them. On
+   the IAM path the caller role's trust policy is the registry.
 
 Then: register an `mcp-hub` entry whose target is your hub's URL (reachable
 from the runtime VPC), attach it to an agent, publish, and hand your hub the

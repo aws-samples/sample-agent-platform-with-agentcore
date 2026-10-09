@@ -76,6 +76,9 @@ class AgentService:
             # never leaves Secrets Manager, only its name is recorded here.
             "mcp_hub_access_key": item.get("mcp_hub_access_key", ""),
             "mcp_hub_secret_name": item.get("mcp_hub_secret_name", ""),
+            # IAM-path actor (set when an auth=iam mcp-hub server is attached):
+            # the AssumeRole session name the hub sees in x-caller-arn
+            "mcp_hub_actor": item.get("mcp_hub_actor", ""),
             "version": int(item.get("version", 1)),
             "source": item.get("source", "manual"),
             "created_by": item.get("created_by", ""),
@@ -160,7 +163,17 @@ class AgentService:
             raise ValueError("agent name must be alphanumeric with - or _")
         # validate attachments up front
         resolved = self._resolve_names(mcp_server_names or [], skill_names or [])
-        uses_mcp_hub = any(s.get("kind") == "mcp-hub" for s in resolved["mcp_servers"])
+        hub_servers = [s for s in resolved["mcp_servers"] if s.get("kind") == "mcp-hub"]
+        uses_mcp_hub_hmac = any((s.get("auth") or "hmac") != "iam" for s in hub_servers)
+        uses_mcp_hub_iam = any((s.get("auth") or "hmac") == "iam" for s in hub_servers)
+        if uses_mcp_hub_iam:
+            # fail the publish, not the invocation, when this deployment has
+            # no IAM entry for the kernel to sign through
+            from app.services.mcp_hub_credentials_service import (
+                mcp_hub_credentials_service,
+            )
+
+            mcp_hub_credentials_service.require_iam_available()
         if model_backend or model:
             # fail the publish, not the future invocation, on a bad reference
             from app.services.model_config_service import model_config_service
@@ -196,16 +209,21 @@ class AgentService:
             created_by = str(user)
 
         # An mcp-hub attachment makes this agent an application in the hub's
-        # eyes, so publish is where its Actor credentials come to exist —
-        # idempotently, a republish keeps the pair the hub already knows.
-        mcp_hub_access_key = mcp_hub_secret_name = ""
-        if uses_mcp_hub:
+        # eyes. On the HMAC path publish is where its Actor credentials come
+        # to exist — idempotently, a republish keeps the pair the hub already
+        # knows. On the IAM path nothing is minted: the actor is a derived
+        # name the kernel uses as its AssumeRole session.
+        mcp_hub_access_key = mcp_hub_secret_name = mcp_hub_actor = ""
+        if hub_servers:
             from app.services.mcp_hub_credentials_service import (
                 mcp_hub_credentials_service,
             )
 
-            mcp_hub_access_key = mcp_hub_credentials_service.ensure(agent_id)
-            mcp_hub_secret_name = mcp_hub_credentials_service.secret_name(agent_id)
+            if uses_mcp_hub_hmac:
+                mcp_hub_access_key = mcp_hub_credentials_service.ensure(agent_id)
+                mcp_hub_secret_name = mcp_hub_credentials_service.secret_name(agent_id)
+            if uses_mcp_hub_iam:
+                mcp_hub_actor = mcp_hub_credentials_service.iam_actor(agent_id)
 
         item = {
             "PK": PK,
@@ -222,6 +240,7 @@ class AgentService:
             "platform_version": platform_version,
             "mcp_hub_access_key": mcp_hub_access_key,
             "mcp_hub_secret_name": mcp_hub_secret_name,
+            "mcp_hub_actor": mcp_hub_actor,
             "version": version,
             "source": source,
             "created_by": created_by,
@@ -295,15 +314,28 @@ class AgentService:
             raise KeyError(f"agent {agent_id} not found")
         cfg = self._resolve_names(agent["mcp_server_names"], agent["skill_names"])
         for server in cfg["mcp_servers"]:
-            # mcp-hub servers sign as this agent: hand the kernel the *name*
-            # of the agent's credential secret (the runtime role fetches the
-            # pair; the keys themselves never ride in a payload). Workbench
-            # sessions and Debug console runs sign as the shared dev-workbench
-            # Actor instead (ecosystem_service.resolve_session_config).
+            # mcp-hub servers act as this agent. Workbench sessions and Debug
+            # console runs act as the shared dev-workbench Actor instead
+            # (ecosystem_service.resolve_session_config).
             if server.get("kind") == "mcp-hub":
-                server["credentials_secret"] = agent.get(
-                    "mcp_hub_secret_name"
-                ) or mcp_hub_credentials_service.secret_name(agent_id)
+                if (server.get("auth") or "hmac") == "iam":
+                    # this backend mints a caller-role session named after
+                    # the agent and hands it to the kernel (like
+                    # llm_credentials); the kernel signs through the IAM
+                    # entry with it and cannot obtain any other session
+                    server["auth"] = "iam"
+                    server["actor"] = agent.get("mcp_hub_actor") or mcp_hub_credentials_service.iam_actor(agent_id)
+                    server["credentials"] = mcp_hub_credentials_service.mint_iam_session(
+                        server["actor"], server.get("target", "")
+                    )
+                else:
+                    # hand the kernel the *name* of the agent's credential
+                    # secret (the runtime role fetches the pair; the keys
+                    # themselves never ride in a payload)
+                    server["auth"] = "hmac"
+                    server["credentials_secret"] = agent.get(
+                        "mcp_hub_secret_name"
+                    ) or mcp_hub_credentials_service.secret_name(agent_id)
         return {
             "label": f"agent:{agent['name']}",
             "system_prompt": agent["system_prompt"],
