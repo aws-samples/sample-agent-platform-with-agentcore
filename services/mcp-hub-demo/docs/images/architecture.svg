@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 900" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="SSO-authenticated MCP hub: humans and applications">
+<title>SSO-authenticated MCP hub: humans and applications</title>
+<defs>
+<pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse"><path d="M34 0 H0 V34" fill="none" stroke="#EAEFF6" stroke-width="1"/></pattern>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>@media (prefers-reduced-motion: no-preference){.flow{stroke-dasharray:6 6;animation:dm .8s linear infinite}}@keyframes dm{to{stroke-dashoffset:-12}}</style>
+</defs>
+<rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
+<text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">SSO-authenticated MCP hub: humans and applications</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">Humans arrive with a Bearer JWT from browser SSO · applications prove which app they are (HMAC key pair, or an IAM entry with no key at all) and carry the acting user's token · routing and data-level authorization follow the token's claims either way</text>
+<rect x="500" y="100" width="1050" height="515" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="518" y="120" font-size="11" font-weight="700" fill="#0B7E7F">Corporate network · self-hosted</text>
+<rect x="80" y="640" width="512" height="150" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="190" y="660" font-size="11" font-weight="700" fill="#0B7E7F">Application callers · an agent platform acting for a user</text>
+<path class="flow" d="M 160.0 407.0 L 160.0 170.0 L 597.0 170.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path d="M 1000.0 407.0 L 1000.0 260.0 L 620.0 260.0 L 620.0 193.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path class="flow" d="M 1023.0 430.0 L 1220.0 430.0 L 1220.0 320.0 L 1417.0 320.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1023.0 430.0 L 1220.0 430.0 L 1220.0 540.0 L 1417.0 540.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path d="M 1440.0 297.0 L 1440.0 170.0 L 643.0 170.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path class="flow" d="M 160.0 677.0 L 160.0 570.0 L 387.0 570.0" fill="none" stroke="#15803D" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 433.0 570.0 L 790.0 570.0 L 790.0 430.0 L 977.0 430.0" fill="none" stroke="#15803D" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 433.0 700.0 L 790.0 700.0 L 790.0 430.0 L 977.0 430.0" fill="none" stroke="#7E22CE" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 183.0 430.0 L 977.0 430.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="264" y="148" width="173" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="350" y="158" text-anchor="middle" font-size="9.5" fill="#48586a">① SSO login · CIMD + PKCE</text>
+<rect x="793" y="238" width="34" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="810" y="248" text-anchor="middle" font-size="9.5" fill="#48586a">JWKS</text>
+<rect x="1235" y="298" width="166" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1318" y="308" text-anchor="middle" font-size="9.5" fill="#48586a">③ route: sales · finance</text>
+<rect x="1278" y="518" width="81" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1318" y="528" text-anchor="middle" font-size="9.5" fill="#48586a">③ route: hr</text>
+<rect x="947" y="148" width="186" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1040" y="158" text-anchor="middle" font-size="9.5" fill="#48586a">④ re-verify same JWT (JWKS)</text>
+<rect x="264" y="548" width="41" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="285" y="558" text-anchor="middle" font-size="9.5" fill="#48586a">SigV4</text>
+<rect x="458" y="548" width="325" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="620" y="558" text-anchor="middle" font-size="9.5" fill="#48586a">x-caller-arn · entry secret · X-MCPHUB-SSO-TOKEN</text>
+<rect x="600" y="678" width="239" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="720" y="688" text-anchor="middle" font-size="9.5" fill="#48586a">signed request · X-MCPHUB-SSO-TOKEN</text>
+<rect x="367" y="408" width="127" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="430" y="418" text-anchor="middle" font-size="9.5" fill="#48586a">② Bearer JWT · MCP</text>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="0.00s" repeatCount="indefinite" path="M 160.0 407.0 L 160.0 170.0 L 597.0 170.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="1.00s" repeatCount="indefinite" path="M 183.0 430.0 L 977.0 430.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="2.00s" repeatCount="indefinite" path="M 1023.0 430.0 L 1220.0 430.0 L 1220.0 320.0 L 1417.0 320.0"/></circle>
+<circle r="4" fill="#15803D"><animateMotion dur="3.0s" begin="0.00s" repeatCount="indefinite" path="M 160.0 677.0 L 160.0 570.0 L 387.0 570.0"/></circle>
+<circle r="4" fill="#15803D"><animateMotion dur="3.0s" begin="1.00s" repeatCount="indefinite" path="M 433.0 570.0 L 790.0 570.0 L 790.0 430.0 L 977.0 430.0"/></circle>
+<circle r="4" fill="#15803D"><animateMotion dur="3.0s" begin="2.00s" repeatCount="indefinite" path="M 1023.0 430.0 L 1220.0 430.0 L 1220.0 540.0 L 1417.0 540.0"/></circle>
+<circle r="4" fill="#7E22CE"><animateMotion dur="3.0s" begin="0.00s" repeatCount="indefinite" path="M 433.0 700.0 L 790.0 700.0 L 790.0 430.0 L 977.0 430.0"/></circle>
+<circle r="4" fill="#7E22CE"><animateMotion dur="3.0s" begin="1.50s" repeatCount="indefinite" path="M 1023.0 430.0 L 1220.0 430.0 L 1220.0 320.0 L 1417.0 320.0"/></circle>
+<rect x="137.0" y="407.0" width="46" height="46" rx="8" fill="#334155"/><rect x="147" y="420" width="26" height="20" rx="3" fill="none" stroke="#fff" stroke-width="2.2"/><line x1="147" y1="426" x2="173" y2="426" stroke="#fff" stroke-width="2"/><circle cx="151" cy="423" r="1.3" fill="#fff"/><circle cx="155" cy="423" r="1.3" fill="#fff"/><text x="160" y="468" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Claude Code</text><text x="160" y="481" text-anchor="middle" font-size="9.5" fill="#5A6B7B">developer laptop · MCP client</text>
+<rect x="597.0" y="147.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="620" cy="170" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="620" cy="170" r="1.8" fill="#fff"/><text x="620" y="208" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Keycloak IdP</text><text x="620" y="221" text-anchor="middle" font-size="9.5" fill="#5A6B7B">SSO · OIDC · department claim</text>
+<rect x="977.0" y="407.0" width="46" height="46" rx="8" fill="#4F46E5"/><path d="M989 422 l9 8 l-9 8 M999 422 l9 8 l-9 8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><text x="1000" y="468" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">MCP Hub</text><text x="1000" y="481" text-anchor="middle" font-size="9.5" fill="#5A6B7B">three inbound branches: Bearer · HMAC · entry identity → route by department</text>
+<rect x="1417.0" y="297.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1440" cy="320" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1440" cy="320" r="1.8" fill="#fff"/><text x="1440" y="358" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Order MCP</text><text x="1440" y="371" text-anchor="middle" font-size="9.5" fill="#5A6B7B">sales · finance · row/field auth</text>
+<rect x="1417.0" y="517.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1440" cy="540" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1440" cy="540" r="1.8" fill="#fff"/><text x="1440" y="578" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">HR MCP</text><text x="1440" y="591" text-anchor="middle" font-size="9.5" fill="#5A6B7B">hr only · defense in depth</text>
+<g transform="translate(387.00,547.00) scale(0.7188)">
+<g id="apigateway__Icon-Architecture/48/Arch_Amazon-API-Gateway_48">
+<g id="apigateway__Icon-Architecture-BG/48/Networking-Content-Delivery">
+<rect id="apigateway__Rectangle" width="64" height="64" fill="#8C4FFF"/>
+</g>
+<g id="apigateway__Icon-Service/48/Amazon-API-Gateway_48">
+<path id="apigateway__Amazon-API-Gateway_Icon_48_Squid" fill-rule="evenodd" clip-rule="evenodd" d="M28 43.9999H31V41.9999H28V43.9999ZM33 43.9999H36V41.9999H33V43.9999ZM28 21.9998H31V19.9998H28V21.9998ZM33 21.9998H36V19.9998H33V21.9998ZM22 12.7408L12 18.5738V46.382L22 51.382V12.7408ZM24 19.9998H26V21.9998H24V41.9999H26V43.9999H24V53C24 53.347 23.82 53.668 23.525 53.851C23.365 53.95 23.183 54 23 54C22.847 54 22.694 53.965 22.553 53.895L10.553 47.895C10.214 47.725 10 47.379 10 47V17.9998C10 17.6448 10.188 17.3148 10.496 17.1358L22.496 10.1358C22.805 9.95575 23.188 9.95475 23.498 10.1328C23.809 10.3108 24 10.6418 24 10.9998V19.9998ZM52 18.5738L42 12.7408V51.382L52 46.382V18.5738ZM54 17.9998V47C54 47.379 53.786 47.725 53.447 47.895L41.447 53.895C41.306 53.965 41.153 54 41 54C40.817 54 40.635 53.95 40.475 53.851C40.18 53.668 40 53.347 40 53V43.9999H38V41.9999H40V21.9998H38V19.9998H40V10.9998C40 10.6418 40.191 10.3108 40.502 10.1328C40.812 9.95575 41.195 9.95575 41.504 10.1358L53.504 17.1358C53.812 17.3148 54 17.6448 54 17.9998ZM34.939 27.3419L33.061 26.6578L29.061 37.6579L30.939 38.3419L34.939 27.3419ZM39.707 32.7069C40.098 32.3159 40.098 31.6839 39.707 31.2929L36.707 28.2929L35.293 29.7069L37.586 31.9999L35.293 34.2929L36.707 35.7069L39.707 32.7069ZM27.293 35.7069L24.293 32.7069C23.902 32.3159 23.902 31.6839 24.293 31.2929L27.293 28.2929L28.707 29.7069L26.414 31.9999L28.707 34.2929L27.293 35.7069Z" fill="white"/>
+</g>
+</g>
+</g><text x="410" y="608" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Private API Gateway</text><text x="410" y="621" text-anchor="middle" font-size="9.5" fill="#5A6B7B">AWS_IAM · sets x-caller-arn + entry secret</text>
+<g transform="translate(137.00,677.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="iam__linearGradient-1">
+            <stop stop-color="#BD0816" offset="0%"></stop>
+            <stop stop-color="#FF5252" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="iam__Icon-Architecture/64/Arch_AWS-Identity-and-Access-Management_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="iam__Icon-Architecture-BG/64/Security-Identity-Compliance" fill="#DD344C">
+            <rect id="iam__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M14,59 L66,59 L66,21 L14,21 L14,59 Z M68,20 L68,60 C68,60.552 67.553,61 67,61 L13,61 C12.447,61 12,60.552 12,60 L12,20 C12,19.448 12.447,19 13,19 L67,19 C67.553,19 68,19.448 68,20 L68,20 Z M44,48 L59,48 L59,46 L44,46 L44,48 Z M57,42 L62,42 L62,40 L57,40 L57,42 Z M44,42 L52,42 L52,40 L44,40 L44,42 Z M29,46 C29,45.449 28.552,45 28,45 C27.448,45 27,45.449 27,46 C27,46.551 27.448,47 28,47 C28.552,47 29,46.551 29,46 L29,46 Z M31,46 C31,47.302 30.161,48.401 29,48.816 L29,51 L27,51 L27,48.815 C25.839,48.401 25,47.302 25,46 C25,44.346 26.346,43 28,43 C29.654,43 31,44.346 31,46 L31,46 Z M19,53.993 L36.994,54 L36.996,50 L33,50 L33,48 L36.996,48 L36.998,45 L33,45 L33,43 L36.999,43 L37,40.007 L19.006,40 L19,53.993 Z M22,38.001 L34,38.006 L34,31 C34.001,28.697 31.197,26.677 28,26.675 L27.996,26.675 C24.804,26.675 22.004,28.696 22.002,31 L22,38.001 Z M17,54.992 L17.006,39 C17.006,38.734 17.111,38.48 17.299,38.292 C17.486,38.105 17.741,38 18.006,38 L20,38.001 L20.002,31 C20.004,27.512 23.59,24.675 27.996,24.675 L28,24.675 C32.412,24.677 36.001,27.515 36,31 L36,38.007 L38,38.008 C38.553,38.008 39,38.456 39,39.008 L38.994,55 C38.994,55.266 38.889,55.52 38.701,55.708 C38.514,55.895 38.259,56 37.994,56 L18,55.992 C17.447,55.992 17,55.544 17,54.992 L17,54.992 Z M60,36 L62,36 L62,34 L60,34 L60,36 Z M44,36 L55,36 L55,34 L44,34 L44,36 Z" id="iam__AWS-Identity-and-Access-Management_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="160" y="738" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">IAM caller</text><text x="160" y="751" text-anchor="middle" font-size="9.5" fill="#5A6B7B">SigV4 session agent-&lt;id&gt;</text>
+<rect x="387.0" y="677.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="410" cy="700" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="410" cy="700" r="1.8" fill="#fff"/><text x="410" y="738" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">HMAC caller</text><text x="410" y="751" text-anchor="middle" font-size="9.5" fill="#5A6B7B">MCPHUB-HMAC-SHA256 · access/secret key pair · works from anywhere</text>
+<text x="40" y="830" font-size="11" font-weight="700" fill="#16202E">Flows</text>
+<circle cx="92" cy="826" r="5" fill="#1D4ED8"/><text x="102" y="830" font-size="10.5" fill="#5A6B7B">human · Bearer JWT</text>
+<circle cx="248" cy="826" r="5" fill="#15803D"/><text x="258" y="830" font-size="10.5" fill="#5A6B7B">application · IAM entry</text>
+<circle cx="439" cy="826" r="5" fill="#7E22CE"/><text x="449" y="830" font-size="10.5" fill="#5A6B7B">application · HMAC key pair</text>
+<circle cx="658" cy="826" r="5" fill="#94A3B8"/><text x="668" y="830" font-size="10.5" fill="#5A6B7B">JWKS · token verification</text>
+<text x="40" y="852" font-size="10" fill="#5A6B7B">① browser SSO → short-lived JWT · ② Bearer JWT on every MCP call · ③ hub routes by department claim, the user's token passed through · ④ each backend re-verifies signature + audience + claim · applications: an HMAC signature or an IAM entry proves the app, X-MCPHUB-SSO-TOKEN carries the user</text>
+</svg>
