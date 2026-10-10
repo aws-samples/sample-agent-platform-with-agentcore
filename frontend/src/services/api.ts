@@ -178,20 +178,43 @@ export interface Channel {
   token?: string
 }
 
+export interface EvalScoring {
+  method: 'json_exact' | 'llm_judge'
+  output_field: string
+  rubric: string
+}
+
 export interface EvalDataset {
   id: string
   name: string
   description: string
+  scenario: string
+  scoring: EvalScoring
+  synthetic: boolean
   cases: { prompt: string; expected: string }[]
   created_by: string
   created_at: string
+}
+
+/** Execution facts of one invocation, as the invocation ledger records them. */
+export interface EvalCallMetrics {
+  ok: boolean
+  duration_ms: number
+  num_turns: number | null
+  cost_usd: number | null
+  runtime_session_id: string
 }
 
 export interface EvalRun {
   id: string
   dataset_id: string
   dataset_name: string
+  scenario: string
+  scoring: EvalScoring
+  synthetic: boolean
   target: string
+  agent_version: number | null
+  system_prompt: string
   status: string
   started_by: string
   started_at: string
@@ -204,7 +227,25 @@ export interface EvalRun {
     pass: boolean
     score: number
     reason: string
+    predicted_label?: string
+    expected_label?: string
+    predicted_value?: string
+    expected_value?: string
+    agent_call?: EvalCallMetrics
+    judge_call?: EvalCallMetrics
   }[]
+  /** set when the run ends: the infrastructure view of the same calls */
+  calls: {
+    agent_calls: number
+    agent_ok: number
+    agent_duration_p50_ms: number | null
+    agent_cost_usd: number
+    judge_calls: number
+    judge_ok: number
+    judge_cost_usd: number
+  } | null
+  /** cases scored so far; `results` is only filled by getEvalRun */
+  evaluated: number
   passed: number
   total: number
   avg_score: number | null
@@ -545,11 +586,20 @@ export const api = {
 
   // Evaluation
   listEvalDatasets: () => request<EvalDataset[]>('/api/v1/evals/datasets'),
-  createEvalDataset: (body: { name: string; description?: string; cases: { prompt: string; expected: string }[] }) =>
+  createEvalDataset: (body: {
+    name: string
+    description?: string
+    scenario?: string
+    scoring?: EvalScoring
+    synthetic?: boolean
+    cases: { prompt: string; expected: string }[]
+  }) =>
     request<EvalDataset>('/api/v1/evals/datasets', { method: 'POST', body: JSON.stringify(body) }),
   deleteEvalDataset: (id: string) => request<{ ok: boolean }>(`/api/v1/evals/datasets/${id}`, { method: 'DELETE' }),
-  listEvalRuns: () => request<EvalRun[]>('/api/v1/evals/runs'),
+  listEvalRuns: (limit = 20) => request<EvalRun[]>(`/api/v1/evals/runs?limit=${limit}`),
   getEvalRun: (id: string) => request<EvalRun>(`/api/v1/evals/runs/${id}`),
+  listDatasetRuns: (datasetId: string, limit = 20) =>
+    request<EvalRun[]>(`/api/v1/evals/datasets/${datasetId}/runs?limit=${limit}`),
   startEvalRun: (body: { dataset_id: string; target: string }) =>
     request<EvalRun>('/api/v1/evals/runs', { method: 'POST', body: JSON.stringify(body) }),
 

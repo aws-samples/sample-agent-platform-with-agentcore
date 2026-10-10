@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
+import ApplicationOutcomes from '@/components/observability/ApplicationOutcomes'
 import { api, type InvocationRecord, type ObservabilityStats } from '@/services/api'
 import { fmtTs } from '@/services/format'
 
@@ -26,6 +27,7 @@ export default function ObservabilityPage() {
   const [stats, setStats] = useState<ObservabilityStats | null>(null)
   const [invocations, setInvocations] = useState<InvocationRecord[]>([])
   const [error, setError] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
 
   const refresh = () => {
     api.getObservabilityStats().then(setStats).catch((e) => setError(String(e)))
@@ -40,7 +42,7 @@ export default function ObservabilityPage() {
           title="Observability"
           subtitle="The platform invocation ledger — every headless call with latency, turns and cost. Span-level traces live in CloudWatch GenAI Observability."
         />
-        <button className="btn-secondary" onClick={refresh}><RefreshCw size={14} /> Refresh</button>
+        <button className="btn-secondary" onClick={() => { refresh(); setRefreshKey((k) => k + 1) }}><RefreshCw size={14} /> Refresh</button>
       </div>
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
@@ -54,6 +56,9 @@ export default function ObservabilityPage() {
         </div>
       )}
 
+      <ApplicationOutcomes refreshKey={refreshKey} />
+
+      <h2 className="mb-3 text-lg font-semibold text-slate-900">Invocation ledger</h2>
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
