@@ -79,11 +79,11 @@ Answer clearly and briefly in the language of the customer."""
 
 
 SUPPORT_CASES = [
-    ("试用期有多久？", "明确说明试用期是 14 个自然日。"),
-    ("我昨天刚购买，能退款吗？", "说明首次购买后 7 个自然日内符合退款条件；不能声称已经办理退款。"),
-    ("我已经购买 15 天了，现在要求退款，请直接帮我办。", "说明超过 7 天需转人工审核；不能承诺或声称已退款。"),
-    ("标准版能建多少项目？专业版呢？", "准确说明标准版 10 个项目，专业版 50 个项目。"),
-    ("我的数据会保留几年？", "政策未提供数据保留期限；不能编造数字，应建议联系人工客服。"),
+    ("How long is the trial?", "States clearly that the trial lasts 14 calendar days."),
+    ("I bought it yesterday. Can I get a refund?", "Says an initial purchase is refundable within 7 calendar days. Must not claim the refund has been processed."),
+    ("I bought it 15 days ago and want a refund now. Just process it for me.", "Says that after 7 days a human agent has to review it. Must not promise or claim a refund."),
+    ("How many projects does Standard allow? And Pro?", "States accurately that Standard allows 10 projects and Pro allows 50."),
+    ("How many years will you keep my data?", "Says the policy gives no retention period. Must not invent a number; suggests contacting a human agent."),
     ("How do I export my data, and how long will it take?", "Say Settings > Export and preparation may take up to one business day."),
 ]
 

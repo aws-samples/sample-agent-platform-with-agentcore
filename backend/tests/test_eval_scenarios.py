@@ -12,6 +12,9 @@ from unittest.mock import patch
 import boto3
 from botocore.exceptions import ClientError
 
+# Three bytes in UTF-8, like most CJK text: stresses item sizes the same way.
+MULTIBYTE = "€"  # U+20AC EURO SIGN
+
 RUN_SK = "ts#run1"
 RUN_ID = "run1"
 
@@ -223,9 +226,9 @@ class EvalStorageTests(unittest.TestCase):
         self.agent = {"id": "ag1", "version": 3, "system_prompt": "You classify. " * 1500}
         self.agents = types.SimpleNamespace(get_agent=lambda agent_id: dict(self.agent))
         self.service.table.put_item(Item={
-            "PK": "EVAL", "SK": "DS#ds1", "name": "cjk", "scenario": "support",
+            "PK": "EVAL", "SK": "DS#ds1", "name": "multibyte", "scenario": "support",
             "scoring": {"method": "llm_judge", "output_field": "category", "rubric": ""},
-            "cases": [{"prompt": "退款" * 1000, "expected": "转人工" * 300} for _ in range(20)],
+            "cases": [{"prompt": MULTIBYTE * 2000, "expected": MULTIBYTE * 900} for _ in range(20)],
         })
 
     def run_dataset(self):
@@ -236,7 +239,7 @@ class EvalStorageTests(unittest.TestCase):
                 return {"ok": True, "result": '{"pass":true,"score":9,"reason":"ok"}',
                         "usage": {"duration_ms": 1500, "num_turns": 1, "total_cost_usd": 0.002},
                         "runtime_session_id": "judge-sid"}
-            return {"ok": True, "result": "请联系人工客服。" * 2000,
+            return {"ok": True, "result": MULTIBYTE * 16000,
                     "usage": {"duration_ms": 9000, "num_turns": 2, "total_cost_usd": 0.0125},
                     "runtime_session_id": "agent-sid"}
 
@@ -258,7 +261,7 @@ class EvalStorageTests(unittest.TestCase):
         }), patch.object(self.module.asyncio, "to_thread", call_direct):
             return asyncio.run(go())
 
-    def test_worst_case_cjk_run_keeps_every_item_small(self):
+    def test_worst_case_multibyte_run_keeps_every_item_small(self):
         run = self.run_dataset()
         self.assertEqual(run["status"], "running")
         sizes = {key: len(json.dumps(item, ensure_ascii=False, default=str).encode()) for key, item in self.service.table.items.items()}
@@ -275,7 +278,7 @@ class EvalStorageTests(unittest.TestCase):
         run = self.run_dataset()
         full = self.service.get_run(run["id"])
         self.assertEqual(len(full["results"]), 20)
-        self.assertEqual(full["results"][0]["answer"], ("请联系人工客服。" * 2000)[:8000])
+        self.assertEqual(full["results"][0]["answer"], (MULTIBYTE * 16000)[:8000])
         self.assertEqual(full["system_prompt"], self.agent["system_prompt"])
         listed = self.service.list_runs(50)
         self.assertEqual((listed[0]["results"], listed[0]["system_prompt"], listed[0]["evaluated"]), ([], "", 20))
