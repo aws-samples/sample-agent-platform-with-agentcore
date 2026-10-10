@@ -667,6 +667,33 @@ Kernel images can be pinned individually (`claude_code_image_tag`,
 forwarding needs a headless-kernel build that supports per-attachment MCP
 headers.
 
+## Data retention
+
+The platform table has DynamoDB TTL enabled on the `ttl` attribute. DynamoDB
+deletes an item some time after its `ttl`, usually within a few days and
+never before it, at no cost. Items without `ttl` are kept. The backend sets
+`ttl` per record type:
+
+| Record | Kept for | Setting (backend env) |
+|---|---|---|
+| Invocation ledger | 90 days | `RETENTION_LEDGER_DAYS` |
+| Daily quota counters | 90 days after the day | `RETENTION_USAGE_DAYS` |
+| Async service-entry results | 7 days | `RETENTION_SERVICE_INVOCATION_DAYS` |
+| Terminated sessions | 30 days after termination; workspace files in S3 are not touched | `RETENTION_TERMINATED_SESSION_DAYS` |
+| Model gateway grants and revocations | 1 day past the credential's expiry | fixed |
+| Workspace refresh-token lookups | 2 days; AgentCore sessions last at most 8 hours | fixed |
+| Audit trail | forever | `RETENTION_AUDIT_DAYS` |
+| Pipeline runs | forever | `RETENTION_PIPELINE_RUN_DAYS` |
+
+`0` means keep forever. Agents, the registry, schedules, channels,
+pipelines, evaluation datasets and runs, governance policy and model
+configuration are never given a `ttl`.
+
+Retention applies to items written after the change. Older items have no
+`ttl` and stay until you delete them. The model gateway grants matter most
+here: a headless invocation routed through the gateway mints one per call,
+and before TTL nothing removed them.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
