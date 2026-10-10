@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 
 PK = "PIPELINE"
 PK_RUN = "PIPELINERUN"
+
+
+def _run_pointer_key(run_id: str) -> dict:
+    """Each run also writes ``PK=PIPELINERUN#<id>, SK=META`` holding the run's
+    sort key, so a run is found by id however many runs came after it."""
+    return {"PK": f"{PK_RUN}#{run_id}", "SK": "META"}
 SOURCE = "pipeline"
 MAX_SCRIPT = 100_000
 MAX_HISTORY = 10
@@ -292,10 +298,20 @@ class PipelineService:
         })
 
     def get_run(self, run_id: str) -> dict | None:
+        pointer = self.table.get_item(Key=_run_pointer_key(run_id)).get("Item")
+        if pointer:
+            return self._get_run_by_sk(pointer["run_sk"])
+        # Runs created before the pointer existed: look in the recent window.
         for run in self.list_runs(limit=50):
             if run["id"] == run_id:
                 return run
         return None
+
+    def _get_run_by_sk(self, sk: str) -> dict | None:
+        # Strongly consistent: callers read a run right after writing it
+        # (start_run returns it; run_sync reads the final status to report ok).
+        item = self.table.get_item(Key={"PK": PK_RUN, "SK": sk}, ConsistentRead=True).get("Item")
+        return self._run_public(item) if item else None
 
     def _update_run(self, sk: str, **fields) -> None:
         # alias every name: status/error are DynamoDB reserved words
@@ -331,6 +347,7 @@ class PipelineService:
         if parent_run:
             item["parent_run"] = parent_run
         self.table.put_item(Item=item)
+        self.table.put_item(Item={**_run_pointer_key(run_id), "run_sk": sk})
         return sk
 
     # ------------------------------------------------------------ entrypoints
@@ -347,7 +364,7 @@ class PipelineService:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return self.get_run(sk.partition("#")[2]) or {
+        return self._get_run_by_sk(sk) or {
             "id": sk.partition("#")[2], "pipeline": name, "status": "running"}
 
     def run_sync(self, name: str, user: str = "scheduler", *, args=None,
@@ -365,7 +382,7 @@ class PipelineService:
         sk = self._create_run(name, user, source, parent_run=parent_run)
         self._execute(sk, pipe, user, args, allow_nested=not nested,
                       timeout_s=timeout_s)
-        run = self.get_run(sk.partition("#")[2]) or {}
+        run = self._get_run_by_sk(sk) or {}
         return {"ok": run.get("status") == "completed", "run_id": run.get("id"),
                 "result": _plain(run.get("result"))}
 
