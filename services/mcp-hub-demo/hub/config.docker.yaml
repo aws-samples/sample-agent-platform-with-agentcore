@@ -1,0 +1,20 @@
+# Hub config for docker-compose. Tokens are issued with issuer/audience as
+# seen from the HOST (localhost URLs); the JWKS fetch uses the compose-network
+# hostname. That split is why issuer and jwks_url differ here.
+resource_url: http://localhost:8000/mcp
+issuer: http://localhost:8080/realms/mcp-demo
+jwks_url: http://keycloak:8080/realms/mcp-demo/protocol/openid-connect/certs
+
+servers:
+  - name: order
+    url: http://mcp-order:9001/mcp
+    allowed_departments: [sales, finance]
+  - name: hr
+    url: http://mcp-hr:9002/mcp
+    allowed_departments: [hr]
+
+# Application actors (inbound MCPHUB-HMAC-SHA256) — see config.local.yaml for
+# the field reference. Real deployments use secret_key_env or HUB_ACTORS.
+actors:
+  - access_key: demo-app
+    secret_key: local-dev-secret

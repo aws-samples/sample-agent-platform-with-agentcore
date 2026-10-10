@@ -316,7 +316,7 @@ security review).
 │   └── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
 ├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry, workflow engine
 ├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Gateway, Channels, Memory, Observability, Eval, Workflow, Governance
-├── services/                 # llm-edge (key holder for the `litellm` backend) + the optional Keycloak IdP and team APIs
+├── services/                 # llm-edge (key holder for the `litellm` backend), the optional Keycloak IdP and team APIs, and mcp-hub-demo (the companion customer-owned MCP hub: SSO, HMAC and IAM-entry inbound auth)
 ├── terraform/                # Terraform (the maintained path): network, platform resources, AgentCore runtimes, EKS, portal hosting + scheduler engine
 ├── infrastructure/           # CDK (Python): the legacy ECS Fargate variant of the same stacks, kept for reference
 ├── deploy-cli/               # AWS-CLI-only deployment port for accounts that cannot run Terraform or CDK

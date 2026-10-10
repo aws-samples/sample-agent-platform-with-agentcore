@@ -2,15 +2,16 @@
 # Package an MCP hub source tree and upload it to the workspace bucket, where
 # the hub EC2's user_data pulls it from (terraform/modules/mcp_hub_demo).
 #
-# Usage: scripts/package_mcp_hub.sh <path-to-hub-source> [s3-key]
+# Usage: scripts/package_mcp_hub.sh [path-to-hub-source] [s3-key]
 #
-# The source tree is any checkout shaped like the sample-mcp-hub-sso-auth
-# repository: hub/ (the hub itself) and servers/ (demo backends) at the root.
+# The source tree defaults to services/mcp-hub-demo (the companion hub sample,
+# in this repository); any tree shaped like it works: hub/ (the hub itself)
+# and servers/ (demo backends) at the root.
 # The zip is flat — hub/ and servers/ at the archive root — because the
 # instance unpacks it straight into /opt/mcp-hub/src.
 set -euo pipefail
 
-SRC="${1:?usage: package_mcp_hub.sh <path-to-hub-source> [s3-key]}"
+SRC="${1:-$(cd "$(dirname "$0")/.." && pwd)/services/mcp-hub-demo}"
 KEY="${2:-mcp-hub/source.zip}"
 
 for required in hub/app.py hub/requirements.txt servers/requirements.txt; do

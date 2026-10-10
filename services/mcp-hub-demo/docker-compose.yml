@@ -1,0 +1,54 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6
+    # cimd (experimental) lets Keycloak accept Claude Code's OAuth Client ID
+    # Metadata Document, so no client pre-registration is needed.
+    command: start-dev --features=cimd --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+
+  mcp-order:
+    build:
+      context: ./servers
+      dockerfile: order/Dockerfile
+    environment:
+      ISSUER: http://localhost:8080/realms/mcp-demo
+      JWKS_URL: http://keycloak:8080/realms/mcp-demo/protocol/openid-connect/certs
+      AUDIENCE: http://localhost:8000/mcp
+      PORT: "9001"
+    # Published so you can hit the backend directly and watch it refuse
+    # bad callers on its own (defense in depth) — see scripts/e2e.py.
+    ports:
+      - "9001:9001"
+    depends_on:
+      - keycloak
+
+  mcp-hr:
+    build:
+      context: ./servers
+      dockerfile: hr/Dockerfile
+    environment:
+      ISSUER: http://localhost:8080/realms/mcp-demo
+      JWKS_URL: http://keycloak:8080/realms/mcp-demo/protocol/openid-connect/certs
+      AUDIENCE: http://localhost:8000/mcp
+      PORT: "9002"
+    ports:
+      - "9002:9002"
+    depends_on:
+      - keycloak
+
+  hub:
+    build: ./hub
+    environment:
+      HUB_CONFIG: /app/config.docker.yaml
+    ports:
+      - "8000:8000"
+    depends_on:
+      - keycloak
+      - mcp-order
+      - mcp-hr

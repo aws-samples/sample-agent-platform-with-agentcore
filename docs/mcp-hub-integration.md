@@ -148,7 +148,7 @@ deliberately not wired in this sample.
 
 ## Hub-side verification
 
-The companion hub sample (`sample-mcp-hub-sso-auth`) accepts both inbound
+The companion hub sample ([`services/mcp-hub-demo`](../services/mcp-hub-demo/)) accepts both inbound
 forms against one identity model:
 
 - `Bearer <jwt>` — a human ran the SSO flow themselves (unchanged).
@@ -219,7 +219,7 @@ The pieces, and where each lives:
   file under `/tmp` in the interactive kernel (never `.mcp.json`, which syncs
   to S3; re-read per request so a rotation lands in place). It holds no STS
   code and never sends `x-caller-arn` itself — that is the gateway's to set.
-- **The hub** (`sample-mcp-hub-sso-auth`, `hub/entry_identity.py`): a third
+- **The hub** ([`services/mcp-hub-demo/hub/entry_identity.py`](../services/mcp-hub-demo/hub/entry_identity.py)): a third
   inbound branch next to Bearer and HMAC. On a request carrying the entry
   secret header (constant-time compare against `HUB_ENTRY_SECRET`, pulled
   by the hub host under its own role at boot), it trusts `x-caller-arn`,
@@ -256,8 +256,8 @@ actually served the run (`HUB-AUTH-PATH`).
 ## Deploying the demo
 
 ```bash
-# 1. package the hub source (any checkout shaped like sample-mcp-hub-sso-auth)
-scripts/package_mcp_hub.sh ../sample-mcp-hub-sso-auth
+# 1. package the hub source (services/mcp-hub-demo by default; any tree shaped like it works)
+scripts/package_mcp_hub.sh
 
 # 2. hub EC2 + demo-app EC2 (requires enable_team_auth — the hub verifies
 #    tokens against the platform's Keycloak)

@@ -1,0 +1,169 @@
+{
+  "realm": "mcp-demo",
+  "enabled": true,
+  "displayName": "MCP Hub SSO Demo",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 86400,
+  "ssoSessionMaxLifespan": 86400,
+  "groups": [
+    { "name": "sales", "path": "/sales" },
+    { "name": "finance", "path": "/finance" },
+    { "name": "hr", "path": "/hr" }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Sales",
+      "groups": ["/sales"],
+      "credentials": [
+        { "type": "password", "value": "alice-demo-password", "temporary": false }
+      ]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.com",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Finance",
+      "groups": ["/finance"],
+      "credentials": [
+        { "type": "password", "value": "bob-demo-password", "temporary": false }
+      ]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@example.com",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "HR",
+      "groups": ["/hr"],
+      "credentials": [
+        { "type": "password", "value": "carol-demo-password", "temporary": false }
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "mcp-hub",
+      "description": "Default scope stamping the MCP Hub audience and the department claim into every access token issued in this demo realm.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "mcp-hub-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "http://localhost:8000/mcp",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "department",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "department",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": ["mcp-hub"],
+  "clients": [
+    {
+      "clientId": "e2e-tester",
+      "name": "Automated test client (password grant)",
+      "description": "Only used by scripts/e2e.py to mint user tokens without a browser. Not part of the SSO pattern itself.",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "fullScopeAllowed": true
+    }
+  ],
+  "clientProfiles": {
+    "profiles": [
+      {
+        "name": "mcp-cimd-profile",
+        "description": "Accept OAuth Client ID Metadata Documents (CIMD) from Claude Code",
+        "executors": [
+          {
+            "executor": "client-id-metadata-document",
+            "configuration": {
+              "cimd-allow-http-scheme": false,
+              "cimd-allow-permitted-domains": ["claude.ai", "localhost", "127.0.0.1"],
+              "cimd-restrict-same-domain": false,
+              "only-allow-confidential-client": false
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "clientPolicies": {
+    "policies": [
+      {
+        "name": "mcp-cimd-policy",
+        "description": "Trigger the CIMD profile when client_id is an https URL on claude.ai",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-id-uri",
+            "configuration": {
+              "client-id-uri-scheme": ["https"],
+              "client-id-uri-allow-permitted-domains": ["claude.ai"]
+            }
+          }
+        ],
+        "profiles": ["mcp-cimd-profile"]
+      }
+    ]
+  }
+}

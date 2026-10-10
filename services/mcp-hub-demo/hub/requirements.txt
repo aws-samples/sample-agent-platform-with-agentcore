@@ -1,0 +1,5 @@
+mcp>=2.0,<3
+httpx2>=2.13  # the maintained httpx successor (pydantic/httpx2); imported directly by app.py, and what mcp>=2 itself uses
+PyJWT[crypto]>=2.9
+PyYAML>=6.0
+uvicorn>=0.30

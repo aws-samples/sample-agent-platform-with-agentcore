@@ -1,0 +1,38 @@
+# Hub config for running everything natively on one machine (no Docker).
+resource_url: http://localhost:8000/mcp
+issuer: http://localhost:8080/realms/mcp-demo
+# jwks_url defaults to {issuer}/protocol/openid-connect/certs
+
+# Coarse-grained routing table: which departments may reach which backend.
+# This is the ONLY authorization the hub performs; data-level decisions
+# happen inside the backends.
+servers:
+  - name: order
+    url: http://localhost:9001/mcp
+    allowed_departments: [sales, finance]
+  - name: hr
+    url: http://localhost:9002/mcp
+    allowed_departments: [hr]
+
+# Application actors (inbound MCPHUB-HMAC-SHA256). An application signs its
+# requests with an access/secret key pair and carries the acting user's SSO
+# token in X-MCPHUB-SSO-TOKEN; department routing still follows that token's
+# claims. Prefer secret_key_env in real deployments — inline secret_key is
+# for local development only. Deployments can also inject actors wholesale
+# through the HUB_ACTORS env var (JSON list of the same shape).
+actors:
+  - access_key: demo-app
+    secret_key: local-dev-secret
+# hmac_clock_skew_s: 300   # accepted timestamp window (± seconds)
+
+# IAM entry (optional). When the hub sits behind a private API Gateway that
+# authenticates applications with IAM and forwards the caller's identity, the
+# hub trusts x-caller-arn only on requests carrying the gateway's shared secret
+# (HUB_ENTRY_SECRET in the environment, never here). The actor is the caller
+# role's session name. Leave this block out to accept HMAC and Bearer only.
+# entry_identity:
+#   identity_header: x-caller-arn
+#   secret_header: x-mcp-hub-entry-secret
+#   secret_env: HUB_ENTRY_SECRET
+#   caller_role: agent-platform-mcp-hub-caller
+#   allowed_actors: []        # empty = any session of that role
