@@ -28,7 +28,7 @@ provides, the gap, and how this code closes it.
 
 <!-- ?v= bumps the URL so GitHub's image cache serves the current diagram
      instead of a stale copy at the same path. Bump it whenever the SVG changes. -->
-![architecture](docs/images/architecture.svg?v=4)
+![architecture](docs/images/architecture.svg?v=5)
 
 ## Design decisions
 
@@ -69,10 +69,13 @@ enforcement options that coexist per tool:
   REQUEST interceptor that checks the claim, and receives a static API key
   outbound.
 - **Your own MCP hub instead of Gateway.** An attachment of kind `mcp-hub`
-  reaches a customer-owned hub. The kernel signs every request per application
-  (`MCPHUB-HMAC-SHA256`, a published agent is one application) and forwards the
-  user's token, so the hub answers "which application" and "which user"
-  separately.
+  reaches a customer-owned hub and forwards the user's token, so the hub
+  answers "which application" and "which user" separately. The application
+  proves itself one of two ways per registry entry (`auth: iam | hmac`): through
+  an **IAM entry**, a private API Gateway in front of the hub where the
+  application's identity is a caller-role session named after the agent, minted
+  by the backend and never by the kernel, with no key pair anywhere; or with a
+  per-agent key pair (`MCPHUB-HMAC-SHA256`) when the hub is outside AWS.
 
 The identity reaches the kernel through the ordinary registry: an MCP server
 whose header holds a `{{user_token}}` placeholder. Machine callers get the same
@@ -82,7 +85,7 @@ agent whose tools need a verified identity fails closed when none arrives.
 
 ![Where authorization happens](docs/images/authorization-layers.svg)
 
-![MCP hub chains](docs/images/mcp-hub-chains.svg?v=1)
+![MCP hub chains](docs/images/mcp-hub-chains.svg?v=2)
 
 Details: [docs/enterprise-sso.md](docs/enterprise-sso.md),
 [docs/mcp-hub-integration.md](docs/mcp-hub-integration.md).
@@ -320,7 +323,7 @@ security review).
 ├── pipelines/                # Sample Workflow-dialect pipeline scripts
 ├── demo/                     # Standalone tryouts (invoke a kernel from your terminal, EKS Pod Identity caller)
 ├── scripts/                  # Image build, deployment and end-to-end test helpers
-└── docs/                     # Architecture, deployment, permissions, user guide
+└── docs/                     # Architecture, deployment, permissions, user guide, how the sample is built and released (ci-cd.md)
 ```
 
 What the portal offers, in one table (the [user guide](docs/user-guide.md)

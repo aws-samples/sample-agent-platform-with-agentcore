@@ -6,6 +6,9 @@
   configuration in [`terraform/`](../terraform/README.md); the CDK stacks in
   `infrastructure/` are the legacy ECS Fargate variant (see
   [Legacy: CDK stacks](#legacy-cdk-stacks-ecs-fargate)).
+  This guide applies both Terraform roots from one workstation; how the
+  maintained deployment runs them from two pipelines with a staging
+  environment in between is in [`docs/ci-cd.md`](ci-cd.md).
 - `kubectl` and `helm` for operating the EKS cluster the containers run on.
   Terraform itself needs neither — it talks to the cluster through the AWS
   CLI (`aws eks get-token`) and its own Helm provider.

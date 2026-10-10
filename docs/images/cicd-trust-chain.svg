@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 900" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="Where a pipeline job actually runs">
+<title>Where a pipeline job actually runs</title>
+<defs>
+<pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse"><path d="M34 0 H0 V34" fill="none" stroke="#EAEFF6" stroke-width="1"/></pattern>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>@media (prefers-reduced-motion: no-preference){.flow{stroke-dasharray:6 6;animation:dm .8s linear infinite}}@keyframes dm{to{stroke-dashoffset:-12}}</style>
+</defs>
+<rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
+<text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">Where a pipeline job actually runs</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">A job's role can only start one named build · the permissions that matter sit on the build project inside the VPC · the change under review never runs with a role</text>
+<rect x="330" y="110" width="1260" height="610" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="346" y="128" font-size="11" font-weight="700" fill="#0B7E7F">AWS account</text>
+<rect x="740" y="262" width="600" height="158" rx="12" fill="rgba(140,79,255,0.06)" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="756" y="280" font-size="11" font-weight="700" fill="#7C3AED">platform VPC · private subnets</text>
+<rect x="440" y="545" width="1060" height="135" rx="12" fill="rgba(231,21,123,0.04)" stroke="#E7157B" stroke-width="1.5" stroke-dasharray="3 4"/>
+<text x="456" y="563" font-size="11" font-weight="700" fill="#B21667">One build project per privilege level</text>
+<rect x="30" y="430" width="280" height="352" rx="12" fill="rgba(231,21,123,0.04)" stroke="#E7157B" stroke-width="1.5" stroke-dasharray="3 4"/>
+<text x="46" y="448" font-size="11" font-weight="700" fill="#B21667">Three rules the tests enforce</text>
+<path class="flow" d="M 193.0 330.0 L 477.0 330.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 523.0 330.0 L 817.0 330.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 863.0 330.0 L 1157.0 330.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 840.0 307.0 L 840.0 170.0 L 693.0 170.0" fill="none" stroke="#0F766E" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 647.0 170.0 L 170.0 170.0 L 170.0 307.0" fill="none" stroke="#0F766E" stroke-width="2" marker-end="url(#ah)"/>
+<path d="M 580.0 577.0 L 580.0 480.0 L 840.0 480.0 L 840.0 353.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 840.0 577.0 L 840.0 353.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 1100.0 577.0 L 1100.0 480.0 L 840.0 480.0 L 840.0 353.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 1360.0 577.0 L 1360.0 480.0 L 840.0 480.0 L 840.0 353.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<rect x="203" y="302" width="114" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="260" y="312" text-anchor="middle" font-size="9.5" fill="#48586a">AssumeRole · 1 h</text>
+<rect x="580" y="302" width="180" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="670" y="312" text-anchor="middle" font-size="9.5" fill="#48586a">upload bundle · StartBuild</text>
+<rect x="927" y="302" width="166" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1010" y="312" text-anchor="middle" font-size="9.5" fill="#48586a">own role · own log group</text>
+<rect x="858" y="240" width="153" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="935" y="250" text-anchor="middle" font-size="9.5" fill="#48586a">run.json · logs · plan</text>
+<rect x="334" y="157" width="193" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="430" y="167" text-anchor="middle" font-size="9.5" fill="#48586a">junit · plan report · dotenv</text>
+<rect x="597" y="467" width="226" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="710" y="477" text-anchor="middle" font-size="9.5" fill="#48586a">the job's role names one of these</text>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="0.00s" repeatCount="indefinite" path="M 193.0 330.0 L 477.0 330.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="1.00s" repeatCount="indefinite" path="M 523.0 330.0 L 817.0 330.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.0s" begin="2.00s" repeatCount="indefinite" path="M 863.0 330.0 L 1157.0 330.0"/></circle>
+<circle r="4" fill="#0F766E"><animateMotion dur="2.8s" begin="0.00s" repeatCount="indefinite" path="M 840.0 307.0 L 840.0 170.0 L 693.0 170.0"/></circle>
+<circle r="4" fill="#0F766E"><animateMotion dur="2.8s" begin="1.40s" repeatCount="indefinite" path="M 647.0 170.0 L 170.0 170.0 L 170.0 307.0"/></circle>
+<rect x="147.0" y="307.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="170" cy="330" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="170" cy="330" r="1.8" fill="#fff"/><text x="170" y="368" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">GitLab job</text><text x="170" y="381" text-anchor="middle" font-size="9.5" fill="#5A6B7B">shared runner · no stable egress</text>
+<g transform="translate(477.00,307.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="iam__linearGradient-1">
+            <stop stop-color="#BD0816" offset="0%"></stop>
+            <stop stop-color="#FF5252" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="iam__Icon-Architecture/64/Arch_AWS-Identity-and-Access-Management_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="iam__Icon-Architecture-BG/64/Security-Identity-Compliance" fill="#DD344C">
+            <rect id="iam__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M14,59 L66,59 L66,21 L14,21 L14,59 Z M68,20 L68,60 C68,60.552 67.553,61 67,61 L13,61 C12.447,61 12,60.552 12,60 L12,20 C12,19.448 12.447,19 13,19 L67,19 C67.553,19 68,19.448 68,20 L68,20 Z M44,48 L59,48 L59,46 L44,46 L44,48 Z M57,42 L62,42 L62,40 L57,40 L57,42 Z M44,42 L52,42 L52,40 L44,40 L44,42 Z M29,46 C29,45.449 28.552,45 28,45 C27.448,45 27,45.449 27,46 C27,46.551 27.448,47 28,47 C28.552,47 29,46.551 29,46 L29,46 Z M31,46 C31,47.302 30.161,48.401 29,48.816 L29,51 L27,51 L27,48.815 C25.839,48.401 25,47.302 25,46 C25,44.346 26.346,43 28,43 C29.654,43 31,44.346 31,46 L31,46 Z M19,53.993 L36.994,54 L36.996,50 L33,50 L33,48 L36.996,48 L36.998,45 L33,45 L33,43 L36.999,43 L37,40.007 L19.006,40 L19,53.993 Z M22,38.001 L34,38.006 L34,31 C34.001,28.697 31.197,26.677 28,26.675 L27.996,26.675 C24.804,26.675 22.004,28.696 22.002,31 L22,38.001 Z M17,54.992 L17.006,39 C17.006,38.734 17.111,38.48 17.299,38.292 C17.486,38.105 17.741,38 18.006,38 L20,38.001 L20.002,31 C20.004,27.512 23.59,24.675 27.996,24.675 L28,24.675 C32.412,24.677 36.001,27.515 36,31 L36,38.007 L38,38.008 C38.553,38.008 39,38.456 39,39.008 L38.994,55 C38.994,55.266 38.889,55.52 38.701,55.708 C38.514,55.895 38.259,56 37.994,56 L18,55.992 C17.447,55.992 17,55.544 17,54.992 L17,54.992 Z M60,36 L62,36 L62,34 L60,34 L60,36 Z M44,36 L55,36 L55,34 L44,34 L44,36 Z" id="iam__AWS-Identity-and-Access-Management_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="500" y="368" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Credential vendor</text><text x="500" y="381" text-anchor="middle" font-size="9.5" fill="#5A6B7B">short-lived role per job · pinned to project, job, branch</text>
+<g transform="translate(817.00,307.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="840" y="368" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">CodeBuild project</text><text x="840" y="381" text-anchor="middle" font-size="9.5" fill="#5A6B7B">inside the platform VPC · its own role</text>
+<rect x="1157.0" y="307.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1180" cy="330" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1180" cy="330" r="1.8" fill="#fff"/><text x="1180" y="368" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">terraform · helm · acceptance checks</text><text x="1180" y="381" text-anchor="middle" font-size="9.5" fill="#5A6B7B">plan files, apply, e2e</text>
+<g transform="translate(647.00,147.00) scale(0.7188)">
+
+    
+    <g id="s3__Icon-Architecture/48/Arch_Amazon-Simple-Storage-Service_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="s3__Icon-Architecture-BG/48/Storage" fill="#7AA116">
+            <rect id="s3__Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <g id="s3__Icon-Service/48/Amazon-Simple-Storage-Service_48" transform="translate(10.999800, 10.000200)" fill="#FFFFFF">
+            <path d="M36.759,23.948 L36.993,22.131 C39.166,23.385 39.842,24.121 40.037,24.424 C39.713,24.485 38.832,24.509 36.759,23.948 L36.759,23.948 Z M19.5,11 C9.125,11 2.382,8.488 2,6.696 L2,6.511 C2.349,5.392 8.14,2 19.5,2 C30.84,2 36.632,5.381 37,6.505 L37,6.616 C36.724,8.446 29.961,11 19.5,11 L19.5,11 Z M34.818,23.362 C30.053,21.797 23.912,18.979 21.594,17.888 C21.535,16.786 20.628,15.906 19.512,15.906 C18.358,15.906 17.418,16.845 17.418,18 C17.418,19.154 18.358,20.094 19.512,20.094 C19.969,20.094 20.389,19.942 20.733,19.693 C23.132,20.822 29.619,23.798 34.558,25.38 L32.837,38.724 C32.583,40.352 27.919,42 19.497,42 C11.072,42 6.405,40.352 6.155,38.751 L2.435,9.814 C5.945,11.915 12.749,13 19.5,13 C26.25,13 33.054,11.915 36.565,9.815 L34.818,23.362 Z M39,6.5 C39,3.431 30.661,0 19.5,0 C8.339,0 -3.55271368e-15,3.431 -3.55271368e-15,6.5 L-3.55271368e-15,7.043 L4.174,39.033 C4.875,43.516 15.123,44 19.497,44 C23.869,44 34.113,43.516 34.818,39.007 L36.501,25.947 C37.778,26.279 38.812,26.456 39.616,26.455 C40.606,26.455 41.273,26.203 41.697,25.697 C42.047,25.281 42.185,24.756 42.085,24.221 C41.857,23 40.403,21.712 37.37,20.044 L37.27,19.989 L39,7.044 L39,6.5 Z" id="s3__Amazon-Simple-Storage-Service-Icon_48_Squid"></path>
+        </g>
+    </g>
+</g><text x="670" y="208" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">S3 artifacts</text><text x="670" y="221" text-anchor="middle" font-size="9.5" fill="#5A6B7B">bundles · results · plans</text>
+<rect x="557.0" y="577.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="580" cy="600" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="580" cy="600" r="1.8" fill="#fff"/><text x="580" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">plan-staging</text><text x="580" y="651" text-anchor="middle" font-size="9.5" fill="#5A6B7B">staging allowlist · the only role an MR reaches</text>
+<rect x="817.0" y="577.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="840" cy="600" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="840" cy="600" r="1.8" fill="#fff"/><text x="840" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">plan / verify</text><text x="840" y="651" text-anchor="middle" font-size="9.5" fill="#5A6B7B">read-only · production plan on default branch</text>
+<rect x="1077.0" y="577.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1100" cy="600" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1100" cy="600" r="1.8" fill="#fff"/><text x="1100" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">deploy workloads</text><text x="1100" y="651" text-anchor="middle" font-size="9.5" fill="#5A6B7B">allowlist · pass kernel roles · namespaced Helm</text>
+<rect x="1337.0" y="577.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1360" cy="600" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1360" cy="600" r="1.8" fill="#fff"/><text x="1360" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">deploy foundation</text><text x="1360" y="651" text-anchor="middle" font-size="9.5" fill="#5A6B7B">administrator · operations repo only · manual</text>
+<rect x="147.0" y="467.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="170" cy="490" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="170" cy="490" r="1.8" fill="#fff"/><text x="170" y="528" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Gates come from the default branch</text><text x="170" y="541" text-anchor="middle" font-size="9.5" fill="#5A6B7B">engine, catalog, locks · not from the change</text>
+<rect x="147.0" y="577.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="170" cy="600" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="170" cy="600" r="1.8" fill="#fff"/><text x="170" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Jobs that run the change hold no role</text><text x="170" y="651" text-anchor="middle" font-size="9.5" fill="#5A6B7B">secret files deleted first</text>
+<rect x="147.0" y="687.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="170" cy="710" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="170" cy="710" r="1.8" fill="#fff"/><text x="170" y="748" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Production apply = re-plan + compare</text><text x="170" y="761" text-anchor="middle" font-size="9.5" fill="#5A6B7B">apply the reviewed plan file · no auto-approve</text>
+<circle cx="335" cy="330" r="9" fill="#232F3E"/><text x="335" y="333" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">1</text>
+<circle cx="670" cy="330" r="9" fill="#232F3E"/><text x="670" y="333" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">2</text>
+<circle cx="1010" cy="330" r="9" fill="#232F3E"/><text x="1010" y="333" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">3</text>
+<circle cx="840" cy="250" r="9" fill="#232F3E"/><text x="840" y="253" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">4</text>
+<text x="40" y="810" font-size="11" font-weight="700" fill="#16202E">Flows</text>
+<circle cx="92" cy="806" r="5" fill="#1D4ED8"/><text x="102" y="810" font-size="10.5" fill="#5A6B7B">job starts a build</text>
+<circle cx="248" cy="806" r="5" fill="#0F766E"/><text x="258" y="810" font-size="10.5" fill="#5A6B7B">results back to the job</text>
+<circle cx="439" cy="806" r="5" fill="#94A3B8"/><text x="449" y="810" font-size="10.5" fill="#5A6B7B">privilege tiers (one project each)</text>
+<text x="40" y="832" font-size="10" fill="#5A6B7B">Each tier is a separate CodeBuild project with its own role · a job's role may start exactly one of them · a merge request reaches only plan-staging</text>
+</svg>

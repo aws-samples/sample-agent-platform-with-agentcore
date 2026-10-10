@@ -18,7 +18,7 @@ scripts.
 ## The shape of the chain
 
 <!-- ?v= bumps the URL so GitHub's image cache serves the current diagram -->
-![MCP hub chains — production and development paths into a customer-owned hub](images/mcp-hub-chains.svg?v=1)
+![MCP hub chains — production and development paths into a customer-owned hub](images/mcp-hub-chains.svg?v=2)
 
 ```
 calling app ──SigV4 + robot token──► private service-entry API ──► entry pods (EKS)
@@ -180,6 +180,8 @@ runtime ──SigV4 (execute-api; session agent-<id> of agent-platform-mcp-hub-c
       + x-mcp-hub-entry-secret (a shared secret only the gateway knows)
       + X-MCPHUB-SSO-TOKEN (the acting user, exactly as on the HMAC path)
 ```
+
+![The MCP hub IAM entry: one tool call, hop by hop](images/mcp-hub-iam-entry.svg?v=1)
 
 The pieces, and where each lives:
 

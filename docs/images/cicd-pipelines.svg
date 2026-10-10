@@ -1,0 +1,215 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 900" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="Two pipelines, one environment, one public snapshot">
+<title>Two pipelines, one environment, one public snapshot</title>
+<defs>
+<pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse"><path d="M34 0 H0 V34" fill="none" stroke="#EAEFF6" stroke-width="1"/></pattern>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>@media (prefers-reduced-motion: no-preference){.flow{stroke-dasharray:6 6;animation:dm .8s linear infinite}}@keyframes dm{to{stroke-dashoffset:-12}}</style>
+</defs>
+<rect width="1620" height="900" fill="#FBFCFE"/><rect width="1620" height="900" fill="url(#grid)"/>
+<text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">Two pipelines, one environment, one public snapshot</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">Every merge reaches staging on its own · production and the public snapshot wait for a hand · the two repositories call each other only through pipeline triggers and job-token clones</text>
+<rect x="30" y="96" width="300" height="656" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="46" y="114" font-size="11" font-weight="700" fill="#0B7E7F">Operations repository · foundation + CI roles</text>
+<rect x="360" y="96" width="960" height="656" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="376" y="114" font-size="11" font-weight="700" fill="#0B7E7F">Application repository · code + workloads</text>
+<rect x="1370" y="470" width="230" height="190" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="1386" y="488" font-size="11" font-weight="700" fill="#0B7E7F">GitHub · public sample</text>
+<path class="flow" d="M 180.0 223.0 L 180.0 297.0" fill="none" stroke="#7E22CE" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 180.0 343.0 L 180.0 417.0" fill="none" stroke="#7E22CE" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 180.0 463.0 L 180.0 537.0" fill="none" stroke="#7E22CE" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 180.0 583.0 L 180.0 657.0" fill="none" stroke="#7E22CE" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 513.0 200.0 L 697.0 200.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 743.0 200.0 L 927.0 200.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 973.0 200.0 L 1157.0 200.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1180.0 223.0 L 1180.0 380.0 L 490.0 380.0 L 490.0 537.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 513.0 560.0 L 697.0 560.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 743.0 560.0 L 927.0 560.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 973.0 560.0 L 1157.0 560.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 203.0 560.0 L 467.0 560.0" fill="none" stroke="#15803D" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 203.0 680.0 L 950.0 680.0 L 950.0 583.0" fill="none" stroke="#15803D" stroke-width="2" marker-end="url(#ah)"/>
+<path d="M 180.0 177.0 L 180.0 150.0 L 490.0 150.0 L 490.0 177.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path d="M 1180.0 537.0 L 1180.0 440.0 L 203.0 440.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path class="flow" d="M 1203.0 560.0 L 1462.0 560.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="785" y="177" width="100" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="835" y="187" text-anchor="middle" font-size="9.5" fill="#48586a">default branch</text>
+<rect x="745" y="367" width="180" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="835" y="377" text-anchor="middle" font-size="9.5" fill="#48586a">apply workloads to staging</text>
+<rect x="512" y="537" width="186" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="605" y="547" text-anchor="middle" font-size="9.5" fill="#48586a">green staging · same commit</text>
+<rect x="216" y="537" width="239" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="335" y="547" text-anchor="middle" font-size="9.5" fill="#48586a">multi-project trigger · verify-only</text>
+<rect x="480" y="657" width="239" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="600" y="667" text-anchor="middle" font-size="9.5" fill="#48586a">multi-project trigger · verify-only</text>
+<rect x="192" y="137" width="285" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="335" y="147" text-anchor="middle" font-size="9.5" fill="#48586a">job token · qa engine cloned from app main</text>
+<rect x="657" y="427" width="285" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="800" y="437" text-anchor="middle" font-size="9.5" fill="#48586a">job token · foundation terraform/ overlaid</text>
+<rect x="1206" y="537" width="252" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1332" y="547" text-anchor="middle" font-size="9.5" fill="#48586a">snapshot commit · no internal history</text>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.4s" begin="0.00s" repeatCount="indefinite" path="M 513.0 200.0 L 697.0 200.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.4s" begin="0.85s" repeatCount="indefinite" path="M 743.0 200.0 L 927.0 200.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.4s" begin="1.70s" repeatCount="indefinite" path="M 973.0 200.0 L 1157.0 200.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="3.4s" begin="2.55s" repeatCount="indefinite" path="M 1180.0 223.0 L 1180.0 380.0 L 490.0 380.0 L 490.0 537.0"/></circle>
+<circle r="4" fill="#7E22CE"><animateMotion dur="2.6s" begin="0.00s" repeatCount="indefinite" path="M 180.0 223.0 L 180.0 297.0"/></circle>
+<circle r="4" fill="#7E22CE"><animateMotion dur="2.6s" begin="0.87s" repeatCount="indefinite" path="M 180.0 343.0 L 180.0 417.0"/></circle>
+<circle r="4" fill="#7E22CE"><animateMotion dur="2.6s" begin="1.73s" repeatCount="indefinite" path="M 180.0 463.0 L 180.0 537.0"/></circle>
+<circle r="4" fill="#15803D"><animateMotion dur="2.6s" begin="0.00s" repeatCount="indefinite" path="M 203.0 560.0 L 467.0 560.0"/></circle>
+<circle r="4" fill="#15803D"><animateMotion dur="2.6s" begin="1.30s" repeatCount="indefinite" path="M 203.0 680.0 L 950.0 680.0 L 950.0 583.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.2s" begin="0.00s" repeatCount="indefinite" path="M 1203.0 560.0 L 1462.0 560.0"/></circle>
+<rect x="157.0" y="177.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="180" cy="200" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="180" cy="200" r="1.8" fill="#fff"/><text x="180" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">check</text><text x="180" y="251" text-anchor="middle" font-size="9.5" fill="#5A6B7B">offline checks · high-risk gate</text>
+<rect x="157.0" y="297.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="180" cy="320" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="180" cy="320" r="1.8" fill="#fff"/><text x="180" y="358" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">review</text><text x="180" y="371" text-anchor="middle" font-size="9.5" fill="#5A6B7B">Security Agent · plan staging</text>
+<g transform="translate(157.00,417.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="180" y="478" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">plan production</text><text x="180" y="491" text-anchor="middle" font-size="9.5" fill="#5A6B7B">foundation + ci/infra</text>
+<g transform="translate(157.00,537.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="180" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">deploy:staging (manual)</text><text x="180" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">apply foundation to staging</text>
+<g transform="translate(157.00,657.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="180" y="718" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">deploy:production (manual)</text><text x="180" y="731" text-anchor="middle" font-size="9.5" fill="#5A6B7B">re-plan · compare · apply</text>
+<rect x="467.0" y="177.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="490" cy="200" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="490" cy="200" r="1.8" fill="#fff"/><text x="490" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">check</text><text x="490" y="251" text-anchor="middle" font-size="9.5" fill="#5A6B7B">tests · gates · redaction scan</text>
+<rect x="697.0" y="177.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="720" cy="200" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="720" cy="200" r="1.8" fill="#fff"/><text x="720" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">review</text><text x="720" y="251" text-anchor="middle" font-size="9.5" fill="#5A6B7B">Security Agent · plan staging</text>
+<g transform="translate(927.00,177.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="950" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">build:images</text><text x="950" y="251" text-anchor="middle" font-size="9.5" fill="#5A6B7B">changed components → candidate manifest</text>
+<g transform="translate(1157.00,177.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="1180" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">deploy:workloads:staging</text><text x="1180" y="251" text-anchor="middle" font-size="9.5" fill="#5A6B7B">every merge</text>
+<g transform="translate(467.00,537.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="490" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">verify:staging</text><text x="490" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">acceptance checks from facts</text>
+<g transform="translate(697.00,537.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="720" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">deploy:workloads:production (manual)</text><text x="720" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">re-plan · compare · apply</text>
+<g transform="translate(927.00,537.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="codebuild__linearGradient-1">
+            <stop stop-color="#2E27AD" offset="0%"></stop>
+            <stop stop-color="#527FFF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="codebuild__Icon-Architecture/64/Arch_Amazon-CodeBuild_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="codebuild__Icon-Architecture-BG/64/Developer-Tools" fill="url(#codebuild__linearGradient-1)">
+            <rect id="codebuild__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M65.4396329,22 L59.4855152,16.549 L53.5254424,22 L65.4396329,22 Z M57.2017304,15.938 L45.1237743,15.956 L51.5751437,21.083 L57.2017304,15.938 Z M51.7547896,33.5 L42.2484486,37 L60.5346071,37 L51.7547896,33.5 Z M37.7979962,57 L64.5959923,57 L64.5959923,39 L37.7979962,39 L37.7979962,57 Z M49.5226157,22 L42.9372563,16.766 L36.3955677,22 L49.5226157,22 Z M34.3092941,21.115 L40.7487533,15.963 L27.9115206,15.982 L34.3092941,21.115 Z M32.2250055,22 L25.6525488,16.726 L19.0800921,22 L28.8653308,22 L32.2250055,22 Z M27.8728124,24 L19.8423462,24 L27.8728124,31.965 L27.8728124,24 Z M27.8728124,35.083 L18.4478579,43.665 L27.8728124,52.889 L27.8728124,35.083 Z M27.8728124,56.137 L17.9476286,65.839 L17.9476286,66 L27.8728124,66 L27.8728124,56.137 Z M17.9476286,45.963 L17.9476286,63.053 L26.6837754,54.513 L17.9476286,45.963 Z M17.9476286,41.424 L26.6202542,33.528 L17.9476286,24.928 L17.9476286,41.424 Z M16.9551103,21.148 L23.3846443,15.989 L16.9551103,15.999 L16.9551103,21.148 Z M14.9700735,14 L12.9850368,14 L12.9850368,24 L14.9700735,24 L14.9700735,23 L14.9700735,15 L14.9700735,14 Z M68.9332976,23.36 C68.7854124,23.746 68.4171881,24 68.007278,24 L52.6857718,24 L52.6857718,32 L65.9636827,37.074 L65.9626901,37.076 C66.3259519,37.225 66.5810291,37.582 66.5810291,38 L66.5810291,58 C66.5810291,58.552 66.1373734,59 65.5885107,59 L36.8054778,59 C36.2576076,59 35.8129594,58.552 35.8129594,58 L35.8129594,38 C35.8129594,37.572 36.0829244,37.213 36.4590889,37.071 L36.4561113,37.064 L50.7007351,32 L50.7007351,24 L29.8578492,24 L29.8578492,67 C29.8578492,67.552 29.4141934,68 28.8653308,68 L16.9551103,68 C16.4072401,68 15.9625919,67.552 15.9625919,67 L15.9625919,26 L11.9925184,26 C11.4446482,26 11,25.552 11,25 L11,13 C11,12.448 11.4446482,12 11.9925184,12 L15.9625919,12 C16.5114545,12 16.9551103,12.448 16.9551103,13 L16.9551103,13.999 L59.6334004,14 L68.6752429,22.26 C68.977961,22.538 69.0811829,22.975 68.9332976,23.36 L68.9332976,23.36 Z M48.3395338,55.308 L54.1159908,42.083 L52.2996822,41.277 L46.5232252,54.502 L48.3395338,55.308 Z M53.7656318,50.888 L55.0489581,52.415 L59.3366375,48.757 C59.5470513,48.577 59.6731012,48.316 59.6860039,48.039 C59.6989067,47.761 59.5946922,47.49 59.4011511,47.292 L55.8221299,43.633 L54.4087837,45.038 L57.235476,47.928 L53.7656318,50.888 Z M40.8708331,47.984 C40.652479,47.783 40.5343693,47.493 40.5502496,47.195 C40.5651374,46.896 40.7130226,46.621 40.951227,46.443 L45.8215147,42.812 L47.0026116,44.419 L43.1000293,47.33 L46.37534,50.354 L45.0334551,51.829 L40.8708331,47.984 Z" id="codebuild__Amazon-CodeBuild_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="950" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">verify:production</text><text x="950" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">read-only</text>
+<rect x="1157.0" y="537.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1180" cy="560" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1180" cy="560" r="1.8" fill="#fff"/><text x="1180" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">publish:check (manual)</text><text x="1180" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">compose + scan snapshot</text>
+<rect x="1462.0" y="537.0" width="46" height="46" rx="8" fill="#475569"/><circle cx="1482" cy="557" r="8" fill="none" stroke="#fff" stroke-width="2.6"/><line x1="1488" y1="563" x2="1495" y2="570" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/><text x="1485" y="598" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">sync branch + pull request</text><text x="1485" y="611" text-anchor="middle" font-size="9.5" fill="#5A6B7B">pushed by a person · CodeQL</text>
+<text x="40" y="810" font-size="11" font-weight="700" fill="#16202E">Flows</text>
+<circle cx="92" cy="806" r="5" fill="#1D4ED8"/><text x="102" y="810" font-size="10.5" fill="#5A6B7B">application pipeline</text>
+<circle cx="262" cy="806" r="5" fill="#7E22CE"/><text x="272" y="810" font-size="10.5" fill="#5A6B7B">operations pipeline</text>
+<circle cx="425" cy="806" r="5" fill="#15803D"/><text x="435" y="810" font-size="10.5" fill="#5A6B7B">multi-project trigger (verify only)</text>
+<circle cx="700" cy="806" r="5" fill="#94A3B8"/><text x="710" y="810" font-size="10.5" fill="#5A6B7B">job-token clone (read-only)</text>
+<text x="40" y="832" font-size="10" fill="#5A6B7B">Pipeline definitions are read from the default branch: a merge request cannot edit the pipeline that reviews it</text>
+</svg>
