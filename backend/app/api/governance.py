@@ -1,6 +1,6 @@
 """Governance endpoints: usage policy + audit log."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.dependencies import get_current_user, require_admin
 from app.models.schemas import GovernancePolicyUpdate
@@ -28,5 +28,5 @@ def usage(user: str = Depends(get_current_user)):
 
 
 @router.get("/audit")
-def audit(limit: int = 100, user: str = Depends(get_current_user)):
+def audit(limit: int = Query(100, ge=1, le=200), user: str = Depends(get_current_user)):
     return audit_service.list_events(limit)

@@ -55,6 +55,10 @@ FROZEN_OUTPUTS = {
     "service_entry_vpce_id": ("portal", "service_entry_vpce_id"),
     "backend_namespace": ("portal", "namespace"),
     "oidc_issuer": ("portal", "oidc", "issuer"),
+    # the portal's static site (2026-10-15): the application pipeline publishes
+    # the frontend build there after every workloads apply and invalidates
+    "frontend_bucket_name": ("portal", "frontend_bucket_name"),
+    "distribution_id": ("portal", "distribution_id"),
     # the MCP hub demo and its IAM entry (2026-10-10)
     "mcp_hub_endpoint": ("mcp_hub", "hub_endpoint"),
     "mcp_hub_resource_url": ("mcp_hub", "hub_resource_url"),
@@ -65,6 +69,12 @@ FROZEN_OUTPUTS = {
     "keycloak_issuer": ("mcp_hub", "keycloak_issuer"),
     "mcp_hub_entry_url": ("mcp_hub", "entry_url"),
     "mcp_hub_caller_role_arn": ("mcp_hub", "caller_role_arn"),
+    # the Sample Agents tool stack (2026-10-15): the seed reads the gateway,
+    # the runtimes' roles route a sample's clones
+    "sample_tools_gateway_url": ("sample_tools", "gateway_url"),
+    "sample_tools_gateway_id": ("sample_tools", "gateway_id"),
+    "sample_tools_policy_mode": ("sample_tools", "policy_mode"),
+    "sample_runtime_roles": ("runtime", "roles", "samples"),
 }
 
 

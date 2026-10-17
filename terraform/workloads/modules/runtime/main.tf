@@ -106,6 +106,57 @@ resource "aws_bedrockagentcore_agent_runtime" "sdk" {
   environment_variables = local.common_env
 }
 
+# ------------------------- sample agent runtimes ---------------------------
+# One runtime per sample agent (Sample Agents feature), the headless kernel
+# image under the sample's own execution role (the foundation's
+# modules/runtime, aws_iam_role.sample). The role is the point: the
+# sample-tools gateway's Cedar policies name it, so which tools a sample may
+# call is decided by the identity it runs as, not by anything in its
+# configuration a user could edit. Published agents cloned from a sample are
+# routed here by the backend (agent record `runtime = sample:<id>`).
+#
+# One platform version for all samples (var.sample_platform_version): a
+# sample is a reference, not a workbench, and a second runtime per sample for
+# the other version would double the sample fleet for no lesson taught.
+
+resource "aws_bedrockagentcore_agent_runtime" "sample" {
+  for_each = var.roles.samples
+
+  # AgentCore caps a runtime name at 48 characters of [a-zA-Z0-9_]; the full
+  # "agent_platform_sample_" prefix left the first sample at 50 and failed the
+  # plan (2026-10-15), so the sample runtimes carry the short prefix.
+  agent_runtime_name = "sample_${replace(each.key, "-", "_")}${var.runtime_name_suffix}"
+  description        = "Sample agent '${each.key}': headless kernel under its own role, tools through the sample-tools gateway"
+  role_arn           = each.value
+
+  lifecycle {
+    precondition {
+      condition     = length("sample_${replace(each.key, "-", "_")}${var.runtime_name_suffix}") <= 48
+      error_message = "sample id '${each.key}' makes the runtime name longer than AgentCore's 48-character limit; shorten the id."
+    }
+  }
+
+  agent_runtime_artifact {
+    container_configuration {
+      container_uri = "${var.kernel_repos["agent-sdk-kernel"].url}:${var.kernel_tags["agent-sdk-kernel"]}"
+    }
+  }
+
+  network_configuration {
+    network_mode = "VPC"
+    network_mode_config {
+      security_groups = [var.runtime_sg_id]
+      subnets         = var.private_subnet_ids
+    }
+  }
+
+  protocol_configuration {
+    server_protocol = "HTTP"
+  }
+
+  environment_variables = local.common_env
+}
+
 # ------------------------- MCP tools server --------------------------------
 # protocol MCP: AgentCore routes traffic to 0.0.0.0:8000/mcp inside the
 # container (stateless streamable-HTTP MCP contract).

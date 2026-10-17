@@ -21,11 +21,18 @@ output "mcp_tools_runtime_arn" {
   value = aws_bedrockagentcore_agent_runtime.mcp_tools.agent_runtime_arn
 }
 
+# One runtime per sample agent ({<sample id> = arn}); the backend routes an
+# agent cloned from a sample to its sample's runtime.
+output "sample_runtime_arns" {
+  value = { for id, r in aws_bedrockagentcore_agent_runtime.sample : id => r.agent_runtime_arn }
+}
+
 output "runtime_ids" {
   description = "agent_runtime_id by runtime name, for operators and the import tooling."
   value = merge(
     { for v, r in aws_bedrockagentcore_agent_runtime.interactive : r.agent_runtime_name => r.agent_runtime_id },
     { for v, r in aws_bedrockagentcore_agent_runtime.sdk : r.agent_runtime_name => r.agent_runtime_id },
     { (aws_bedrockagentcore_agent_runtime.mcp_tools.agent_runtime_name) = aws_bedrockagentcore_agent_runtime.mcp_tools.agent_runtime_id },
+    { for id, r in aws_bedrockagentcore_agent_runtime.sample : r.agent_runtime_name => r.agent_runtime_id },
   )
 }

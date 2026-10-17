@@ -12,17 +12,18 @@ provisioning the platform itself see the
 2. [Five concepts in sixty seconds](#five-concepts-in-sixty-seconds)
 3. [Dev Workbench — cloud coding sessions](#dev-workbench)
 4. [Publish — ship an agent from your workspace](#publish)
-5. [Debug — invoke anything](#debug)
-6. [MCP & Skills — the tool registry](#mcp--skills)
-7. [Gateway — existing APIs as tools](#gateway)
-8. [Scheduler — recurring runs](#scheduler)
-9. [Channels — webhooks for external systems](#channels)
-10. [Memory — recall across sessions](#memory)
-11. [Observability — what ran, how it went](#observability)
-12. [Evaluation — score before rollout](#evaluation)
-13. [Workflow — multi-step pipelines (experimental)](#workflow-experimental)
-14. [Governance — quotas and audit](#governance)
-15. [Calling the platform from code](#calling-the-platform-from-code)
+5. [Sample Agents — reference agents to read, try and clone](#sample-agents)
+6. [Debug — invoke anything](#debug)
+7. [MCP & Skills — the tool registry](#mcp--skills)
+8. [Gateway — existing APIs as tools](#gateway)
+9. [Scheduler — recurring runs](#scheduler)
+10. [Channels — webhooks for external systems](#channels)
+11. [Memory — recall across sessions](#memory)
+12. [Observability — what ran, how it went](#observability)
+13. [Evaluation — score before rollout](#evaluation)
+14. [Workflow — multi-step pipelines (experimental)](#workflow-experimental)
+15. [Governance — quotas and audit](#governance)
+16. [Calling the platform from code](#calling-the-platform-from-code)
 
 ---
 
@@ -153,6 +154,47 @@ POST /api/v1/agents/{id}/invoke      {"prompt": "..."}
 
 You can also publish without a workspace (API `POST /api/v1/agents` with the
 same fields) — useful for CI-managed agents.
+
+## Sample Agents
+
+Reference agents built the way the platform recommends, with the reasoning
+written down. Read one, try it, clone it, make it yours.
+
+**What a sample is.** A published agent that runs on **its own AgentCore
+runtime under its own IAM role**, and reaches external data only through the
+`sample-tools` gateway. The gateway carries Cedar policies that name that
+role: which tools a sample may call, with which inputs, is decided by the
+identity it runs as, not by anything in its configuration. The shared
+headless kernel's role is in no sample policy, so attaching a sample's gateway
+to an ordinary agent yields no tools.
+
+**The catalogue** (Sample Agents tab) shows each sample with its patterns,
+industries and a deployment status: the sample runtime, the gateway entry and
+each tool it needs. A tool marked optional (for example one whose upstream
+needs an API key the operator has not registered) does not block cloning; the
+sample's prompt tells the agent to say the capability is unavailable. An
+operator turns such a tool on with one command and the next apply
+(`scripts/set_sample_tool_key.sh <tool>`, key from a file or stdin; the
+foundation finds the provider by name and deploys the tool's gateway target).
+
+**Try** calls the sample's shared instance as you, through the same governed
+pipeline as every other invocation (your quota, the ledger).
+
+**Use this sample** publishes a copy under your name: same prompt, tools,
+turn budget; `source` and `runtime` both record `sample:<id>`. Edit it on the
+Publish page like any agent (prompt, model, turns, skills, memory). The
+runtime stays the sample's on every republish, and no publish can put another
+agent onto a sample runtime: the backend refuses `runtime` unless the agent
+came from that sample's clone.
+
+**The design, decision by decision**, lives with the sample in the repository
+(`docs/samples/<id>/design.md`): what each choice prevents, what it would cost
+to skip it, and what to change for your own systems. The first sample,
+`investment-assistant`, pairs a Lambda tool (public keyless upstream, input
+allowlist, cache) with a zero-code OpenAPI tool (keyed upstream, key held by
+AgentCore Identity and injected by the gateway).
+
+Adding a sample: `samples/README.md`.
 
 ## Debug
 

@@ -220,7 +220,13 @@ variable "agentcore_gateway_litellm_endpoint" {
 }
 
 variable "agentcore_gateway_credential_provider_arn" {
-  description = "AgentCore Identity API-key credential provider ARN holding the LiteLLM virtual key."
+  description = "AgentCore Identity API-key credential provider ARN holding the LiteLLM virtual key. Prefer agentcore_gateway_credential_provider_name: a full ARN carries the account id, and the tracked overlays (envs/) are published with the public snapshot."
+  type        = string
+  default     = ""
+}
+
+variable "agentcore_gateway_credential_provider_name" {
+  description = "Name of the AgentCore Identity API-key credential provider holding the LiteLLM virtual key; the ARN is built from this account and region. Takes precedence over agentcore_gateway_credential_provider_arn."
   type        = string
   default     = ""
 }
@@ -378,7 +384,36 @@ variable "name_suffix" {
 }
 
 variable "platform_version_python" {
-  description = "Python interpreter Terraform uses for scripts/set_inference_target.py (the agentcore_gateway backend). The runtimes' set_platform_version.py runs from terraform/workloads with its own setting."
+  description = "Python interpreter Terraform uses for scripts/set_inference_target.py (the agentcore_gateway backend) and scripts/discover_sample_tool_providers.py (sample_tools). The runtimes' set_platform_version.py runs from terraform/workloads with its own setting."
   type        = string
   default     = "python3"
+}
+
+# ----------------------------- Sample Agents --------------------------------
+# The sample-tools gateway (modules/sample_tools) and the sample runtimes'
+# execution roles (modules/runtime). The application's workloads root adds
+# the tools, Cedar policies and runtimes themselves.
+
+variable "enable_sample_tools" {
+  description = "Create the Sample Agents tool gateway, its policy engine and the sample runtime roles (requires enable_runtime)."
+  type        = bool
+  default     = false
+}
+
+variable "sample_runtimes" {
+  description = "Sample agents that get their own runtime and execution role, by sample id. Keys must match the workloads root's sample list."
+  type        = map(object({}))
+  default     = {}
+}
+
+variable "sample_tools_credential_provider_arns" {
+  description = "Explicit API-key credential providers for sample tools, by tool package, on top of the ones found by name (<env>sample-tool-<tool>; register a key with scripts/set_sample_tool_key.sh and the next apply picks it up). Normally empty. A tool without a provider is deployed without its target."
+  type        = map(string)
+  default     = {}
+}
+
+variable "sample_tools_policy_mode" {
+  description = "Policy engine mode on the sample-tools gateway: LOG_ONLY (trace, do not enforce) or ENFORCE."
+  type        = string
+  default     = "LOG_ONLY"
 }

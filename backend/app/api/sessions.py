@@ -54,7 +54,13 @@ def _session_config(item: dict) -> dict | None:
     ids_s = list(item.get("skill_ids", []))
     if not ids_m and not ids_s:
         return None
-    cfg = ecosystem_service.resolve_session_config(ids_m, ids_s)
+    try:
+        cfg = ecosystem_service.resolve_session_config(ids_m, ids_s)
+    except ValueError as e:
+        # An attachment the registry no longer knows (deleted after the
+        # session was created) is the caller's 400, not a 500: the ids were
+        # validated at creation, so only the registry can have moved.
+        raise HTTPException(status_code=400, detail=str(e))
     # Identity-forwarding attachments get the caller's token resolved at
     # warmup. Note the token has the IdP's normal lifetime — a workspace that
     # outlives it must be restarted to pick up a fresh one.
@@ -239,8 +245,10 @@ def stop_session(session_id: str, user: str = Depends(get_current_user)):
     session_service.set_status(user, session_id, "dormant")
     # The next connect mints a fresh grant, so drop this one now: a token
     # scraped out of the container stops working when the session does rather
-    # than lingering until its hour is up.
+    # than lingering until its hour is up. Same for the workspace refresh
+    # token, which otherwise had no end of life at all.
     llm_credentials_service.revoke(item["runtime_session_id"])
+    workspace_credentials_service.revoke(user, session_id, item["runtime_session_id"])
     item["status"] = "dormant"
     return _to_response(item)
 
@@ -252,6 +260,7 @@ def delete_session(session_id: str, user: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Session not found")
     session_service.set_status(user, session_id, "terminated")
     llm_credentials_service.revoke(item["runtime_session_id"])
+    workspace_credentials_service.revoke(user, session_id, item["runtime_session_id"])
     audit_service.record(user, "session.delete", f"session:{item.get('name', session_id)}")
     return {"ok": True}
 

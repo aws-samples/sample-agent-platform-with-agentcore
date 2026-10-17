@@ -43,7 +43,31 @@ enable_team_demo    = false
 enable_team_auth = false
 oidc_realm       = "agent-platform-staging"
 
-# Phase 1 routes models through Bedrock / the LLM edge. The AgentCore gateway
-# backend (a second gateway, inference target and credential provider) comes
-# with phase 2, once staging is up.
-enable_agentcore_gateway_backend = false
+# Phase 2 (2026-10-12): the agentcore_gateway model backend, same shape as
+# production — its own gateway (agent-platform-inference-staging), inference
+# target and per-session caller role, in front of the same LiteLLM over the
+# same Lattice private endpoint (endpoint, models and private_endpoint are
+# inherited). Only the credential differs: a staging virtual key
+# (agentcore-gateway-staging, same model allowlist) held in its own provider,
+# so a LiteLLM-side policy can be scoped to staging traffic alone. The key is
+# issued out of band on the LiteLLM side.
+# The provider name must not extend production's ("litellm-agentcore-gateway"):
+# the gateway execution role reads its key through the pattern
+# apikey/<provider-name>-*, so a name that merely appends a suffix would let
+# production's role read staging's key. Hence the environment goes in front.
+# The provider is named, not given as an ARN: this file is tracked and goes
+# into the public snapshot, and an ARN carries the account id.
+enable_agentcore_gateway_backend           = true
+agentcore_gateway_credential_provider_name = "staging-litellm-agentcore-gateway"
+
+# Sample Agents (2026-10-14): staging runs the sample-tools gateway and the
+# investment-assistant sample like production. The stock-quote tool's API-key
+# provider is staging's own, found by name (staging-sample-tool-stock-quote:
+# the environment in front for the same reason as the inference provider
+# above, the gateway role reads apikey/<provider-name>-*). Nothing to set
+# here: `scripts/set_sample_tool_key.sh stock-quote --env staging` creates
+# it from a Twelve Data key, and the next apply publishes it. Until then the
+# workloads root skips the stock-quote target and the sample runs on
+# crypto-price alone.
+enable_sample_tools = true
+sample_runtimes     = { investment-assistant = {} }

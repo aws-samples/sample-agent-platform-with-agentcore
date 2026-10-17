@@ -27,6 +27,8 @@ locals {
       PLATFORM_MCP_TOOLS_RUNTIME_ARN             = var.runtimes.mcp_tools_runtime_arn
       PLATFORM_INTERACTIVE_RUNTIME_ARNS          = jsonencode(var.runtimes.interactive_runtime_arns)
       PLATFORM_SDK_RUNTIME_ARNS                  = jsonencode(var.runtimes.sdk_runtime_arns)
+      PLATFORM_SAMPLE_RUNTIME_ARNS               = jsonencode(var.runtimes.sample_runtime_arns)
+      PLATFORM_SAMPLE_TOOLS_GATEWAY_URL          = var.sample_tools_gateway_url
       PLATFORM_DEFAULT_PLATFORM_VERSION          = var.default_platform_version
       PLATFORM_WORKSPACE_ACCESS_ROLE_ARN         = var.workspace_access_role_arn
       PLATFORM_LLM_EDGE_URL                      = var.llm_edge_url
@@ -220,6 +222,7 @@ resource "aws_lambda_function" "schedule_runner" {
       PLATFORM_MCP_TOOLS_RUNTIME_ARN    = var.runtimes.mcp_tools_runtime_arn
       PLATFORM_INTERACTIVE_RUNTIME_ARNS = jsonencode(var.runtimes.interactive_runtime_arns)
       PLATFORM_SDK_RUNTIME_ARNS         = jsonencode(var.runtimes.sdk_runtime_arns)
+      PLATFORM_SAMPLE_RUNTIME_ARNS      = jsonencode(var.runtimes.sample_runtime_arns)
       PLATFORM_DEFAULT_PLATFORM_VERSION = var.default_platform_version
       PLATFORM_PORTAL_API_URL           = "https://${var.portal.cloudfront_domain}"
       PLATFORM_PORTAL_ADMIN_SECRET      = var.portal.portal_admin_secret_name

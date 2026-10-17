@@ -7,10 +7,13 @@ The separation only means something if the workloads root cannot grow a way
 to change what the foundation owns:
 
   1. terraform/workloads declares only workload resource types: Helm
-     releases, AgentCore runtimes, the runner Lambda, the platform-version
-     hooks, the runtimes' trace delivery, the session-binding key. No IAM, no
-     security group, no load balancer, no bucket, no table, no Cognito, no API
-     Gateway, no VPC endpoint — those words do not appear as resource types.
+     releases, AgentCore runtimes, Lambda functions (the runner, the sample
+     tools), the platform-version hooks, the runtimes' trace delivery, the
+     session-binding key, and the sample tools' gateway targets and Cedar
+     policies. No IAM, no security group, no load balancer, no bucket, no
+     table, no Cognito, no API Gateway, no VPC endpoint, no gateway, policy
+     engine or credential provider — those words do not appear as resource
+     types.
   2. terraform/workloads reads the foundation through its facts parameter
      only: no terraform_remote_state, no S3 state object, no Secrets Manager
      data source.
@@ -37,6 +40,12 @@ WORKLOAD_TYPES = {
     "aws_cloudwatch_log_delivery_source",
     "aws_cloudwatch_log_delivery",
     "random_password",
+    # the Sample Agents tools: targets on the foundation's sample-tools gateway
+    # and Cedar policies in its engine. The gateway, the engine and every role
+    # stay foundation-only (aws_bedrockagentcore_gateway, _policy_engine,
+    # _api_key_credential_provider are not here).
+    "aws_bedrockagentcore_gateway_target",
+    "aws_bedrockagentcore_policy",
 }
 # resource types whose presence in the workloads root would hand the
 # application pipeline a foundation-level change
@@ -46,6 +55,7 @@ FOUNDATION_ONLY_PATTERNS = [
     r"^aws_api_gateway_", r"^aws_cloudfront_", r"^aws_eks_", r"^aws_secretsmanager_",
     r"^aws_db_", r"^aws_ssm_parameter$", r"^aws_kms_", r"^aws_scheduler_", r"^aws_sqs_",
     r"^kubernetes_", r"^aws_cloudwatch_log_group$",
+    r"^aws_bedrockagentcore_gateway$", r"^aws_bedrockagentcore_policy_engine$", r"^aws_bedrockagentcore_api_key_credential_provider$",
 ]
 
 

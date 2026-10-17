@@ -6,8 +6,9 @@ invocations and updates progressively, so the portal can poll while it runs.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.dependencies import get_current_user, require_admin
 from app.services.audit_service import audit_service
 from app.services.pipeline_service import pipeline_service
@@ -23,6 +24,9 @@ class PipelineUpsert(BaseModel):
 
 class PipelineRunRequest(BaseModel):
     args: dict | list | str | None = None
+    # Set only by the schedule-runner Lambda (settings.pipeline_delegation_users):
+    # the schedule's created_by, so the run is attributed to its owner.
+    on_behalf_of: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 @router.get("/pipelines")
@@ -61,12 +65,26 @@ def delete_pipeline(pipe_id: str, user: str = Depends(get_current_user)):
 @router.post("/pipelines/{name}/runs")
 async def start_run(name: str, req: PipelineRunRequest, user: str = Depends(get_current_user)):
     # async: start_run schedules the background executor on the event loop
+    run_as = str(user)
+    if req.on_behalf_of:
+        # A scheduled pipeline fires through the Lambda, which signs in as the
+        # delegation user; the run must still belong to the schedule's owner.
+        # Nobody else may name another user here: an administrator who could
+        # would run pipelines under a colleague's quota and audit trail.
+        if str(user) not in delegation_users():
+            raise HTTPException(status_code=403, detail="on_behalf_of is reserved for the schedule-runner delegation user")
+        run_as = req.on_behalf_of
     try:
-        run = pipeline_service.start_run(name=name, user=user, args=req.args)
+        run = pipeline_service.start_run(name=name, user=run_as, args=req.args)
     except KeyError:
         raise HTTPException(status_code=404, detail="Pipeline not found")
-    audit_service.record(user, "pipeline.run.start", f"pipeline:{name}", f"run:{run['id']}")
+    detail = f"run:{run['id']}" + (f" delegated_by:{user}" if run_as != str(user) else "")
+    audit_service.record(run_as, "pipeline.run.start", f"pipeline:{name}", detail)
     return run
+
+
+def delegation_users() -> set[str]:
+    return {u.strip() for u in settings.pipeline_delegation_users.split(",") if u.strip()}
 
 
 @router.get("/pipeline-runs")

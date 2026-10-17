@@ -359,6 +359,10 @@ duplicates.
 
 ### Phase 6 — frontend (~2 min)
 
+(In the CI/CD setup of `docs/ci-cd.md` this phase is the deploy build's: it
+publishes the frontend after every workloads apply. The hand steps below are
+for the CLI-only deployment.)
+
 ```bash
 . .state/agent-platform${SUFFIX:-}.env    # loads FRONTEND_BUCKET, DIST_ID
 

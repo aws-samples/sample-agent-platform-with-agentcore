@@ -1,0 +1,37 @@
+# Tool package: stock-quote (OpenAPI target)
+#
+# A real-time quote for a US-listed stock from Twelve Data. There is no code
+# of ours: openapi.json is the tool definition, the gateway turns the one
+# operation into an MCP tool and makes the HTTP call. The API key lives in an
+# AgentCore Identity credential provider; the gateway appends it as a query
+# parameter on each outbound call. No runtime, function or Terraform state
+# ever holds the key.
+#
+# Enabling it is one step for the operator, with a Twelve Data key at hand
+# (Basic plan: free, 8 calls/min, 800/day, US markets):
+#
+#   scripts/set_sample_tool_key.sh stock-quote < key.txt          # production
+#   scripts/set_sample_tool_key.sh stock-quote --env staging < key.txt
+#
+# That creates the provider under the name the foundation looks for
+# (<env>sample-tool-stock-quote); the next foundation apply publishes its
+# ARN in the facts (sample_tools.credential_provider_arns["stock-quote"]) and
+# terraform/workloads/modules/sample_tools creates this target. Rotating the
+# key is the same command, no apply; --delete removes the target the same
+# way. Without a provider the target is skipped and the sample runs on
+# crypto-price alone.
+kind: openapi
+description: Real-time quote for a US-listed stock (Twelve Data, API key held by AgentCore Identity)
+openapi: openapi.json
+# operationIds in openapi.json; the gateway names each <target>___<operationId>:
+# stock-quote___getQuote
+operations:
+  - getQuote
+credential:
+  type: api_key
+  # Twelve Data reads the key from ?apikey=; the gateway injects it there
+  location: query_parameter
+  parameter_name: apikey
+egress:
+  - api.twelvedata.com
+attribution: Quotes by Twelve Data (https://twelvedata.com)

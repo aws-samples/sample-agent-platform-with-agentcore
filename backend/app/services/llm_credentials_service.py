@@ -38,6 +38,7 @@ import urllib.parse
 import boto3
 
 from app.config import settings
+from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
 
@@ -446,14 +447,15 @@ class LlmCredentialsService:
         live: list[str] = []
         stale: list[str] = []
         try:
-            resp = self.table.query(
+            rows = query_all(
+                self.table,
                 KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
                 ExpressionAttributeValues={":pk": LLM_REVOKE_PK, ":p": "RSID#"},
             )
         except Exception as e:  # noqa: BLE001
             logger.error("could not read revocation list: %s", e)
             return
-        for it in resp.get("Items", []):
+        for it in rows:
             sid = str(it.get("SK", ""))[len("RSID#") :]
             if not sid:
                 continue

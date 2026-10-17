@@ -66,6 +66,41 @@ def _principal(
     return principal
 
 
+def auth_mode() -> str:
+    """Which of the four modes the settings select: oidc, cognito, token, open."""
+    if settings.oidc_issuer:
+        return "oidc"
+    if settings.cognito_pool_id and settings.cognito_client_id:
+        return "cognito"
+    return "token" if settings.api_token else "open"
+
+
+def check_auth_configuration() -> None:
+    """Refuse to serve on an authentication configuration that is not what
+    the operator meant. Called at startup; raises RuntimeError.
+
+    - Cognito needs both the pool id and the client id. With one of them
+      missing the request path used to skip Cognito and land in open mode,
+      so a dropped environment variable made every unauthenticated caller
+      the super-admin.
+    - OIDC needs an audience: without one any token the realm issued for any
+      client is a portal credential.
+    - Open mode is a development mode and has to be enabled by
+      PLATFORM_ALLOW_OPEN_AUTH=1, never reached by elimination.
+    """
+    if bool(settings.cognito_pool_id) != bool(settings.cognito_client_id):
+        raise RuntimeError(
+            "PLATFORM_COGNITO_POOL_ID and PLATFORM_COGNITO_CLIENT_ID must be set together"
+        )
+    if settings.oidc_issuer and not settings.oidc_audience:
+        raise RuntimeError("PLATFORM_OIDC_AUDIENCE is required when PLATFORM_OIDC_ISSUER is set")
+    if auth_mode() == "open" and not settings.allow_open_auth:
+        raise RuntimeError(
+            "no authentication configured (Cognito, OIDC or PLATFORM_API_TOKEN); "
+            "set PLATFORM_ALLOW_OPEN_AUTH=1 to run the open development mode on purpose"
+        )
+
+
 def get_current_user(authorization: str = Header(default="")) -> Principal:
     """Resolve the caller's identity (username + roles).
 
@@ -123,6 +158,11 @@ def get_current_user(authorization: str = Header(default="")) -> Principal:
             raise HTTPException(status_code=401, detail="Invalid or missing token")
         return _principal(DEMO_USER, admin=True)
 
+    # Open mode. Startup already refused this unless PLATFORM_ALLOW_OPEN_AUTH
+    # is set; the check is repeated per request so a process that somehow got
+    # here with a half-configured IdP serves 503, not a super-admin.
+    if not settings.allow_open_auth or auth_mode() != "open":
+        raise HTTPException(status_code=503, detail="authentication is not configured")
     return _principal(DEMO_USER, admin=True)
 
 

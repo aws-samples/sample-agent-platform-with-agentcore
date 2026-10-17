@@ -361,8 +361,12 @@ HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$PORTAL/hea
 check "portal /health through cloudfront" 200 "$HEALTH_CODE"
 
 ANON_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$PORTAL/api/v1/kernels" 2>/dev/null)"
-# Unauthenticated API access must be refused.
-check "unauthenticated /api is 401" 401 "$ANON_CODE"
+# Unauthenticated API access must be refused BY THE BACKEND (401, "Missing
+# Bearer token"). The label names the exact route: the distribution sends only
+# the backend's routes to it, a bare /api falls through to the static site's
+# bucket, whose 403 is not an authentication decision (the second reviewer
+# replayed "/api" from an earlier, shorter label and reported 403 vs 401).
+check "unauthenticated GET /api/v1/kernels is 401" 401 "$ANON_CODE"
 
 FOREIGN_ACAO="$(curl -s -D - -o /dev/null --max-time 30 \
   -H 'Origin: https://not-the-portal.invalid' "$PORTAL/api/v1/config" 2>/dev/null \
@@ -388,6 +392,27 @@ case "$ALB_DIRECT" in
   000) ok  "direct ALB access is refused (unreachable from here)" ;;
   *)   ok  "direct ALB access is refused ($ALB_DIRECT)" ;;
 esac
+
+# The static site is published by the apply build of every deploy
+# (ci/codebuild/publish-frontend.sh writes /version.json next to index.html
+# and refuses to finish until the distribution serves it). Here: the portal
+# serves a marker that names a commit at all, so a site that fell behind the
+# backend (two weeks on 2026-10-15) is a FAIL, not an invisible tab. Which
+# commit is this environment's is the deploy's assertion, made at publish time.
+VERSION_JSON="$(curl -s --max-time 30 "$PORTAL/version.json" 2>/dev/null)"
+FRONTEND_COMMIT="$(printf '%s' "$VERSION_JSON" | jget "d['commit']")"
+if [[ "$FRONTEND_COMMIT" =~ ^[0-9a-f]{7,40}$ ]]; then
+  ok "portal serves a pipeline-published frontend (commit ${FRONTEND_COMMIT:0:8})"
+else
+  bad "portal serves a pipeline-published frontend" "GET /version.json: $(printf '%s' "$VERSION_JSON" | head -c 120)"
+fi
+INDEX_BUNDLE="$(curl -s --max-time 30 "$PORTAL/" 2>/dev/null | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)"
+if [ -n "$INDEX_BUNDLE" ]; then
+  BUNDLE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$PORTAL/$INDEX_BUNDLE" 2>/dev/null)"
+  check "index.html's bundle is served ($INDEX_BUNDLE)" 200 "$BUNDLE_CODE"
+else
+  bad "index.html's bundle is served" "no assets/index-*.js reference in GET /"
+fi
 
 if [ "$LAYER" = "1" ]; then
   printf '\n=== summary (L1 only) ===\n  passed %d   failed %d   skipped %d\n' "$PASS" "$FAIL" "$SKIP"

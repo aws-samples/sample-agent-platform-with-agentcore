@@ -1,6 +1,6 @@
 """Evaluation endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies import get_current_user, require_admin
 from app.models.schemas import EvalDatasetCreateRequest, EvalRunRequest
@@ -22,12 +22,25 @@ def create_dataset(req: EvalDatasetCreateRequest, user: str = Depends(get_curren
             user=user,
             name=req.name,
             description=req.description,
+            scenario=req.scenario,
+            scoring=req.scoring.model_dump() if req.scoring else None,
+            synthetic=req.synthetic,
             cases=[c.model_dump() for c in req.cases],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     audit_service.record(user, "eval.dataset.create", f"dataset:{ds['name']}", f"{len(ds['cases'])} cases")
     return ds
+
+
+@router.get("/datasets/{dataset_id}/runs")
+def list_dataset_runs(
+    dataset_id: str,
+    limit: int = Query(20, ge=1, le=50),
+    user: str = Depends(get_current_user),
+):
+    """Run summaries of one dataset, newest first (for version comparison)."""
+    return eval_service.list_dataset_runs(dataset_id, limit)
 
 
 @router.delete("/datasets/{dataset_id}")
@@ -39,8 +52,11 @@ def delete_dataset(dataset_id: str, user: str = Depends(get_current_user)):
 
 
 @router.get("/runs")
-def list_runs(user: str = Depends(get_current_user)):
-    return eval_service.list_runs()
+def list_runs(
+    limit: int = Query(20, ge=1, le=50),
+    user: str = Depends(get_current_user),
+):
+    return eval_service.list_runs(limit)
 
 
 @router.get("/runs/{run_id}")
@@ -57,6 +73,6 @@ async def start_run(req: EvalRunRequest, user: str = Depends(get_current_user)):
     try:
         run = eval_service.start_run(user=user, dataset_id=req.dataset_id, target=req.target)
     except KeyError:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+        raise HTTPException(status_code=404, detail="Dataset or agent not found")
     audit_service.record(user, "eval.run.start", f"run:{run['id']}", f"dataset {run['dataset_name']} → {req.target}")
     return run

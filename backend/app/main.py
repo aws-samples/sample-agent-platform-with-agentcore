@@ -19,6 +19,7 @@ from app.api import (
     model_config,
     observability,
     pipelines,
+    samples,
     schedules,
     service_entry,
     sessions,
@@ -27,7 +28,7 @@ from app.api import (
 from app.auth import verify_oidc_token
 from app.config import settings
 from app.context import CallerTokenMiddleware
-from app.dependencies import get_current_user
+from app.dependencies import auth_mode, check_auth_configuration, get_current_user
 from app.services.schedule_service import schedule_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -35,6 +36,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A misconfigured IdP must stop the process, not open the API (see
+    # dependencies.check_auth_configuration). The entry-only deployment
+    # authenticates callers through the service entry's own secret, but it
+    # mounts the same settings and gets the same check.
+    check_auth_configuration()
+    logging.getLogger(__name__).info("auth mode: %s", auth_mode())
     if settings.entry_only:
         # the management deployment owns schedule reconciliation; a second
         # reconciler here would fight it over the EventBridge group
@@ -85,6 +92,7 @@ else:
     app.include_router(kernels.router)
     app.include_router(ecosystem.router)
     app.include_router(agents.router)
+    app.include_router(samples.router)
     app.include_router(schedules.router)
     app.include_router(channels.router)
     app.include_router(evals.router)
@@ -140,14 +148,8 @@ if not settings.entry_only:
     @app.get("/api/v1/config")
     def public_config():
         """Public runtime config so the frontend needs no build-time secrets."""
-        if settings.oidc_issuer:
-            auth_mode = "oidc"
-        elif settings.cognito_pool_id and settings.cognito_client_id:
-            auth_mode = "cognito"
-        else:
-            auth_mode = "token" if settings.api_token else "open"
         return {
-            "auth_mode": auth_mode,
+            "auth_mode": auth_mode(),
             "cognito_region": settings.aws_region,
             "cognito_client_id": settings.cognito_client_id,
             "oidc_issuer": settings.oidc_issuer,

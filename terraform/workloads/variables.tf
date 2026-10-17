@@ -168,3 +168,18 @@ variable "agent_observability" {
   type        = bool
   default     = false
 }
+
+# ------------------------------ Sample Agents -------------------------------
+# Deployed only when the foundation publishes features.sample_tools.
+
+variable "sample_tool_ids" {
+  description = "Tool packages under samples/tools/ to put on the sample-tools gateway. An OpenAPI tool whose API-key provider the foundation has not published is skipped (see the module's skipped_tools output)."
+  type        = list(string)
+  default     = ["crypto-price", "stock-quote"]
+}
+
+variable "sample_platform_version" {
+  description = "Platform version of the sample agent runtimes (one runtime per sample, same image as the headless kernel)."
+  type        = string
+  default     = "V1"
+}

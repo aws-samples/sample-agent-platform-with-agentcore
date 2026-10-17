@@ -16,6 +16,8 @@ import WorkflowInsightsPage from '@/pages/WorkflowInsightsPage'
 import ChannelsPage from '@/pages/ChannelsPage'
 import GovernancePage from '@/pages/GovernancePage'
 import GatewayPage from '@/pages/GatewayPage'
+import SamplesPage from '@/pages/SamplesPage'
+import SampleDetailPage from '@/pages/SampleDetailPage'
 import { getPublicConfig, getToken } from '@/services/auth'
 import { api } from '@/services/api'
 
@@ -81,6 +83,8 @@ export default function App() {
         }
       >
         <Route path="/" element={<OverviewPage />} />
+        <Route path="/samples" element={<SamplesPage />} />
+        <Route path="/samples/:sampleId" element={<SampleDetailPage />} />
         <Route path="/workbench" element={<WorkbenchPage />} />
         <Route path="/publish" element={<PublishPage />} />
         <Route path="/debug" element={<DebugPage />} />

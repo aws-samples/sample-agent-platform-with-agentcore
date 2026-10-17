@@ -43,6 +43,11 @@ OUTPUTS = {
     "service_entry_vpce_id": ("portal", "service_entry_vpce_id"),
     "backend_namespace": ("portal", "namespace"),
     "oidc_issuer": ("portal", "oidc", "issuer"),
+    # the portal's static site: where the apply builds publish the frontend and
+    # what they invalidate (ci/codebuild/publish-frontend.sh); absent on facts
+    # published before 2026-10-15, which makes the publish refuse, not skip
+    "frontend_bucket_name": ("portal", "frontend_bucket_name"),
+    "distribution_id": ("portal", "distribution_id"),
     # the optional MCP hub demo and its IAM entry (section absent when the demo is off)
     "mcp_hub_endpoint": ("mcp_hub", "hub_endpoint"),
     "mcp_hub_resource_url": ("mcp_hub", "hub_resource_url"),
@@ -53,6 +58,12 @@ OUTPUTS = {
     "keycloak_issuer": ("mcp_hub", "keycloak_issuer"),
     "mcp_hub_entry_url": ("mcp_hub", "entry_url"),
     "mcp_hub_caller_role_arn": ("mcp_hub", "caller_role_arn"),
+    # the Sample Agents tool stack (section absent when the feature is off):
+    # the seed registers the gateway and the deploy-tier checks report on it
+    "sample_tools_gateway_url": ("sample_tools", "gateway_url"),
+    "sample_tools_gateway_id": ("sample_tools", "gateway_id"),
+    "sample_tools_policy_mode": ("sample_tools", "policy_mode"),
+    "sample_runtime_roles": ("runtime", "roles", "samples"),
 }
 
 # what ci/codebuild/run.sh exports for the deploy-tier checks (scripts/qa_env.py)
@@ -61,6 +72,13 @@ ENV_EXPORTS = {
     "WORKSPACE_BUCKET": "workspace_bucket_name",
     "SERVICE_ENTRY_API_URL": "service_entry_api_url",
     "SERVICE_ENTRY_VPCE_ID": "service_entry_vpce_id",
+    # "" when the environment runs no sample tools: the [samples] checks then
+    # report themselves as not applicable instead of failing
+    "SAMPLE_TOOLS_GATEWAY_URL": "sample_tools_gateway_url",
+    # LOG_ONLY or ENFORCE ("" on facts published before the mode was): the
+    # [samples] check that a denied caller is refused at the gateway is a
+    # warning until the engine enforces
+    "SAMPLE_TOOLS_POLICY_MODE": "sample_tools_policy_mode",
 }
 
 

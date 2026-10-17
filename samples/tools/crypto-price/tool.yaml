@@ -1,0 +1,43 @@
+# Tool package: crypto-price (Lambda target)
+#
+# A spot price for one of a fixed set of crypto assets, from CoinGecko's
+# keyless public API. The Lambda exists for three reasons the agent must not
+# be trusted with: the symbol is validated against an allowlist (the upstream
+# never sees a free-form string), the result is cached for a minute (the
+# public tier is rate-limited and dynamic), and the answer is normalised to
+# one shape with a timestamp and a source the agent is told to quote.
+#
+# Deployed by terraform/workloads/modules/sample_tools; the function runs
+# under the foundation's sample-tools Lambda role (logs only: it holds no
+# upstream key because its upstream has none).
+kind: lambda
+description: Spot price of a crypto asset (CoinGecko public API, allowlisted symbols, 60 s cache)
+runtime: python3.13
+handler: handler.handler
+timeout_s: 15
+memory_mb: 256
+env:
+  # upstream and the one currency this sample quotes in; the handler refuses
+  # any other host, so a change of upstream is a change here, not in the agent
+  UPSTREAM_URL: https://api.coingecko.com/api/v3/simple/price
+  VS_CURRENCY: usd
+  CACHE_TTL_S: "60"
+# The MCP tools this target exposes. The gateway names each
+# <target>___<name>: crypto-price___get_crypto_price.
+tools:
+  - name: get_crypto_price
+    description: >-
+      Current spot price of one crypto asset in USD. Supported symbols: BTC,
+      ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, USDT, USDC. Returns the price, the
+      time it was last updated and the data source; quote both when answering.
+    inputs:
+      - name: symbol
+        type: string
+        description: Ticker symbol, e.g. BTC. Case-insensitive. Only the supported symbols are accepted.
+        required: true
+# Outbound hosts this tool reaches. Documentation for the reader and input to
+# the samples lint; the Lambda enforces the same host itself.
+egress:
+  - api.coingecko.com
+credential: none
+attribution: Price data by CoinGecko (https://www.coingecko.com)

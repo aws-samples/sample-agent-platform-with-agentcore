@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 900" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" role="img" aria-label="One request · “What are BTC and AAPL trading at?”">
+<title>One request · “What are BTC and AAPL trading at?”</title>
+<defs>
+<pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse"><path d="M34 0 H0 V34" fill="none" stroke="#EAEFF6" stroke-width="1"/></pattern>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>@media (prefers-reduced-motion: no-preference){.flow{stroke-dasharray:6 6;animation:dm .8s linear infinite}}@keyframes dm{to{stroke-dashoffset:-12}}</style>
+</defs>
+<rect width="1480" height="900" fill="#FBFCFE"/><rect width="1480" height="900" fill="url(#grid)"/>
+<text x="40" y="46" font-size="21" font-weight="800" fill="#16202E">One request · “What are BTC and AAPL trading at?”</text>
+<text x="40" y="68" font-size="12" fill="#5A6B7B">where each decision is made and where a hostile variant stops: unknown symbol = Cedar deny, shared role = no tools listed, URL fetch = no such tool</text>
+<rect x="196" y="80" width="1070" height="706" rx="12" fill="rgba(0,164,166,0.045)" stroke="#00A4A6" stroke-width="1.5" stroke-dasharray="9 5"/>
+<text x="214" y="98" font-size="11" font-weight="700" fill="#0B7E7F">platform account</text>
+<path class="flow" d="M 115.0 408.0 L 297.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 343.0 408.0 L 537.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 560.0 385.0 L 560.0 191.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 583.0 408.0 L 797.0 408.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 820.0 385.0 L 820.0 191.0" fill="none" stroke="#0369A1" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 843.0 408.0 L 945.0 408.0 L 945.0 300.0 L 1057.0 300.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 843.0 408.0 L 945.0 408.0 L 945.0 516.0 L 1057.0 516.0" fill="none" stroke="#1D4ED8" stroke-width="2" marker-end="url(#ah)"/>
+<path d="M 820.0 431.0 L 820.0 620.0 L 1080.0 620.0 L 1080.0 693.0" fill="none" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="2 5" opacity="0.7"/>
+<path class="flow" d="M 1103.0 300.0 L 1400.0 300.0 L 1400.0 385.0" fill="none" stroke="#0F766E" stroke-width="2" marker-end="url(#ah)"/>
+<path class="flow" d="M 1103.0 516.0 L 1400.0 516.0 L 1400.0 431.0" fill="none" stroke="#0F766E" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="123" y="385" width="166" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="206" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">POST /agents/{id}/invoke</text>
+<rect x="377" y="385" width="127" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="440" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">sample runtime ARN</text>
+<rect x="559" y="290" width="94" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="606" y="300" text-anchor="middle" font-size="9.5" fill="#48586a">tools offered</text>
+<rect x="611" y="385" width="153" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="688" y="395" text-anchor="middle" font-size="9.5" fill="#48586a">2 × tools/call (SigV4)</text>
+<rect x="853" y="290" width="74" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="890" y="300" text-anchor="middle" font-size="9.5" fill="#48586a">permit? ×2</text>
+<rect x="918" y="278" width="54" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="945" y="288" text-anchor="middle" font-size="9.5" fill="#48586a">allowed</text>
+<rect x="918" y="528" width="54" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="945" y="538" text-anchor="middle" font-size="9.5" fill="#48586a">allowed</text>
+<rect x="890" y="596" width="120" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="950" y="606" text-anchor="middle" font-size="9.5" fill="#48586a">deny / not listed</text>
+<rect x="1124" y="278" width="232" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1240" y="288" text-anchor="middle" font-size="9.5" fill="#48586a">82,221 USD · 13:27 UTC · CoinGecko</text>
+<rect x="1127" y="493" width="226" height="14" rx="3" fill="#FBFCFE" opacity="0.92"/>
+<text x="1240" y="503" text-anchor="middle" font-size="9.5" fill="#48586a">344.99 USD · +1.09% · Twelve Data</text>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="0.00s" repeatCount="indefinite" path="M 115.0 408.0 L 297.0 408.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="0.65s" repeatCount="indefinite" path="M 343.0 408.0 L 537.0 408.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="1.30s" repeatCount="indefinite" path="M 583.0 408.0 L 797.0 408.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="1.95s" repeatCount="indefinite" path="M 843.0 408.0 L 945.0 408.0 L 945.0 300.0 L 1057.0 300.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="0.00s" repeatCount="indefinite" path="M 583.0 408.0 L 797.0 408.0"/></circle>
+<circle r="4" fill="#1D4ED8"><animateMotion dur="2.6s" begin="1.30s" repeatCount="indefinite" path="M 843.0 408.0 L 945.0 408.0 L 945.0 516.0 L 1057.0 516.0"/></circle>
+<circle r="4" fill="#0369A1"><animateMotion dur="1.6s" begin="0.00s" repeatCount="indefinite" path="M 820.0 385.0 L 820.0 191.0"/></circle>
+<circle r="4" fill="#0F766E"><animateMotion dur="2.2s" begin="0.00s" repeatCount="indefinite" path="M 1103.0 300.0 L 1400.0 300.0 L 1400.0 385.0"/></circle>
+<circle r="4" fill="#0F766E"><animateMotion dur="2.2s" begin="1.10s" repeatCount="indefinite" path="M 1103.0 516.0 L 1400.0 516.0 L 1400.0 431.0"/></circle>
+<rect x="69.0" y="385.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="92" cy="408" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="92" cy="408" r="1.8" fill="#fff"/><text x="92" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">User</text><text x="92" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">BTC and AAPL?</text>
+<g transform="translate(297.00,385.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="eks__linearGradient-1">
+            <stop stop-color="#C8511B" offset="0%"></stop>
+            <stop stop-color="#FF9900" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="eks__Icon-Architecture/64/Arch_Amazon-Elastic-Container-Kubernetes_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="eks__Icon-Architecture-BG/64/Containers" fill="#ED7100">
+            <rect id="eks__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M46.842,32.1990168 L40.013,40.1200132 L47.441,48.7840092 L44.669,48.7840092 L38,41.0000169 L38,49.0000169 L36,49.0000169 L36,32.0000169 L38,32.0000169 L38,39.0000169 L44.181,32.1990168 L46.842,32.1990168 Z M64,48.2340095 L56,43.4330117 L56,32.0000169 C56,31.6440171 55.812,31.3150172 55.504,31.1360173 L44,24.4260204 L44,14.7520248 L64,26.5710194 L64,48.2340095 Z M65.509,25.13902 L43.509,12.139026 C43.199,11.9560261 42.818,11.9540261 42.504,12.131026 C42.193,12.3090259 42,12.6410257 42,13.0000256 L42,25.0000201 C42,25.3550199 42.189,25.6840198 42.496,25.8640197 L54,32.5740166 L54,44.0000114 C54,44.3510113 54.185,44.6770111 54.486,44.857011 L64.486,50.8570083 C64.644,50.9520082 64.822,51 65,51 C65.17,51 65.34,50.9570082 65.493,50.8700083 C65.807,50.6930084 66,50.3600085 66,50 L66,26.0000196 C66,25.6460198 65.814,25.31902 65.509,25.13902 L65.509,25.13902 Z M40.445,66.863001 L17,54.3990067 L17,26.5710194 L37,14.7520248 L37,24.4510204 L26.463,31.1560173 C26.175,31.3400172 26,31.6580171 26,32.0000169 L26,49.0000091 C26,49.373009 26.208,49.7150088 26.538,49.8870087 L39.991,56.8870055 C40.28,57.0370055 40.624,57.0380055 40.912,56.8880055 L53.964,50.1440086 L61.996,54.9640064 L40.445,66.863001 Z M64.515,54.1420068 L54.515,48.1420095 C54.217,47.9640096 53.849,47.9520096 53.541,48.1120095 L40.455,54.8730065 L28,48.3930094 L28,32.5490167 L38.537,25.8440197 C38.825,25.6600198 39,25.3420199 39,25.0000201 L39,13.0000256 C39,12.6410257 38.808,12.3090259 38.496,12.131026 C38.184,11.9540261 37.802,11.9560261 37.491,12.139026 L15.491,25.13902 C15.187,25.31902 15,25.6460198 15,26.0000196 L15,55 C15,55.3690062 15.204,55.7090061 15.53,55.883006 L39.984,68.8830001 C40.131,68.961 40.292,69 40.453,69 C40.62,69 40.786,68.958 40.937,68.8750001 L64.484,55.875006 C64.797,55.7020061 64.993,55.3750062 65.0001416,55.0180064 C65.006,54.6600066 64.821,54.3260067 64.515,54.1420068 L64.515,54.1420068 Z" id="eks__Amazon-Elastic-Container-Kubernetes_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="320" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Backend</text><text x="320" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">agent.runtime → ARN</text>
+<g transform="translate(537.00,385.00) scale(0.7188)">
+<g clip-path="url(#agentcore__clip0_211_72)">
+<rect width="64" height="64" fill="#01A88D"/>
+<path d="M53.3721 21.0727L50.8965 20.0801L49.9326 17.6343C49.7812 17.2519 49.4131 17.001 49.0019 17.001C48.5908 17.0015 48.2217 17.2529 48.0713 17.6357L47.0976 20.1157L44.6377 21.0703C44.2529 21.2197 43.999 21.5913 44 22.0049C44.0009 22.4184 44.2568 22.7891 44.6426 22.9365L47.1553 23.897L48.0625 26.3481C48.2051 26.7353 48.5723 26.9946 48.9853 27.001H49C49.4072 27.001 49.7744 26.7539 49.9277 26.375L50.9385 23.8686L53.3603 22.9341C53.7432 22.7856 53.9971 22.4184 54 22.0073C54.0029 21.5967 53.7539 21.2256 53.3721 21.0727ZM49.8135 22.1592C49.5557 22.2593 49.3496 22.4614 49.2461 22.7183L49.04 23.2285L48.873 22.7773C48.7734 22.5073 48.5615 22.2934 48.293 22.1904L47.7822 21.9951L48.2305 21.8213C48.4902 21.7202 48.6973 21.5146 48.7988 21.2544L49.0039 20.7319L49.1592 21.1265C49.25 21.437 49.4883 21.6855 49.793 21.792L50.2695 21.9834L49.8135 22.1592ZM51.2148 30.853L44.0078 27.9629L41.1973 20.8379C41.0078 20.3569 40.5508 20.0459 40.0342 20.0459C39.5166 20.0464 39.0586 20.3574 38.8701 20.8394L36.0312 28.0747L33.0011 29.2507L33.0019 13.998C33.0019 13.6191 32.788 13.2729 32.4492 13.1035L26.4472 10.1055C26.1513 9.95849 25.8027 9.96581 25.5146 10.126L16.5146 15.126C16.1972 15.3022 16 15.6367 16 16V23.3818L10.5527 26.1055C10.2138 26.2749 9.99997 26.6211 9.99997 27V37C9.99997 37.3511 10.1845 37.6768 10.4853 37.8574L15 40.5664V47C15 47.3657 15.2002 47.7026 15.5214 47.8779L26.5215 53.8779C26.6709 53.9594 26.8349 54 27 54C27.1787 54 27.3564 53.9521 27.5146 53.8574L32.5146 50.8574C32.8154 50.6767 33 50.351 33 50L33.0008 34.7649L36.2138 35.9927L38.8662 43.1616C39.0459 43.6494 39.499 43.9697 40.0185 43.9775C40.0253 43.9775 40.0322 43.978 40.039 43.978C40.5507 43.978 41.0039 43.6733 41.1982 43.1953L44.1396 35.9053L51.1992 33.1797C51.6816 32.9941 51.9961 32.5395 52 32.022C52.0029 31.5044 51.6953 31.0454 51.2148 30.853ZM26.9766 51.8481L23.7745 50.1015L27.5146 47.8574L26.4853 46.1426L21.7383 48.9908L17 46.4062V40.5662L21.5146 37.8574L20.4853 36.1426L16 38.8338L12 36.4336V32.6182L17.4472 29.8945L16.5527 28.1055L12 30.3818V27.6182L16.9563 25.14L21 27.5662V30.3818L17.5527 32.1055L18.4472 33.8945L22.0026 32.1169L25.5566 33.877L26.4433 32.085L23 30.3797V27.5664L27.5146 24.8574C27.8154 24.6768 28 24.3511 28 24V19H26V23.4336L22 25.8338L18 23.4338V16.5884L21 14.9217V21H23V13.8106L26.0244 12.1304L31.0019 14.6162L31.0007 36.4504L20.4629 43.1563L21.5371 44.8438L31.0006 38.8215L31 49.4336L26.9766 51.8481ZM43.0146 34.1953C42.7568 34.2954 42.5508 34.4976 42.4473 34.7544L40.0683 40.6494L37.9316 34.8735C37.832 34.6035 37.6201 34.3896 37.3516 34.2866L33.0009 32.6238L33.001 31.3955L37.1631 29.7803C37.4238 29.6792 37.6308 29.4736 37.7324 29.2134L40.0361 23.3438L42.2431 28.9385C42.3183 29.2905 42.5849 29.5747 42.9258 29.6841L48.7021 32L43.0146 34.1953Z" fill="white"/>
+</g>
+<defs>
+<clipPath id="agentcore__clip0_211_72">
+<rect width="64" height="64" fill="white"/>
+</clipPath>
+</defs>
+</g><text x="560" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Sample runtime</text><text x="560" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">assumed-role/…sample…</text>
+<g transform="translate(537.00,145.00) scale(0.7188)">
+
+    
+    <g id="bedrock__Icon-Architecture/48/Arch_Amazon-Bedrock_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="bedrock__Icon-Architecture-BG/48/Machine-Learning" fill="#01A88D">
+            <rect id="bedrock__Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <g id="bedrock__Icon-Service/48/Amazon-Bedrock_48" transform="translate(10.000000, 10.000000)" fill="#FFFFFF">
+            <path d="M41,20.9998818 C40.448,20.9998818 40,20.5508818 40,19.9998818 C40,19.4488818 40.448,18.9998818 41,18.9998818 C41.552,18.9998818 42,19.4488818 42,19.9998818 C42,20.5508818 41.552,20.9998818 41,20.9998818 L41,20.9998818 Z M16.977,41.8478818 L13.774,40.1018818 L17.515,37.8568818 L16.485,36.1428818 L11.738,38.9908818 L7,36.4058818 L7,30.5658818 L11.515,27.8568818 L10.485,26.1428818 L6,28.8338818 L2,26.4338818 L2,22.6178818 L7.447,19.8948818 L6.553,18.1048818 L2,20.3818818 L2,17.6178818 L6.956,15.1398818 L11,17.5658818 L11,20.3818818 L7.553,22.1048818 L8.447,23.8948818 L12.003,22.1168818 L15.557,23.8768818 L16.443,22.0848818 L13,20.3798818 L13,17.5658818 L17.515,14.8568818 C17.815,14.6768818 18,14.3508818 18,13.9998818 L18,8.99988178 L16,8.99988178 L16,13.4338818 L12,15.8338818 L8,13.4338818 L8,6.58788178 L11,4.92188178 L11,10.9998818 L13,10.9998818 L13,3.81088178 L16.024,2.12988178 L21.002,4.61588178 L21.001,26.4498818 L10.463,33.1558818 L11.537,34.8438818 L21.001,28.8218818 L21,39.4338818 L16.977,41.8478818 Z M38,28.9998818 C38.552,28.9998818 39,29.4488818 39,29.9998818 C39,30.5508818 38.552,30.9998818 38,30.9998818 C37.448,30.9998818 37,30.5508818 37,29.9998818 C37,29.4488818 37.448,28.9998818 38,28.9998818 L38,28.9998818 Z M30,38.9998818 C29.448,38.9998818 29,38.5508818 29,37.9998818 C29,37.4488818 29.448,36.9998818 30,36.9998818 C30.552,36.9998818 31,37.4488818 31,37.9998818 C31,38.5508818 30.552,38.9998818 30,38.9998818 L30,38.9998818 Z M32,5.99988178 C32.552,5.99988178 33,6.44888178 33,6.99988178 C33,7.55088178 32.552,7.99988178 32,7.99988178 C31.448,7.99988178 31,7.55088178 31,6.99988178 C31,6.44888178 31.448,5.99988178 32,5.99988178 L32,5.99988178 Z M41,16.9998818 C39.698,16.9998818 38.598,17.8388818 38.184,18.9998818 L23.001,18.9998818 L23.001,14.9998818 L32,14.9998818 C32.553,14.9998818 33,14.5518818 33,13.9998818 L33,9.81588178 C34.161,9.40188178 35,8.30188178 35,6.99988178 C35,5.34588178 33.654,3.99988178 32,3.99988178 C30.346,3.99988178 29,5.34588178 29,6.99988178 C29,8.30188178 29.839,9.40188178 31,9.81588178 L31,12.9998818 L23.001,12.9998818 L23.002,3.99788178 C23.002,3.61888178 22.788,3.27288178 22.449,3.10388178 L16.447,0.104881781 C16.151,-0.0421182195 15.803,-0.0341182195 15.515,0.125881781 L6.515,5.12588178 C6.197,5.30188178 6,5.63688178 6,5.99988178 L6,13.3818818 L0.553,16.1048818 C0.214,16.2748818 0,16.6208818 0,16.9998818 L0,26.9998818 C0,27.3508818 0.185,27.6768818 0.485,27.8568818 L5,30.5658818 L5,36.9998818 C5,37.3658818 5.2,37.7028818 5.521,37.8778818 L16.521,43.8778818 C16.671,43.9588818 16.835,43.9998818 17,43.9998818 C17.179,43.9998818 17.356,43.9518818 17.515,43.8568818 L22.515,40.8568818 C22.815,40.6768818 23,40.3508818 23,39.9998818 L23,32.9998818 L29,32.9998818 L29,35.1838818 C27.839,35.5978818 27,36.6978818 27,37.9998818 C27,39.6538818 28.346,40.9998818 30,40.9998818 C31.654,40.9998818 33,39.6538818 33,37.9998818 C33,36.6978818 32.161,35.5978818 31,35.1838818 L31,31.9998818 C31,31.4478818 30.553,30.9998818 30,30.9998818 L23,30.9998818 L23.001,26.9998818 L33.586,26.9998818 L35.301,28.7148818 C35.113,29.1058818 35,29.5378818 35,29.9998818 C35,31.6538818 36.346,32.9998818 38,32.9998818 C39.654,32.9998818 41,31.6538818 41,29.9998818 C41,28.3458818 39.654,26.9998818 38,26.9998818 C37.538,26.9998818 37.106,27.1128818 36.715,27.3008818 L34.707,25.2928818 C34.52,25.1048818 34.266,24.9998818 34,24.9998818 L23.001,24.9998818 L23.001,20.9998818 L38.184,20.9998818 C38.598,22.1608818 39.698,22.9998818 41,22.9998818 C42.654,22.9998818 44,21.6538818 44,19.9998818 C44,18.3458818 42.654,16.9998818 41,16.9998818 L41,16.9998818 Z" id="bedrock__Fill-3"></path>
+        </g>
+    </g>
+</g><text x="560" y="206" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Claude</text><text x="560" y="219" text-anchor="middle" font-size="9.5" fill="#5A6B7B">plans 2 tool calls</text>
+<g transform="translate(797.00,385.00) scale(0.7188)">
+<g clip-path="url(#agentcore__clip0_211_72)">
+<rect width="64" height="64" fill="#01A88D"/>
+<path d="M53.3721 21.0727L50.8965 20.0801L49.9326 17.6343C49.7812 17.2519 49.4131 17.001 49.0019 17.001C48.5908 17.0015 48.2217 17.2529 48.0713 17.6357L47.0976 20.1157L44.6377 21.0703C44.2529 21.2197 43.999 21.5913 44 22.0049C44.0009 22.4184 44.2568 22.7891 44.6426 22.9365L47.1553 23.897L48.0625 26.3481C48.2051 26.7353 48.5723 26.9946 48.9853 27.001H49C49.4072 27.001 49.7744 26.7539 49.9277 26.375L50.9385 23.8686L53.3603 22.9341C53.7432 22.7856 53.9971 22.4184 54 22.0073C54.0029 21.5967 53.7539 21.2256 53.3721 21.0727ZM49.8135 22.1592C49.5557 22.2593 49.3496 22.4614 49.2461 22.7183L49.04 23.2285L48.873 22.7773C48.7734 22.5073 48.5615 22.2934 48.293 22.1904L47.7822 21.9951L48.2305 21.8213C48.4902 21.7202 48.6973 21.5146 48.7988 21.2544L49.0039 20.7319L49.1592 21.1265C49.25 21.437 49.4883 21.6855 49.793 21.792L50.2695 21.9834L49.8135 22.1592ZM51.2148 30.853L44.0078 27.9629L41.1973 20.8379C41.0078 20.3569 40.5508 20.0459 40.0342 20.0459C39.5166 20.0464 39.0586 20.3574 38.8701 20.8394L36.0312 28.0747L33.0011 29.2507L33.0019 13.998C33.0019 13.6191 32.788 13.2729 32.4492 13.1035L26.4472 10.1055C26.1513 9.95849 25.8027 9.96581 25.5146 10.126L16.5146 15.126C16.1972 15.3022 16 15.6367 16 16V23.3818L10.5527 26.1055C10.2138 26.2749 9.99997 26.6211 9.99997 27V37C9.99997 37.3511 10.1845 37.6768 10.4853 37.8574L15 40.5664V47C15 47.3657 15.2002 47.7026 15.5214 47.8779L26.5215 53.8779C26.6709 53.9594 26.8349 54 27 54C27.1787 54 27.3564 53.9521 27.5146 53.8574L32.5146 50.8574C32.8154 50.6767 33 50.351 33 50L33.0008 34.7649L36.2138 35.9927L38.8662 43.1616C39.0459 43.6494 39.499 43.9697 40.0185 43.9775C40.0253 43.9775 40.0322 43.978 40.039 43.978C40.5507 43.978 41.0039 43.6733 41.1982 43.1953L44.1396 35.9053L51.1992 33.1797C51.6816 32.9941 51.9961 32.5395 52 32.022C52.0029 31.5044 51.6953 31.0454 51.2148 30.853ZM26.9766 51.8481L23.7745 50.1015L27.5146 47.8574L26.4853 46.1426L21.7383 48.9908L17 46.4062V40.5662L21.5146 37.8574L20.4853 36.1426L16 38.8338L12 36.4336V32.6182L17.4472 29.8945L16.5527 28.1055L12 30.3818V27.6182L16.9563 25.14L21 27.5662V30.3818L17.5527 32.1055L18.4472 33.8945L22.0026 32.1169L25.5566 33.877L26.4433 32.085L23 30.3797V27.5664L27.5146 24.8574C27.8154 24.6768 28 24.3511 28 24V19H26V23.4336L22 25.8338L18 23.4338V16.5884L21 14.9217V21H23V13.8106L26.0244 12.1304L31.0019 14.6162L31.0007 36.4504L20.4629 43.1563L21.5371 44.8438L31.0006 38.8215L31 49.4336L26.9766 51.8481ZM43.0146 34.1953C42.7568 34.2954 42.5508 34.4976 42.4473 34.7544L40.0683 40.6494L37.9316 34.8735C37.832 34.6035 37.6201 34.3896 37.3516 34.2866L33.0009 32.6238L33.001 31.3955L37.1631 29.7803C37.4238 29.6792 37.6308 29.4736 37.7324 29.2134L40.0361 23.3438L42.2431 28.9385C42.3183 29.2905 42.5849 29.5747 42.9258 29.6841L48.7021 32L43.0146 34.1953Z" fill="white"/>
+</g>
+<defs>
+<clipPath id="agentcore__clip0_211_72">
+<rect width="64" height="64" fill="white"/>
+</clipPath>
+</defs>
+</g><text x="820" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Gateway</text><text x="820" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">tools/list · tools/call</text>
+<g transform="translate(797.00,145.00) scale(0.5750)">
+
+    
+    
+    
+    <defs>
+        <linearGradient x1="0%" y1="100%" x2="100%" y2="0%" id="iam__linearGradient-1">
+            <stop stop-color="#BD0816" offset="0%"></stop>
+            <stop stop-color="#FF5252" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="iam__Icon-Architecture/64/Arch_AWS-Identity-and-Access-Management_64" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="iam__Icon-Architecture-BG/64/Security-Identity-Compliance" fill="#DD344C">
+            <rect id="iam__Rectangle" x="0" y="0" width="80" height="80"></rect>
+        </g>
+        <path d="M14,59 L66,59 L66,21 L14,21 L14,59 Z M68,20 L68,60 C68,60.552 67.553,61 67,61 L13,61 C12.447,61 12,60.552 12,60 L12,20 C12,19.448 12.447,19 13,19 L67,19 C67.553,19 68,19.448 68,20 L68,20 Z M44,48 L59,48 L59,46 L44,46 L44,48 Z M57,42 L62,42 L62,40 L57,40 L57,42 Z M44,42 L52,42 L52,40 L44,40 L44,42 Z M29,46 C29,45.449 28.552,45 28,45 C27.448,45 27,45.449 27,46 C27,46.551 27.448,47 28,47 C28.552,47 29,46.551 29,46 L29,46 Z M31,46 C31,47.302 30.161,48.401 29,48.816 L29,51 L27,51 L27,48.815 C25.839,48.401 25,47.302 25,46 C25,44.346 26.346,43 28,43 C29.654,43 31,44.346 31,46 L31,46 Z M19,53.993 L36.994,54 L36.996,50 L33,50 L33,48 L36.996,48 L36.998,45 L33,45 L33,43 L36.999,43 L37,40.007 L19.006,40 L19,53.993 Z M22,38.001 L34,38.006 L34,31 C34.001,28.697 31.197,26.677 28,26.675 L27.996,26.675 C24.804,26.675 22.004,28.696 22.002,31 L22,38.001 Z M17,54.992 L17.006,39 C17.006,38.734 17.111,38.48 17.299,38.292 C17.486,38.105 17.741,38 18.006,38 L20,38.001 L20.002,31 C20.004,27.512 23.59,24.675 27.996,24.675 L28,24.675 C32.412,24.677 36.001,27.515 36,31 L36,38.007 L38,38.008 C38.553,38.008 39,38.456 39,39.008 L38.994,55 C38.994,55.266 38.889,55.52 38.701,55.708 C38.514,55.895 38.259,56 37.994,56 L18,55.992 C17.447,55.992 17,55.544 17,54.992 L17,54.992 Z M60,36 L62,36 L62,34 L60,34 L60,36 Z M44,36 L55,36 L55,34 L44,34 L44,36 Z" id="iam__AWS-Identity-and-Access-Management_Icon_64_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="820" y="206" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Cedar decision</text><text x="820" y="219" text-anchor="middle" font-size="9.5" fill="#5A6B7B">principal · action · input</text>
+<g transform="translate(1057.00,277.00) scale(0.7188)">
+
+    
+    <g id="lambda__Icon-Architecture/48/Arch_AWS-Lambda_48" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g id="lambda__Icon-Architecture-BG/48/Compute" fill="#ED7100">
+            <rect id="lambda__Rectangle" x="0" y="0" width="64" height="64"></rect>
+        </g>
+        <path d="M22.6794094,52 L13.5740701,52 L23.8376189,30.41 L28.3997494,39.861 L22.6794094,52 Z M24.7269406,27.667 C24.5606285,27.321 24.2120702,27.103 23.8306478,27.103 L23.8276601,27.103 C23.4452418,27.104 23.0966835,27.325 22.9323632,27.672 L11.0973143,52.569 C10.9499239,52.879 10.9708374,53.243 11.1540795,53.534 C11.3353298,53.824 11.6540117,54 11.9955989,54 L23.309802,54 C23.695208,54 24.0447622,53.777 24.2100784,53.428 L30.4044577,40.284 C30.5329264,40.01 30.5319305,39.692 30.3994783,39.42 L24.7269406,27.667 Z M51.0082382,52 L41.985557,52 L26.9547262,19.578 C26.7914017,19.226 26.4388599,19 26.0524581,19 L20.1279625,19 L20.1349337,12 L31.8146251,12 L46.7747483,44.42 C46.9380728,44.774 47.2906147,45 47.6790082,45 L51.0082382,45 L51.0082382,52 Z M52.0041191,43 L48.3143803,43 L33.354257,10.58 C33.1909326,10.226 32.8383907,10 32.450993,10 L19.1400486,10 C18.5913182,10 18.1451636,10.447 18.1441677,10.999 L18.1362006,19.999 C18.1362006,20.265 18.2407681,20.519 18.4269979,20.707 C18.6142235,20.895 18.8671772,21 19.1310857,21 L25.4170861,21 L40.4479168,53.422 C40.6112413,53.774 40.9627873,54 41.350185,54 L52.0041191,54 C52.5548412,54 53,53.552 53,53 L53,44 C53,43.448 52.5548412,43 52.0041191,43 L52.0041191,43 Z" id="lambda__AWS-Lambda_Icon_48_Squid" fill="#FFFFFF"></path>
+    </g>
+</g><text x="1080" y="338" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">get_crypto_price</text><text x="1080" y="351" text-anchor="middle" font-size="9.5" fill="#5A6B7B">symbol=BTC ✓</text>
+<rect x="1057.0" y="493.0" width="46" height="46" rx="8" fill="#4F46E5"/><path d="M1069 508 l9 8 l-9 8 M1079 508 l9 8 l-9 8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><text x="1080" y="554" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">getQuote</text><text x="1080" y="567" text-anchor="middle" font-size="9.5" fill="#5A6B7B">symbol=AAPL ✓</text>
+<rect x="1057.0" y="693.0" width="46" height="46" rx="8" fill="#64748B"/><circle cx="1080" cy="716" r="7" fill="none" stroke="#fff" stroke-width="2.4"/><circle cx="1080" cy="716" r="1.8" fill="#fff"/><text x="1080" y="754" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Denied</text><text x="1080" y="767" text-anchor="middle" font-size="9.5" fill="#5A6B7B">SHIB · shared role · fetch URL</text>
+<rect x="1377.0" y="385.0" width="46" height="46" rx="8" fill="#475569"/><circle cx="1397" cy="405" r="8" fill="none" stroke="#fff" stroke-width="2.6"/><line x1="1403" y1="411" x2="1410" y2="418" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/><text x="1400" y="446" text-anchor="middle" font-size="13" font-weight="700" fill="#16202E">Answer</text><text x="1400" y="459" text-anchor="middle" font-size="9.5" fill="#5A6B7B">price · as-of · source</text>
+<circle cx="206" cy="408" r="9" fill="#232F3E"/><text x="206" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">1</text>
+<circle cx="440" cy="408" r="9" fill="#232F3E"/><text x="440" y="411" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">2</text>
+<circle cx="560" cy="288" r="9" fill="#232F3E"/><text x="560" y="291" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">3</text>
+<circle cx="820" cy="288" r="9" fill="#232F3E"/><text x="820" y="291" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">4</text>
+<circle cx="950" cy="354" r="9" fill="#232F3E"/><text x="950" y="357" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">5</text>
+<circle cx="1240" cy="354" r="9" fill="#232F3E"/><text x="1240" y="357" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">6</text>
+<text x="40" y="810" font-size="11" font-weight="700" fill="#16202E">Flows</text>
+<circle cx="92" cy="806" r="5" fill="#1D4ED8"/><text x="102" y="810" font-size="10.5" fill="#5A6B7B">request →</text>
+<circle cx="185" cy="806" r="5" fill="#0F766E"/><text x="195" y="810" font-size="10.5" fill="#5A6B7B">reply ←</text>
+<circle cx="264" cy="806" r="5" fill="#0369A1"/><text x="274" y="810" font-size="10.5" fill="#5A6B7B">tools/memory</text>
+<text x="40" y="832" font-size="10" fill="#5A6B7B">1 clone invoked -> 2 backend picks the sample runtime from the agent record -> 3 model plans two tool calls -> 4 gateway evaluates each against Cedar (role, action, symbol) -> 5 allowed calls reach their targets -> 6 answer carries price, time, source</text>
+</svg>

@@ -33,7 +33,15 @@ variable "runtimes" {
     mcp_tools_runtime_arn    = string
     interactive_runtime_arns = map(string)
     sdk_runtime_arns         = map(string)
+    # one per sample agent (Sample Agents feature); {} when off
+    sample_runtime_arns = optional(map(string), {})
   })
+}
+
+variable "sample_tools_gateway_url" {
+  description = "MCP URL of the foundation's sample-tools gateway, which the backend registers for the sample agents; \"\" when the feature is off."
+  type        = string
+  default     = ""
 }
 
 variable "default_platform_version" {

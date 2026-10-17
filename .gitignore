@@ -55,3 +55,6 @@ CLAUDE.md
 .kiro/
 .cfn-archive/
 .qa-runs/
+
+# build artefacts of the sample tool packages (terraform/workloads/modules/sample_tools)
+terraform/workloads/modules/sample_tools/.build/

@@ -13,6 +13,11 @@ output "mcp_tools_role_arn" {
   value = aws_iam_role.mcp_tools.arn
 }
 
+output "sample_role_arns" {
+  description = "Execution role per sample agent runtime, by sample id."
+  value       = { for k, r in aws_iam_role.sample : k => r.arn }
+}
+
 output "workspace_access_role_arn" {
   value = aws_iam_role.workspace_access.arn
 }

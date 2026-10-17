@@ -1,0 +1,65 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Stock quote (Twelve Data)",
+    "version": "1.0.0",
+    "description": "One operation of the Twelve Data REST API, exposed to the sample agents as an MCP tool by the sample-tools gateway. The API key is not in this document: the gateway's outbound authorization appends it as the apikey query parameter. Only the fields the agent needs are declared, and only one path, so the tool surface is the minimum the sample requires."
+  },
+  "servers": [
+    {
+      "url": "https://api.twelvedata.com"
+    }
+  ],
+  "paths": {
+    "/quote": {
+      "get": {
+        "operationId": "getQuote",
+        "summary": "Real-time quote for a US-listed stock",
+        "description": "Latest price, change and day range for one US-listed stock or ETF symbol. Returns the quote's own timestamp and whether the market is open; quote both when answering. Free-tier data is for US markets.",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "required": true,
+            "description": "Ticker symbol, e.g. AAPL. One symbol per call.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z.]{1,10}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The quote",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "symbol": { "type": "string" },
+                    "name": { "type": "string" },
+                    "exchange": { "type": "string" },
+                    "currency": { "type": "string" },
+                    "datetime": { "type": "string", "description": "Trading day of the quote" },
+                    "timestamp": { "type": "integer", "description": "Unix time of the last trade" },
+                    "close": { "type": "string", "description": "Latest price" },
+                    "previous_close": { "type": "string" },
+                    "change": { "type": "string" },
+                    "percent_change": { "type": "string" },
+                    "high": { "type": "string" },
+                    "low": { "type": "string" },
+                    "volume": { "type": "string" },
+                    "is_market_open": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Unknown or malformed symbol" },
+          "401": { "description": "Key rejected" },
+          "429": { "description": "Rate limit of the key's plan reached" }
+        }
+      }
+    }
+  }
+}
