@@ -140,10 +140,60 @@ export interface PublishedAgent {
   mcp_hub_actor: string
   version: number
   source: string
+  // '' = the shared SDK runtime; 'sample:<id>' = that sample's own runtime
+  // (set by cloning a sample, kept on every republish)
+  runtime: string
   created_by: string
   created_at: string
   updated_at: string
   history: { version: number; at: string; by: string }[]
+}
+
+// Sample Agents: reference agents a user can read, try and clone.
+export interface SampleToolStatus {
+  id: string
+  optional: boolean
+  deployed: boolean | null // null = the gateway could not be listed
+}
+
+export interface SampleStatus {
+  cloneable: boolean
+  runtime_deployed: boolean
+  mcp_registered: boolean
+  tools: SampleToolStatus[]
+  tools_verified: boolean
+  blocking: string[]
+  shared_agent_id: string
+}
+
+export interface SampleSummary {
+  id: string
+  title: string
+  summary: string
+  patterns: string[]
+  industries: string[]
+  runtime: string
+  requires_tools: { id: string; optional: boolean }[]
+  mcp_server: string
+  try_prompt: string
+  design_doc: string
+  shared_agent_id: string
+  updated_at: string
+  status: SampleStatus
+}
+
+export interface SampleDetail extends SampleSummary {
+  readme: string
+  agent: {
+    name: string
+    description: string
+    system_prompt: string
+    max_turns: number
+    mcp_server_names: string[]
+    skill_names: string[]
+    platform_version: string
+  }
+  eval_cases: { prompt: string; expected: string; tags: string[] }[]
 }
 
 export interface Schedule {
@@ -178,20 +228,43 @@ export interface Channel {
   token?: string
 }
 
+export interface EvalScoring {
+  method: 'json_exact' | 'llm_judge'
+  output_field: string
+  rubric: string
+}
+
 export interface EvalDataset {
   id: string
   name: string
   description: string
+  scenario: string
+  scoring: EvalScoring
+  synthetic: boolean
   cases: { prompt: string; expected: string }[]
   created_by: string
   created_at: string
+}
+
+/** Execution facts of one invocation, as the invocation ledger records them. */
+export interface EvalCallMetrics {
+  ok: boolean
+  duration_ms: number
+  num_turns: number | null
+  cost_usd: number | null
+  runtime_session_id: string
 }
 
 export interface EvalRun {
   id: string
   dataset_id: string
   dataset_name: string
+  scenario: string
+  scoring: EvalScoring
+  synthetic: boolean
   target: string
+  agent_version: number | null
+  system_prompt: string
   status: string
   started_by: string
   started_at: string
@@ -204,7 +277,25 @@ export interface EvalRun {
     pass: boolean
     score: number
     reason: string
+    predicted_label?: string
+    expected_label?: string
+    predicted_value?: string
+    expected_value?: string
+    agent_call?: EvalCallMetrics
+    judge_call?: EvalCallMetrics
   }[]
+  /** set when the run ends: the infrastructure view of the same calls */
+  calls: {
+    agent_calls: number
+    agent_ok: number
+    agent_duration_p50_ms: number | null
+    agent_cost_usd: number
+    judge_calls: number
+    judge_ok: number
+    judge_cost_usd: number
+  } | null
+  /** cases scored so far; `results` is only filled by getEvalRun */
+  evaluated: number
   passed: number
   total: number
   avg_score: number | null
@@ -508,6 +599,14 @@ export const api = {
   invokeAgent: (id: string, body: { prompt: string; session_id?: string; memory_actor_id?: string }) =>
     request<InvokeResult>(`/api/v1/agents/${id}/invoke`, { method: 'POST', body: JSON.stringify(body) }),
 
+  // Sample Agents
+  listSamples: () => request<SampleSummary[]>('/api/v1/samples'),
+  getSample: (id: string) => request<SampleDetail>(`/api/v1/samples/${id}`),
+  cloneSample: (id: string, name = '') =>
+    request<PublishedAgent>(`/api/v1/samples/${id}/clone`, { method: 'POST', body: JSON.stringify({ name }) }),
+  trySample: (id: string, body: { prompt: string; session_id?: string }) =>
+    request<InvokeResult>(`/api/v1/samples/${id}/try`, { method: 'POST', body: JSON.stringify(body) }),
+
   // Scheduler
   listSchedules: () => request<Schedule[]>('/api/v1/schedules'),
   createSchedule: (body: { name: string; target: string; prompt: string; system?: string; expression: string }) =>
@@ -545,11 +644,20 @@ export const api = {
 
   // Evaluation
   listEvalDatasets: () => request<EvalDataset[]>('/api/v1/evals/datasets'),
-  createEvalDataset: (body: { name: string; description?: string; cases: { prompt: string; expected: string }[] }) =>
+  createEvalDataset: (body: {
+    name: string
+    description?: string
+    scenario?: string
+    scoring?: EvalScoring
+    synthetic?: boolean
+    cases: { prompt: string; expected: string }[]
+  }) =>
     request<EvalDataset>('/api/v1/evals/datasets', { method: 'POST', body: JSON.stringify(body) }),
   deleteEvalDataset: (id: string) => request<{ ok: boolean }>(`/api/v1/evals/datasets/${id}`, { method: 'DELETE' }),
-  listEvalRuns: () => request<EvalRun[]>('/api/v1/evals/runs'),
+  listEvalRuns: (limit = 20) => request<EvalRun[]>(`/api/v1/evals/runs?limit=${limit}`),
   getEvalRun: (id: string) => request<EvalRun>(`/api/v1/evals/runs/${id}`),
+  listDatasetRuns: (datasetId: string, limit = 20) =>
+    request<EvalRun[]>(`/api/v1/evals/datasets/${datasetId}/runs?limit=${limit}`),
   startEvalRun: (body: { dataset_id: string; target: string }) =>
     request<EvalRun>('/api/v1/evals/runs', { method: 'POST', body: JSON.stringify(body) }),
 

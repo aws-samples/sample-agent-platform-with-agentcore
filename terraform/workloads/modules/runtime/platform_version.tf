@@ -41,6 +41,16 @@ resource "terraform_data" "sdk_platform_version" {
   }
 }
 
+resource "terraform_data" "sample_platform_version" {
+  for_each = aws_bedrockagentcore_agent_runtime.sample
+
+  triggers_replace = [each.value.agent_runtime_id, var.sample_platform_version]
+
+  provisioner "local-exec" {
+    command = "${var.platform_version_python} ${local.set_platform_version} ${each.value.agent_runtime_id} ${var.sample_platform_version} --region ${local.region}"
+  }
+}
+
 resource "terraform_data" "mcp_tools_platform_version" {
   triggers_replace = [aws_bedrockagentcore_agent_runtime.mcp_tools.agent_runtime_id, var.mcp_tools_platform_version]
 

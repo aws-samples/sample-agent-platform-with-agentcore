@@ -39,3 +39,42 @@ resource "aws_cloudwatch_log_delivery" "sdk_traces" {
     }
   }
 }
+
+# The sample runtimes run the same instrumented image, so they get the same
+# delivery. The source name keeps the sdk-kernel prefix the deploy role's
+# allowance is written for (agent-platform-sdk-kernel*-traces<suffix>) and
+# fits CloudWatch's 60-character cap: the sample id is cut to 12 characters
+# (agent-platform-sdk-kernel-investment-a-traces-staging, 53), with a
+# precondition so a collision or an overrun fails the plan plainly.
+locals {
+  sample_trace_source_name = { for id, r in aws_bedrockagentcore_agent_runtime.sample : id => "agent-platform-sdk-kernel-${substr(id, 0, 12)}-traces${var.name_suffix}" }
+}
+
+resource "aws_cloudwatch_log_delivery_source" "sample_traces" {
+  for_each = var.agent_observability ? aws_bedrockagentcore_agent_runtime.sample : {}
+
+  name         = local.sample_trace_source_name[each.key]
+  log_type     = "TRACES"
+  resource_arn = each.value.agent_runtime_arn
+
+  lifecycle {
+    precondition {
+      condition     = length(local.sample_trace_source_name[each.key]) <= 60 && length(distinct(values(local.sample_trace_source_name))) == length(local.sample_trace_source_name)
+      error_message = "sample trace source names must be unique and at most 60 characters: two sample ids share their first 12 characters, or the suffix is too long."
+    }
+  }
+}
+
+resource "aws_cloudwatch_log_delivery" "sample_traces" {
+  for_each = aws_cloudwatch_log_delivery_source.sample_traces
+
+  delivery_source_name     = each.value.name
+  delivery_destination_arn = var.xray_delivery_destination_arn
+
+  lifecycle {
+    precondition {
+      condition     = var.xray_delivery_destination_arn != null && var.xray_delivery_destination_arn != ""
+      error_message = "agent_observability is on but the foundation published no xray_delivery_destination_arn: enable it there first."
+    }
+  }
+}

@@ -15,7 +15,7 @@ import time
 
 import boto3
 
-from app.config import effective_platform_version, settings
+from app.config import effective_platform_version, sample_runtime_arn, settings
 from app.context import IDENTITY_PLACEHOLDER, get_caller_token
 from app.services.agent_service import agent_service
 from app.services.ecosystem_service import ecosystem_service
@@ -114,6 +114,10 @@ def _resolve_target(
     mcp_servers: list[dict] = []
     skills: list[dict] = []
     model_backend = model = ""
+    # the runtime an agent record binds to ("" = the shared SDK kernel). A
+    # sample clone runs on its sample's runtime, and so under the IAM identity
+    # the sample-tools gateway's policies name (see config.sample_runtime_arn).
+    runtime_arn_override = ""
     if target.startswith("agent:"):
         cfg = agent_service.resolve_invoke_config(target.partition(":")[2])
         label = cfg["label"]
@@ -123,6 +127,7 @@ def _resolve_target(
         mcp_servers, skills = cfg["mcp_servers"], cfg["skills"]
         model_backend, model = cfg["model_backend"], cfg["model"]
         platform_version = cfg.get("platform_version") or platform_version
+        runtime_arn_override = sample_runtime_arn(cfg.get("runtime", ""))
     elif mcp_server_ids or skill_ids:
         cfg = ecosystem_service.resolve_session_config(
             mcp_server_ids or [], skill_ids or []
@@ -135,7 +140,8 @@ def _resolve_target(
     return {"label": label, "system": system, "max_turns": max_turns,
             "memory_id": memory_id, "mcp_servers": mcp_servers, "skills": skills,
             "model_spec": model_spec,
-            "platform_version": effective_platform_version("sdk", platform_version)}
+            "platform_version": effective_platform_version("sdk", platform_version),
+            "runtime_arn_override": runtime_arn_override}
 
 
 def _with_platform_version(trace: dict | None, platform_version: str) -> dict | None:
@@ -233,6 +239,7 @@ def invoke(
             user=user,
             trace=trace,
             platform_version=platform_version,
+            runtime_arn_override=cfg["runtime_arn_override"],
         )
     except Exception as e:
         observability_service.record(
@@ -328,6 +335,7 @@ def invoke_async_and_wait(
             user=user,
             trace=trace,
             platform_version=cfg["platform_version"],
+            runtime_arn_override=cfg["runtime_arn_override"],
         )
         out["runtime_session_id"] = accept.get("runtime_session_id", "")
         if not (accept.get("ok") and accept.get("raw", {}).get("accepted")):

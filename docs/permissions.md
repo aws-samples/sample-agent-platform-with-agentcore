@@ -78,7 +78,11 @@ because they are the identities an agent's own code (and any tool it runs)
 executes under — and anything inside a microVM can read its container role's
 credentials from the metadata endpoint.
 
-**Trust policy (all three):** assumed only by `bedrock-agentcore.amazonaws.com`.
+**Trust policy (all three):** assumed only by `bedrock-agentcore.amazonaws.com`,
+and only for a runtime of this account and region (`aws:SourceAccount` equals
+the account, `aws:SourceArn` matches `runtime/*` here). Without the two
+conditions a runtime in any other account could name one of these roles as
+its execution role.
 
 Statements common to the agent kernels (#1 interactive, #2 sdk); the MCP
 tools role (#3) carries **only** the first three rows:
@@ -185,24 +189,34 @@ Notes for reviewers:
 - **No `cognito-idp` IAM permission.** The backend verifies Cognito ID tokens
   by fetching the pool's public JWKS over HTTPS (`app/auth.py`) — a pure
   signature check, no AWS API call. See [§7](#7-authentication-vs-authorization).
-- **No `secretsmanager` permission on the task role.** The one code path that
-  reads the `portal-admin` secret (pipeline-schedule delegation) runs in the
-  **Lambda**, which has its own scoped grant — not in the backend task.
+- **Secrets Manager on the task role, two scoped grants.** `ServiceEntrySecret`
+  reads the service-entry shared header (`agent-platform<suffix>/service-entry*`)
+  and `McpHubCredentialMint` creates, reads, rotates and deletes the per-agent
+  MCP hub key pairs under `agent-platform/mcp-hub<suffix>/*` (the backend mints
+  them at publish). The `portal-admin` secret (pipeline-schedule delegation) is
+  read by the **Lambda** only, which has its own scoped grant.
 
 ---
 
 ## 4. Wildcard resource statements
 
-A strict security review will flag every `"Resource": "*"`. There are exactly
-**four** in this platform, and each is a wildcard because the underlying AWS API
+A strict security review will flag every `"Resource": "*"`. The ones in this
+platform are listed below; each is a wildcard because the underlying AWS API
 does not support resource-level scoping — not because of loose policy authoring.
+Besides this table: `ecr:GetAuthorizationToken` (kernel roles, token endpoint),
+`AgentCoreGatewayRead` (backend: `bedrock-agentcore:ListGateways`,
+`GetGateway`, `ListGatewayTargets`, `GetGatewayTarget`, read-only for the
+Gateway page; `ListGateways` is not resource-scopable), and the `telemetry`
+statements of the sdk and sample runtime roles (`TelemetryTraces` to X-Ray,
+`TelemetryMetrics` = `cloudwatch:PutMetricData`; the roles carry them whether
+or not the observability image variant is deployed).
 
 | Statement | Principal(s) | Why `*` is required | Blast radius |
 |---|---|---|---|
 | `ecr:GetAuthorizationToken` | Runtime role | The ECR auth-token endpoint is account-global; AWS rejects a resource ARN on this action. | Returns a 12-hour registry token. Pulling an actual image still requires the repo-scoped `ecr:BatchGetImage` grant, which **is** restricted to `agent-platform/*`. |
 | `bedrock-agentcore:ListMemories` | Backend task role | `List*` on AgentCore Memory is not resource-scopable. | Lists memory store metadata in the account/region. All *mutating* and *record-reading* memory actions are scoped to `memory/*`. |
 | `xray:PutTraceSegments`, `PutTelemetryRecords` | Backend task role, Lambda role | X-Ray segment ingestion has no resource dimension. | Write-only trace ingestion. Cannot read traces, cannot touch any other service. |
-| `bedrock:InvokeModel*` | Runtime role, **only if `use_bedrock=1`** | Cross-region inference profiles span multiple regions, so a single-region ARN would break invocation. | Model invocation only. Absent entirely in the default LLM-gateway mode. If you need to constrain models in Bedrock mode, do it with a permission boundary or SCP on inference-profile ARNs, or keep model governance in the LLM gateway. |
+| `bedrock:InvokeModel*` | Runtime roles (always granted; the model control plane can route any agent to Bedrock per invocation) | Cross-region inference profiles span multiple regions, so a single-region ARN would break invocation. | Model invocation only. Note for the gateway modes: the grant is present there too, so a session user who reads the kernel role from the metadata endpoint can call Bedrock directly, outside the gateway's model allow-list and quota. If you need to constrain models in Bedrock mode, do it with a permission boundary or SCP on inference-profile ARNs, or keep model governance in the LLM gateway. |
 
 Everything else in the platform is scoped to a specific bucket, table, secret
 name prefix, schedule group, runtime-name prefix, or account/region resource
@@ -327,13 +341,20 @@ Two separate concerns, easy to conflate in a review:
   2. **API Gateway (`AWS_IAM` authorizer)** authenticates the caller's
      SigV4 signature. Resource-level `execute-api:Invoke` ARNs scope a
      caller to **one channel's** submit path (the SOP the platform renders
-     contains exactly that policy). The platform itself holds **no IAM
-     write permission** — the workload's ops team applies the grant.
+     contains exactly that policy). The platform holds no IAM write
+     permission over callers or roles in general — the workload's ops team
+     applies the grant. The one IAM write the backend has is
+     `RevokeAgentCoreGatewaySessions`: `iam:PutRolePolicy`/`DeleteRolePolicy`
+     on the single inference caller role, used to deny a revoked session's
+     `aws:userid` (agentcore_gateway mode only).
   3. The gateway integration injects two headers: the verified
      `$context.identity.userArn` and a **shared entry secret** (Secrets
-     Manager `agent-platform/service-entry`, resolved into the integration
-     at deploy time via a CloudFormation dynamic reference — never in the
-     template). With private networking the secret defends against
+     Manager `agent-platform<suffix>/service-entry`). Terraform resolves the
+     value at apply time into the integration's request parameters, so it is
+     present in the Terraform state and in the API Gateway configuration,
+     readable by the roles that may read the state or call `apigateway:GET`
+     (the deploy and read roles of the pipelines); the CDK variant used a
+     CloudFormation dynamic reference instead. With private networking the secret defends against
      **VPC-internal** forgery: anything inside the platform VPC (the
      AgentCore runtime containers above all) can reach the internal NLB,
      and without the secret such a neighbor could invent a caller ARN. The

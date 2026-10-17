@@ -18,12 +18,24 @@ variable "workspace_bucket_name" {
 }
 
 variable "roles" {
-  description = "Execution role ARNs the foundation created for the three kernels."
+  description = "Execution role ARNs the foundation created: the three kernels, and one per sample agent runtime (samples, by sample id; {} when the Sample Agents feature is off)."
   type = object({
     interactive = string
     sdk         = string
     mcp_tools   = string
+    samples     = optional(map(string), {})
   })
+}
+
+variable "sample_platform_version" {
+  description = "Platform version of every sample agent runtime (one runtime per sample)."
+  type        = string
+  default     = "V1"
+
+  validation {
+    condition     = contains(["V1", "V2"], var.sample_platform_version)
+    error_message = "sample_platform_version must be \"V1\" or \"V2\"."
+  }
 }
 
 variable "kernel_tags" {

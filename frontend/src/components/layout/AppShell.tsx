@@ -17,6 +17,7 @@ import {
   Webhook,
   Workflow,
   BarChart3,
+  BookOpen,
 } from 'lucide-react'
 import { getUser, signOut } from '@/services/auth'
 import { api, type Identity } from '@/services/api'
@@ -25,6 +26,7 @@ import { api, type Identity } from '@/services/api'
 // the same split with 403s — hiding is UX, not the security boundary).
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
+  { to: '/samples', label: 'Sample Agents', icon: BookOpen },
   { to: '/workbench', label: 'Dev Workbench', icon: Terminal },
   { to: '/publish', label: 'Publish', icon: Rocket },
   { to: '/debug', label: 'Debug', icon: MessagesSquare },

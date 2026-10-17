@@ -23,6 +23,8 @@ Everything it creates is deleted at the end, also when a step raises
 
 import atexit
 import json
+import os
+import re
 import sys
 import time
 import urllib.error
@@ -108,6 +110,27 @@ def sign_in() -> str:
     return _TOKEN
 
 
+def samples_gateway_verdict(mode: str, status: int, leaked: bool, text: str) -> tuple[bool, str, bool]:
+    """(ok, detail, warn) for samples.shared-role-denied-at-gateway.
+
+    The engine decides per call whether the shared role may use the tool;
+    whether the gateway acts on that decision is the engine's mode
+    (foundation facts, sample_tools.policy_mode). ENFORCE: a price reaching
+    the shared role is a failure, full stop. LOG_ONLY, or a mode the facts
+    do not carry yet: the call goes through by design and the decision is
+    only traced, so a price is reported as a warning naming the mode, never
+    as a pass. A non-200 is a failure in every mode: the check's own call
+    did not happen."""
+    if status != 200:
+        return False, f"mode {mode or 'unknown'}: invoke returned {status}", False
+    if mode == "ENFORCE":
+        return (not leaked), text[:100], False
+    if leaked:
+        return True, (f"policy engine mode {mode or 'unknown'}: the shared role reached the tool, as LOG_ONLY allows; "
+                      "the deny is traced, not enforced, until the mode is ENFORCE"), True
+    return True, f"mode {mode or 'unknown'}: {text[:80]}", False
+
+
 def main() -> int:
     env = qa_env.env_name()
     print(f"== E2E against {BASE} ({env}) as {USER} ==")
@@ -179,6 +202,77 @@ def main() -> int:
     # re-publish bumps version
     status, agent2 = http("POST", "/api/v1/agents/publish-from-session", {"session_id": session["session_id"]}, token=token)
     report("publish.version-bump", agent2.get("version") == v1 + 1, f"v{v1} -> v{agent2.get('version')}")
+
+    # -------------------------------------------------------- sample agents
+    # The catalogue is seeded by the deploy (scripts/seed_samples.py). A
+    # sample runs on its own runtime under its own role; the gateway's Cedar
+    # policies permit that role. What this checks, with real calls: the
+    # catalogue lists the sample with its deployment status; a clone lands on
+    # the sample's runtime (source and runtime both sample:<id>); the clone
+    # answers a mixed quote with the tool-returned fields (a price with a
+    # time and a source), which only happens if the runtime's identity was
+    # allowed through the gateway; and the identity cannot be borrowed: a
+    # plain publish naming the sample runtime is refused (403), and the
+    # shared SDK role, invoked with the sample's gateway attached, gets no
+    # price (the policy engine denies or hides the tools).
+    print("\n[samples] catalogue -> clone on the sample runtime -> quote -> identity cannot be borrowed")
+    status, samples = http("GET", "/api/v1/samples", token=token)
+    sample = next((s for s in samples if s.get("id") == "investment-assistant"), None) if isinstance(samples, list) else None
+    if not os.environ.get("SAMPLE_TOOLS_GATEWAY_URL"):
+        # the foundation publishes no sample-tools gateway here: the feature is
+        # off in this environment, which is a configuration, not a failure
+        report("samples.catalogue", True, "sample tools not deployed in this environment (no gateway in the facts): skipped", warn=True)
+    elif not sample:
+        report("samples.catalogue", False, f"investment-assistant not in catalogue ({status}): seed not run?")
+    else:
+        st = sample.get("status") or {}
+        report("samples.catalogue", True, f"cloneable={st.get('cloneable')} tools={[t['id'] for t in st.get('tools', []) if t.get('deployed')]}")
+        if not st.get("cloneable"):
+            report("samples.cloneable", False, "; ".join(st.get("blocking", [])) or "not cloneable", warn=True)
+        else:
+            status, clone = http("POST", "/api/v1/samples/investment-assistant/clone", {"name": f"e2e-sample-{RUN_TAG}"}, token=token)
+            ok = status == 200 and clone.get("runtime") == "sample:investment-assistant" and clone.get("source") == "sample:investment-assistant"
+            report("samples.clone-on-sample-runtime", ok, f"{status} runtime={clone.get('runtime')} source={clone.get('source')}")
+            if clone.get("id"):
+                CLEANUP.append(f"/api/v1/agents/{clone['id']}")
+                status, res = http("POST", f"/api/v1/agents/{clone['id']}/invoke",
+                                   {"prompt": "What is BTC trading at right now? One line."}, token=token, timeout=180)
+                text = res.get("result", "")
+                # the tool's fields, not the model's memory: a number, a time, a source
+                has_price = bool(re.search(r"\d[\d,]*\.?\d*\s*(USD|\$)|\$\s?\d", text))
+                has_time = bool(re.search(r"\d{4}-\d{2}-\d{2}|UTC|as of", text, re.I))
+                has_source = "coingecko" in text.lower()
+                report("samples.clone-quotes-through-gateway", status == 200 and has_price and has_time and has_source, text[:120])
+                # a republish from the Publish page keeps the clone on its runtime
+                status, again = http("POST", "/api/v1/agents", {"name": clone["name"], "system_prompt": "edited by e2e",
+                                                                 "mcp_server_names": clone.get("mcp_server_names", [])}, token=token)
+                report("samples.republish-keeps-runtime", status == 200 and again.get("runtime") == "sample:investment-assistant",
+                       f"{status} runtime={again.get('runtime')}")
+            # identity cannot be borrowed through a plain publish
+            status, denied = http("POST", "/api/v1/agents", {"name": f"e2e-borrow-{RUN_TAG}", "runtime": "sample:investment-assistant",
+                                                              "mcp_server_names": ["sample-tools"]}, token=token)
+            report("samples.runtime-not-borrowable", status == 403, f"{status} {str(denied)[:80]}")
+            if status == 200 and denied.get("id"):
+                CLEANUP.append(f"/api/v1/agents/{denied['id']}")
+            # the shared SDK role with the sample gateway attached gets no price
+            mcp_list = http("GET", "/api/v1/ecosystem/mcp-servers", token=token)[1]
+            gw = next((m for m in mcp_list if m.get("name") == "sample-tools"), None)
+            if gw:
+                status, res = http("POST", "/api/v1/kernels/agent-sdk/invoke",
+                                   {"prompt": "Use your tools to get the BTC price. If you have no price tool, reply exactly NO_PRICE_TOOL.",
+                                    "max_turns": 4, "mcp_server_ids": [gw["id"]]}, token=token, timeout=180)
+                text = res.get("result", "")
+                leaked = "coingecko" in text.lower() and bool(re.search(r"\d[\d,]*\.?\d*\s*(USD|\$)", text))
+                # The engine decides per call whether the shared role may use
+                # the tool; whether the gateway acts on that decision is the
+                # engine's mode (foundation facts, sample_tools.policy_mode).
+                # In LOG_ONLY every call goes through by design and the
+                # decision is only traced, so a price here is expected and
+                # the check is a warning until the mode is ENFORCE.
+                ok, detail, warn = samples_gateway_verdict(os.environ.get("SAMPLE_TOOLS_POLICY_MODE", ""), status, leaked, text)
+                report("samples.shared-role-denied-at-gateway", ok, detail, warn=warn)
+            else:
+                report("samples.shared-role-denied-at-gateway", False, "sample-tools MCP entry not registered", warn=True)
 
     # --------------------------------------------------------------- channel
     print("\n[channels] webhook auth + routed reply")

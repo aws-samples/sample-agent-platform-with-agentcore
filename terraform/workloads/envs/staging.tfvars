@@ -15,3 +15,7 @@ name_suffix = "-staging"
 backend_desired_count  = 1
 entry_desired_count    = 1
 llm_edge_desired_count = 1
+
+# Sample Agents: same tool list as production (the default of sample_tool_ids).
+# Whether stock-quote is deployed depends on the foundation publishing a
+# staging credential provider for it, not on anything here.

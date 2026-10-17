@@ -34,7 +34,10 @@ locals {
   features     = local.facts.features
   run_portal   = tobool(local.features.runtime) && tobool(local.features.portal)
   run_llm_edge = tobool(local.features.runtime) && tobool(local.features.llm_edge)
-  cluster_name = try(local.facts.eks.cluster_name, "")
+  # the Sample Agents tool stack: the foundation publishes its half (gateway,
+  # engine, roles) only when it runs the feature; this root adds the tools
+  run_sample_tools = tobool(local.features.runtime) && tobool(try(local.features.sample_tools, false))
+  cluster_name     = try(local.facts.eks.cluster_name, "")
 
   kernel_tags = {
     "claude-code-kernel" = coalesce(var.claude_code_image_tag, var.image_tag)
@@ -83,9 +86,28 @@ module "runtime" {
   platform_versions             = var.runtime_platform_versions
   default_platform_version      = var.runtime_default_platform_version
   mcp_tools_platform_version    = var.mcp_tools_platform_version
+  sample_platform_version       = var.sample_platform_version
   platform_version_python       = var.platform_version_python
   name_suffix                   = var.name_suffix
   runtime_name_suffix           = local.facts.runtime_suffix
+}
+
+# The Sample Agents tools (samples/tools/*): Lambda and OpenAPI targets on the
+# foundation's sample-tools gateway, and the Cedar policies that let each
+# sample runtime's role call its tools. The gateway, engine and roles are the
+# foundation's; this root never creates an identity.
+module "sample_tools" {
+  source = "./modules/sample_tools"
+  count  = local.run_sample_tools ? 1 : 0
+
+  gateway_id               = try(local.facts.sample_tools.gateway_id, "")
+  gateway_arn              = try(local.facts.sample_tools.gateway_arn, "")
+  policy_engine_id         = try(local.facts.sample_tools.policy_engine_id, "")
+  lambda_role_arn          = try(local.facts.sample_tools.lambda_role_arn, "")
+  credential_provider_arns = try(local.facts.sample_tools.credential_provider_arns, {})
+  sample_role_arns         = try(local.facts.runtime.roles.samples, {})
+  tool_ids                 = var.sample_tool_ids
+  name_suffix              = var.name_suffix
 }
 
 module "llm_edge" {
@@ -112,7 +134,11 @@ module "portal" {
     mcp_tools_runtime_arn    = module.runtime[0].mcp_tools_runtime_arn
     interactive_runtime_arns = module.runtime[0].interactive_runtime_arns
     sdk_runtime_arns         = module.runtime[0].sdk_runtime_arns
+    sample_runtime_arns      = module.runtime[0].sample_runtime_arns
   }
+  # the sample-tools gateway the backend registers as an MCP server for the
+  # samples ("" when the feature is off)
+  sample_tools_gateway_url          = local.run_sample_tools ? local.facts.sample_tools.gateway_url : ""
   default_platform_version          = var.runtime_default_platform_version
   platform_table_name               = local.facts.platform.platform_table_name
   workspace_bucket_name             = local.facts.platform.workspace_bucket_name

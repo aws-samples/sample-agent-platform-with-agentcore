@@ -18,6 +18,7 @@ import boto3
 
 from app.config import settings
 from app.services.seed_data import BUILTIN_TOOLS, SAMPLE_SKILLS
+from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +76,11 @@ class EcosystemService:
     # -------------------------------------------------------------- helpers
 
     def _query_prefix(self, prefix: str) -> list[dict]:
-        resp = self.table.query(
+        return query_all(
+            self.table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
             ExpressionAttributeValues={":pk": PK, ":p": prefix},
         )
-        return resp.get("Items", [])
 
     def _put_mcp(self, name, description, kind, target, builtin=False, headers=None, auth="") -> dict:
         item = {
@@ -156,6 +157,7 @@ class EcosystemService:
         )
 
     def create_mcp_server(self, name, description, kind, target, headers=None, auth="hmac") -> dict:
+        self._require_unique_name("MCP#", name)
         if kind == "mcp-hub" and not headers:
             # the hub resolves the acting user from this header; default the
             # standard identity-forwarding placeholder so a console-registered
@@ -174,7 +176,17 @@ class EcosystemService:
         )
 
     def create_skill(self, name, description, skill_md) -> dict:
+        self._require_unique_name("SKILL#", name)
         return self._to_public(self._put_skill(name, description, skill_md))
+
+    def _require_unique_name(self, prefix: str, name: str) -> None:
+        """Agents attach registry entries by name (agent_service._resolve_names
+        builds a name -> entry map, newest wins). A second entry with the same
+        name would silently redirect every agent attached to that name to the
+        new target, so a duplicate is refused here (409 at the route)."""
+        self._ensure_seeded()
+        if any(i.get("name") == name for i in self._query_prefix(prefix)):
+            raise KeyError(f"a {prefix[:-1].lower()} entry named {name!r} already exists")
 
     def delete(self, kind: str, obj_id: str) -> bool:
         sk = f"{kind.upper()}#{obj_id}"
@@ -197,6 +209,12 @@ class EcosystemService:
         self._ensure_seeded()
         mcp = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("MCP#")}
         skills = {self._to_public(i)["id"]: self._to_public(i) for i in self._query_prefix("SKILL#")}
+        # Fail here, not silently: the session route relies on this ValueError
+        # to refuse a session whose attachments do not exist. Dropping unknown
+        # ids produced a session with no tools and no error anywhere.
+        unknown = [i for i in mcp_server_ids if i not in mcp] + [i for i in skill_ids if i not in skills]
+        if unknown:
+            raise ValueError(f"unknown registry ids: {', '.join(unknown)}")
 
         def _server(entry: dict) -> dict:
             server = {

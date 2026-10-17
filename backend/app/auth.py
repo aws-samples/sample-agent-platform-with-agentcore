@@ -74,10 +74,12 @@ def _oidc_jwk_client() -> PyJWKClient:
 def verify_oidc_token(token: str) -> dict:
     """Verify an access token issued by the configured OIDC provider."""
     issuer = settings.oidc_issuer.rstrip("/")
+    # The audience is mandatory (dependencies.check_auth_configuration refuses
+    # to start without it): with ``verify_aud`` off, any token the realm
+    # issued for any client was a portal credential. Checked before the JWKS
+    # fetch so a misconfigured process does no network round-trip per request.
+    if not settings.oidc_audience:
+        raise jwt.InvalidAudienceError("PLATFORM_OIDC_AUDIENCE is not configured")
     signing_key = _oidc_jwk_client().get_signing_key_from_jwt(token)
-    kwargs: dict = {"algorithms": ["RS256"], "issuer": issuer}
-    if settings.oidc_audience:
-        kwargs["audience"] = settings.oidc_audience
-    else:
-        kwargs["options"] = {"verify_aud": False}
+    kwargs: dict = {"algorithms": ["RS256"], "issuer": issuer, "audience": settings.oidc_audience}
     return jwt.decode(token, signing_key.key, **kwargs)

@@ -136,19 +136,51 @@ class WorkspaceCredentialsService:
             )
         return token
 
+    def revoke(self, user: str, session_id: str, runtime_session_id: str) -> None:
+        """Forget the session's refresh token: on stop and delete, so a token
+        scraped out of the container (its user is root there) stops minting
+        workspace credentials when the session does. Before this, the lookup
+        item had no lifetime and no owner check, so a deleted session, or a
+        disabled user, kept refreshing S3 credentials indefinitely through the
+        unauthenticated endpoint. The next connect() issues a new token."""
+        if runtime_session_id:
+            self.table.delete_item(Key={"PK": WS_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"})
+        self.table.update_item(
+            Key={"PK": f"USER#{user}", "SK": f"SESSION#{session_id}"},
+            UpdateExpression="REMOVE ws_refresh_token",
+        )
+
     def refresh(self, runtime_session_id: str, token: str) -> dict | None:
         """Container-facing refresh: find the session by runtime_session_id,
-        constant-time-compare the token, mint fresh credentials.
+        constant-time-compare the token, check the session is still active,
+        mint fresh credentials.
 
         Returns None on any mismatch — the caller maps that to 401 without
-        distinguishing "unknown session" from "bad token".
+        distinguishing "unknown session", "bad token" and "session gone".
         """
         if not runtime_session_id or not token:
             return None
         expected = self._lookup_token(runtime_session_id)
         if not expected or not hmac.compare_digest(expected, token):
             return None
+        if not self._session_active(runtime_session_id):
+            return None
         return self.mint(runtime_session_id)
+
+    def _session_active(self, runtime_session_id: str) -> bool:
+        """The owning session record exists and is ``active``. The lookup item
+        names the owner (``user``, ``session_id``), so this is one more
+        get_item; a lookup item missing those fields is treated as inactive
+        and the next connect() reissues it."""
+        item = self.table.get_item(
+            Key={"PK": WS_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}
+        ).get("Item")
+        if not item or not item.get("user") or not item.get("session_id"):
+            return False
+        session = self.table.get_item(
+            Key={"PK": f"USER#{item['user']}", "SK": f"SESSION#{item['session_id']}"}
+        ).get("Item")
+        return bool(session) and session.get("status") == "active"
 
     def _lookup_token(self, runtime_session_id: str) -> str:
         """The stored refresh token for a runtime session, or "".

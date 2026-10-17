@@ -68,10 +68,30 @@ module "runtime" {
   workspace_bucket        = module.platform.workspace_bucket
   async_artifact_prefixes = var.async_artifact_prefixes
   agent_observability     = var.agent_observability
-  # Kernel roles hold InvokeGateway on gateway/* for MCP tool gateways; the
+  # Kernel roles hold InvokeGateway on gateway/* for MCP tool gateways; an
   # inference gateway must only be reachable with a per-session credential.
-  deny_gateway_arns = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference${var.name_suffix}-*"] : []
+  # Every environment's inference gateway, not just this one's: staging and
+  # production share the account, and a Deny on the same-suffix name alone
+  # left production's gateway (no suffix) invokable from a staging kernel
+  # (Security Agent finding, 2026-10-12). The prefix with no separator covers
+  # them all whatever follows it: agent-platform-inference-<id> (production,
+  # empty suffix) and agent-platform-inference-staging-<id> alike.
+  deny_gateway_arns = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference*"] : []
+  sample_runtimes   = var.enable_sample_tools ? var.sample_runtimes : {}
   name_suffix       = var.name_suffix
+}
+
+# Optional: the Sample Agents tool gateway (modules/sample_tools), the
+# foundation's half of the sample-tools stack. The workloads root adds the
+# targets, Cedar policies and sample runtimes; the two meet in the facts.
+module "sample_tools" {
+  source = "./modules/sample_tools"
+  count  = var.enable_sample_tools && var.enable_runtime ? 1 : 0
+
+  credential_provider_arns = var.sample_tools_credential_provider_arns
+  policy_mode              = var.sample_tools_policy_mode
+  script_python            = var.platform_version_python
+  name_suffix              = var.name_suffix
 }
 
 # The cluster every platform container runs on. Created whenever a module
@@ -175,7 +195,7 @@ module "agentcore_gateway_backend" {
   count  = var.enable_agentcore_gateway_backend && var.enable_portal && var.enable_runtime ? 1 : 0
 
   litellm_endpoint        = var.agentcore_gateway_litellm_endpoint
-  credential_provider_arn = var.agentcore_gateway_credential_provider_arn
+  credential_provider_arn = var.agentcore_gateway_credential_provider_name != "" ? "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:token-vault/default/apikeycredentialprovider/${var.agentcore_gateway_credential_provider_name}" : var.agentcore_gateway_credential_provider_arn
   models                  = var.agentcore_gateway_models
   private_endpoint        = var.agentcore_gateway_private_endpoint
   backend_role_arn        = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/agent-platform-backend-task${var.name_suffix}"

@@ -24,6 +24,21 @@ data "aws_iam_policy_document" "runtime_assume" {
       type        = "Service"
       identifiers = ["bedrock-agentcore.amazonaws.com"]
     }
+    # Only runtimes of this account and region may assume a kernel role. The
+    # service principal alone would let an AgentCore runtime in any account
+    # name this role as its execution role (confused deputy). The inference
+    # gateway role (modules/agentcore_gateway_backend) already carries these
+    # two conditions; the scheduler role carries aws:SourceAccount.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [local.account]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:bedrock-agentcore:${local.region}:${local.account}:runtime/*"]
+    }
   }
 }
 
@@ -60,8 +75,8 @@ data "aws_iam_policy_document" "kernel_base" {
   }
 }
 
-# agent kernels (interactive + sdk): skills read, LLM gateway secret, Bedrock,
-# MCP runtimes, gateways, built-in tools
+# agent kernels (interactive + sdk + samples): skills read, Bedrock, MCP
+# runtimes, gateways, built-in tools. MCP hub credentials are per kernel below.
 data "aws_iam_policy_document" "agent_common" {
   # Skill packages (read-only) — both agent kernels mount them.
   statement {
@@ -135,18 +150,6 @@ data "aws_iam_policy_document" "agent_common" {
     }
   }
 
-  # MCP hub HMAC credentials (mcp-hub attachments): the invocation payload
-  # carries only the secret *name*; the in-container signing proxy fetches
-  # the access/secret pair here, under this role, and signs each hub request
-  # as that Actor. Both agent kernels need it — published agents (per-agent
-  # pair, SDK kernel) and workbench sessions / Debug console runs (the shared
-  # dev-workbench pair, either kernel).
-  statement {
-    sid       = "McpHubActorCredentials"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/mcp-hub${var.name_suffix}/*"]
-  }
-
   # AgentCore built-in tools (Code Interpreter + Browser). Built-ins live in
   # the "aws" account namespace; account wildcards cover custom variants.
   statement {
@@ -204,13 +207,35 @@ data "aws_iam_policy_document" "sdk_extras" {
     resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/remote-mcp-key*"]
   }
 
-  # AgentCore Observability export, opt-in with var.agent_observability. The
-  # observability image variant runs under ADOT (opentelemetry-instrument):
-  # spans go to the X-Ray OTLP endpoint, EMF metrics to the bedrock-agentcore
-  # namespace, OTEL logs to the runtime log group already covered by
-  # kernel_base "Logs". These are the telemetry statements of the documented
-  # AgentCore Runtime execution role; the base image emits no telemetry and the
-  # other two kernels are not instrumented, so they stay without.
+  # AgentCore Memory (data plane): memory-bound invocations run on the
+  # headless kernel only.
+  statement {
+    sid = "MemoryData"
+    actions = [
+      "bedrock-agentcore:CreateEvent",
+      "bedrock-agentcore:GetEvent",
+      "bedrock-agentcore:ListEvents",
+      "bedrock-agentcore:ListActors",
+      "bedrock-agentcore:ListSessions",
+      "bedrock-agentcore:GetMemoryRecord",
+      "bedrock-agentcore:ListMemoryRecords",
+      "bedrock-agentcore:RetrieveMemoryRecords",
+    ]
+    resources = ["arn:aws:bedrock-agentcore:${local.region}:${local.account}:memory/*"]
+  }
+}
+
+# AgentCore Observability export, opt-in with var.agent_observability. The
+# observability image variant runs under ADOT (opentelemetry-instrument):
+# spans go to the X-Ray OTLP endpoint, EMF metrics to the bedrock-agentcore
+# namespace, OTEL logs to the runtime log group already covered by
+# kernel_base "Logs". These are the telemetry statements of the documented
+# AgentCore Runtime execution role. Every runtime that runs the headless
+# kernel's observability image gets them: the shared SDK runtime and the
+# sample runtimes (modules/runtime in the workloads root runs both on the
+# same image). The base image emits no telemetry and the other two kernels
+# are not instrumented, so they stay without.
+data "aws_iam_policy_document" "telemetry" {
   dynamic "statement" {
     for_each = var.agent_observability ? [1] : []
     content {
@@ -238,23 +263,6 @@ data "aws_iam_policy_document" "sdk_extras" {
       }
     }
   }
-
-  # AgentCore Memory (data plane): memory-bound invocations run on the
-  # headless kernel only.
-  statement {
-    sid = "MemoryData"
-    actions = [
-      "bedrock-agentcore:CreateEvent",
-      "bedrock-agentcore:GetEvent",
-      "bedrock-agentcore:ListEvents",
-      "bedrock-agentcore:ListActors",
-      "bedrock-agentcore:ListSessions",
-      "bedrock-agentcore:GetMemoryRecord",
-      "bedrock-agentcore:ListMemoryRecords",
-      "bedrock-agentcore:RetrieveMemoryRecords",
-    ]
-    resources = ["arn:aws:bedrock-agentcore:${local.region}:${local.account}:memory/*"]
-  }
 }
 
 # --------------------------------- roles -----------------------------------
@@ -277,10 +285,40 @@ resource "aws_iam_role" "mcp_tools" {
   description        = "mcp-tools-kernel: demo MCP server, no S3 access"
 }
 
+# MCP hub HMAC credentials (mcp-hub attachments): the invocation payload
+# carries only the secret *name*; the in-container signing proxy fetches the
+# access/secret pair under the kernel's role and signs each hub request as
+# that Actor. The session user is root in the microVM and can read the role's
+# credentials, so each kernel may read only the pairs its sessions act as:
+#   interactive  the shared dev-workbench pair (workbench sessions)
+#   sdk          every published agent's pair (agent-<id>) and dev-workbench
+#                (Debug console runs); IAM cannot tell one agent's session
+#                from another's on the shared runtime, so this is the prefix
+#   sample       none (a sample agent reaches its tools through the sample
+#                gateway, never a hub)
+# A wildcard on the prefix for every kernel let a workbench user read every
+# published agent's pair and sign as that agent.
+data "aws_iam_policy_document" "mcp_hub_workbench" {
+  statement {
+    sid       = "McpHubWorkbenchCredentials"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/mcp-hub${var.name_suffix}/dev-workbench-*"]
+  }
+}
+
+data "aws_iam_policy_document" "mcp_hub_agents" {
+  statement {
+    sid       = "McpHubActorCredentials"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:agent-platform/mcp-hub${var.name_suffix}/*"]
+  }
+}
+
 data "aws_iam_policy_document" "interactive" {
   source_policy_documents = [
     data.aws_iam_policy_document.kernel_base.json,
     data.aws_iam_policy_document.agent_common.json,
+    data.aws_iam_policy_document.mcp_hub_workbench.json,
   ]
 }
 
@@ -289,6 +327,19 @@ data "aws_iam_policy_document" "sdk" {
     data.aws_iam_policy_document.kernel_base.json,
     data.aws_iam_policy_document.agent_common.json,
     data.aws_iam_policy_document.sdk_extras.json,
+    data.aws_iam_policy_document.mcp_hub_agents.json,
+    data.aws_iam_policy_document.telemetry.json,
+  ]
+}
+
+# A sample runtime runs the headless kernel image under its own role: the
+# interactive kernel's statement set (what any agent kernel needs) plus the
+# telemetry of the observability image variant. Not sdk_extras.
+data "aws_iam_policy_document" "sample" {
+  source_policy_documents = [
+    data.aws_iam_policy_document.kernel_base.json,
+    data.aws_iam_policy_document.agent_common.json,
+    data.aws_iam_policy_document.telemetry.json,
   ]
 }
 
@@ -308,6 +359,36 @@ resource "aws_iam_role_policy" "mcp_tools" {
   name   = "kernel"
   role   = aws_iam_role.mcp_tools.id
   policy = data.aws_iam_policy_document.kernel_base.json
+}
+
+# ------------------------------ sample runtimes -----------------------------
+# One execution role per sample agent (Sample Agents feature). A sample runs
+# the headless kernel image on its own AgentCore runtime (workloads root,
+# modules/runtime there) so that it has its own IAM identity: the sample-tools
+# gateway's Cedar policies are written over AgentCore::IamEntity, the
+# caller's assumed-role ARN, and a policy can only name a sample if the sample
+# is its own role. The shared SDK role is in no sample policy, so a tool
+# attached to an ordinary published agent is denied at the gateway.
+#
+# Same statements as the interactive kernel (base + agent_common), and not
+# sdk_extras: a sample agent writes no async artifacts and holds no remote-MCP
+# or memory grants. Its one tool gateway is covered by agent_common's
+# InvokeGateways, with the inference-gateway Deny applying as to every kernel.
+
+resource "aws_iam_role" "sample" {
+  for_each = var.sample_runtimes
+
+  name               = "agent-platform-sample-${each.key}-role${var.name_suffix}"
+  assume_role_policy = data.aws_iam_policy_document.runtime_assume.json
+  description        = "sample agent runtime '${each.key}' (headless kernel image, own identity for the sample-tools gateway's policies)"
+}
+
+resource "aws_iam_role_policy" "sample" {
+  for_each = var.sample_runtimes
+
+  name   = "kernel"
+  role   = aws_iam_role.sample[each.key].id
+  policy = data.aws_iam_policy_document.sample.json
 }
 
 # ---------------- per-session workspace access role ------------------------

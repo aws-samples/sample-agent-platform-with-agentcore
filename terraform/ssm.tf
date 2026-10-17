@@ -26,6 +26,7 @@ locals {
       llm_edge                  = var.enable_llm_edge && var.enable_runtime
       agentcore_gateway_backend = var.enable_agentcore_gateway_backend && var.enable_portal && var.enable_runtime
       agent_observability       = var.agent_observability
+      sample_tools              = var.enable_sample_tools && var.enable_runtime
     }
 
     network = {
@@ -53,9 +54,28 @@ locals {
         interactive = module.runtime[0].interactive_role_arn
         sdk         = module.runtime[0].sdk_role_arn
         mcp_tools   = module.runtime[0].mcp_tools_role_arn
+        # one per sample agent (Sample Agents feature); {} when none
+        samples = module.runtime[0].sample_role_arns
       }
       workspace_access_role_arn     = module.runtime[0].workspace_access_role_arn
       xray_delivery_destination_arn = module.runtime[0].xray_delivery_destination_arn
+    } : null
+
+    # the Sample Agents tool gateway (null when the feature is off). The
+    # workloads root adds targets and Cedar policies to this gateway and
+    # engine, runs the sample Lambdas under lambda_role_arn, and creates an
+    # OpenAPI target only for a tool named in credential_provider_arns (the
+    # providers found under credential_provider_prefix<tool>, plus any pinned).
+    sample_tools = var.enable_sample_tools && var.enable_runtime ? {
+      gateway_id                 = module.sample_tools[0].gateway_id
+      gateway_arn                = module.sample_tools[0].gateway_arn
+      gateway_url                = module.sample_tools[0].gateway_url
+      policy_engine_id           = module.sample_tools[0].policy_engine_id
+      policy_engine_arn          = module.sample_tools[0].policy_engine_arn
+      policy_mode                = module.sample_tools[0].policy_mode
+      lambda_role_arn            = module.sample_tools[0].lambda_role_arn
+      credential_provider_arns   = module.sample_tools[0].credential_provider_arns
+      credential_provider_prefix = module.sample_tools[0].credential_provider_prefix
     } : null
 
     portal = var.enable_portal && var.enable_runtime ? merge(module.portal[0].workload_facts, {
@@ -68,6 +88,12 @@ locals {
       alb_dns_name          = module.portal[0].alb_dns_name
       service_entry_api_url = module.portal[0].service_entry_api_url
       service_entry_vpce_id = try(aws_vpc_endpoint.service_entry[0].id, data.aws_vpc_endpoint.owner_service_entry[0].id, "")
+      # the portal's static site: the application pipeline publishes the
+      # frontend build here after every workloads apply and invalidates the
+      # distribution (ci/codebuild/publish-frontend.sh there); its deploy
+      # role is granted exactly these two (ci/infra/workloads_roles.tf)
+      frontend_bucket_name = module.portal[0].frontend_bucket_name
+      distribution_id      = module.portal[0].distribution_id
       oidc = {
         issuer    = local.oidc_issuer
         client_id = var.oidc_client_id

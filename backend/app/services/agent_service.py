@@ -31,9 +31,10 @@ from datetime import datetime, timezone
 import boto3
 import yaml
 
-from app.config import resolve_platform_version, settings
+from app.config import resolve_platform_version, sample_runtime_arn, settings
 from app.services.ecosystem_service import ecosystem_service
 from app.services.mcp_hub_credentials_service import mcp_hub_credentials_service
+from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,20 @@ MAX_HISTORY = 10
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _manifest_int(manifest: dict, key: str, default: int) -> int:
+    """An integer field of agent.yaml, or a ValueError naming the field: a
+    manifest with ``max_turns: null`` or a list used to surface as a 500."""
+    value = manifest.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"{key} must be an integer, got {type(value).__name__}")
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{key} must be an integer, got {value!r}") from None
 
 
 class AgentService:
@@ -71,6 +86,9 @@ class AgentService:
             # AgentCore Runtime platform version; "" = follow the deployment
             # default (so a default change moves agents that never chose)
             "platform_version": item.get("platform_version", ""),
+            # "" = the shared SDK runtime; "sample:<id>" = that sample's own
+            # runtime and IAM identity (set by the clone flow, kept on republish)
+            "runtime": item.get("runtime", ""),
             # MCP hub Actor identity (set when an mcp-hub server is attached).
             # The access key is an identifier — safe to show; the secret key
             # never leaves Secrets Manager, only its name is recorded here.
@@ -127,12 +145,13 @@ class AgentService:
     # ----------------------------------------------------------------- API
 
     def list_agents(self) -> list[dict]:
-        resp = self.table.query(
+        items = query_all(
+            self.table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
             ExpressionAttributeValues={":pk": PK, ":p": "AGENT#"},
         )
         return sorted(
-            (self._to_public(i) for i in resp.get("Items", [])),
+            (self._to_public(i) for i in items),
             key=lambda a: a["updated_at"],
             reverse=True,
         )
@@ -157,10 +176,36 @@ class AgentService:
         model: str = "",
         platform_version: str = "",
         source: str = "manual",
+        runtime: str = "",
     ) -> dict:
         """Create or re-publish (version bump) an agent by name."""
         if not name or not name.replace("-", "").replace("_", "").isalnum():
             raise ValueError("agent name must be alphanumeric with - or _")
+        existing = next((a for a in self.list_agents() if a["name"] == name), None)
+        # A sample runtime is an identity. It is set when a sample is cloned
+        # (source = sample:<id>, runtime = sample:<id>) and kept on every
+        # republish of that agent; a publish may neither put an agent onto a
+        # sample runtime it did not come from nor move a clone off its own.
+        # The runtime must also exist in this deployment (fail here, not at
+        # invoke).
+        if runtime:
+            sample_runtime_arn(runtime)
+            expected_source = runtime  # sample:<id>
+            came_from = (existing or {}).get("source", "") if existing else source
+            if came_from != expected_source:
+                raise PermissionError(
+                    f"runtime {runtime!r} belongs to the sample it was cloned from; "
+                    "publish this agent from the sample's clone action, or leave runtime empty"
+                )
+        elif existing and existing.get("runtime"):
+            # a republish of a clone without the field keeps the clone's runtime
+            runtime = existing["runtime"]
+        if existing and source == "manual" and existing.get("source"):
+            # A republish does not change where the agent came from: the
+            # Publish page never sends ``source``, and overwriting the stored
+            # ``sample:<id>`` with the default made the very next publish that
+            # echoed the record's runtime fail the clone check above.
+            source = existing["source"]
         # validate attachments up front
         resolved = self._resolve_names(mcp_server_names or [], skill_names or [])
         hub_servers = [s for s in resolved["mcp_servers"] if s.get("kind") == "mcp-hub"]
@@ -182,7 +227,6 @@ class AgentService:
             # same: an undeployed version fails here, not at invoke time
             resolve_platform_version("sdk", platform_version)
 
-        existing = next((a for a in self.list_agents() if a["name"] == name), None)
         now = _now()
         if existing:
             # Names are global, but re-publishing keeps the agent's id — and
@@ -238,6 +282,7 @@ class AgentService:
             "model_backend": model_backend,
             "model": model,
             "platform_version": platform_version,
+            "runtime": runtime,
             "mcp_hub_access_key": mcp_hub_access_key,
             "mcp_hub_secret_name": mcp_hub_secret_name,
             "mcp_hub_actor": mcp_hub_actor,
@@ -282,7 +327,7 @@ class AgentService:
             name=str(manifest["name"]),
             description=str(manifest.get("description", "")),
             system_prompt=str(manifest.get("system_prompt", "")),
-            max_turns=int(manifest.get("max_turns", 10)),
+            max_turns=_manifest_int(manifest, "max_turns", 10),
             mcp_server_names=[str(x) for x in manifest.get("mcp_servers", []) or []],
             skill_names=[str(x) for x in manifest.get("skills", []) or []],
             memory_id=str(manifest.get("memory_id", "")),
@@ -344,6 +389,7 @@ class AgentService:
             "model_backend": agent["model_backend"],
             "model": agent["model"],
             "platform_version": agent["platform_version"],
+            "runtime": agent.get("runtime", ""),
             **cfg,
         }
 

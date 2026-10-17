@@ -44,6 +44,7 @@ import boto3
 from croniter import croniter
 
 from app.config import settings
+from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,12 @@ def to_eventbridge_expression(expr: str) -> str:
             raise ValueError("step values in the day-of-week field are not supported")
         dow = re.sub(r"\d", lambda g: _DOW_NAMES[g.group()], dow)
     return f"cron({minute} {hour} {dom} {mon} {dow} *)"
+
+
+def delegation_body(user: str) -> dict:
+    """Body of the delegated run request: the schedule owner the run is
+    attributed to. Kept separate so the adversarial test can pin it."""
+    return {"on_behalf_of": user} if user else {}
 
 
 class ScheduleService:
@@ -194,10 +201,11 @@ class ScheduleService:
         remove orphans)."""
         items = {
             i["SK"].partition("#")[2]: i
-            for i in self.table.query(
+            for i in query_all(
+                self.table,
                 KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
                 ExpressionAttributeValues={":pk": PK, ":p": "SCHED#"},
-            ).get("Items", [])
+            )
         }
         existing: dict[str, str] = {}  # eb name -> state
         paginator = self.scheduler.get_paginator("list_schedules")
@@ -222,12 +230,13 @@ class ScheduleService:
     # ----------------------------------------------------------------- CRUD
 
     def list_schedules(self) -> list[dict]:
-        resp = self.table.query(
+        items = query_all(
+            self.table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
             ExpressionAttributeValues={":pk": PK, ":p": "SCHED#"},
         )
         return sorted(
-            (self._to_public(i) for i in resp.get("Items", [])),
+            (self._to_public(i) for i in items),
             key=lambda s: s["created_at"],
             reverse=True,
         )
@@ -304,8 +313,9 @@ class ScheduleService:
 
     @staticmethod
     def _delegate_pipeline(name: str, user: str) -> dict:
-        """Lambda path: start the run through the portal API (as the portal
-        admin) and poll it to a terminal state within the Lambda budget."""
+        """Lambda path: start the run through the portal API, signed in as the
+        delegation user but on behalf of ``user`` (the schedule's created_by),
+        and poll it to a terminal state within the Lambda budget."""
         import urllib.request
 
         base = settings.portal_api_url.rstrip("/")
@@ -329,7 +339,8 @@ class ScheduleService:
             AuthParameters={"USERNAME": cred.get("username", "admin"), "PASSWORD": cred["password"]},
         )["AuthenticationResult"]["IdToken"]
 
-        run = http("POST", f"/api/v1/pipelines/{name}/runs", token, body={})
+        # the run belongs to the schedule's owner, not to the delegation user
+        run = http("POST", f"/api/v1/pipelines/{name}/runs", token, body=delegation_body(user))
         run_id = run["id"]
         deadline = _now() + timedelta(seconds=480)  # leave headroom inside the 10-min budget
         while _now() < deadline:
@@ -431,11 +442,12 @@ class ScheduleService:
 
     async def _tick(self) -> None:
         now = _iso(_now())
-        resp = self.table.query(
+        rows = query_all(
+            self.table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
             ExpressionAttributeValues={":pk": PK, ":p": "SCHED#"},
         )
-        for item in resp.get("Items", []):
+        for item in rows:
             if not item.get("enabled") or not item.get("next_run_at"):
                 continue
             if item["next_run_at"] <= now and self._claim(item):

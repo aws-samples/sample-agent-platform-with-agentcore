@@ -44,3 +44,19 @@ output "name_suffix" {
 output "foundation_parameter" {
   value = data.aws_ssm_parameter.foundation.name
 }
+
+# ---------------------------- Sample Agents ---------------------------------
+
+output "sample_runtime_arns" {
+  description = "One runtime per sample agent, by sample id ({} when the feature is off)."
+  value       = try(module.runtime[0].sample_runtime_arns, {})
+}
+
+output "sample_tools" {
+  description = "Which sample tools are on the gateway, which were skipped, and the MCP tool names the gateway exposes."
+  value = try({
+    deployed = module.sample_tools[0].deployed_tools
+    skipped  = module.sample_tools[0].skipped_tools
+    tools    = module.sample_tools[0].tool_names
+  }, null)
+}

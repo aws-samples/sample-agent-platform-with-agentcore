@@ -1,0 +1,33 @@
+# Sample agent: investment-assistant
+#
+# What the portal's Sample Agents tab shows and what a clone copies. The agent
+# configuration itself is agent.yaml (the publish manifest); this file is the
+# catalogue entry around it: where it runs, which tools it needs, how it is
+# described and filed.
+id: investment-assistant
+title: Investment assistant (crypto + stock quotes)
+summary: >-
+  Answers "what is BTC / AAPL trading at" with a timestamped, sourced quote,
+  through two tools on the sample-tools gateway: a Lambda for crypto prices
+  and a zero-code OpenAPI target for stock quotes. Shows how an agent reaches
+  external data without ever holding a key or an open internet connection.
+# how the catalogue files it; filter facets in the portal
+patterns: [tool-calling, external-data, read-only]
+industries: [financial-services, crypto]
+# the runtime this sample (and every clone of it) runs on: its own, under its
+# own execution role, which is what the gateway's Cedar policies name
+runtime: investment-assistant
+# tool packages the sample calls (samples/tools/<id>); the portal shows each
+# one's deployment status, and a clone is refused while one is missing unless
+# it is marked optional
+requires_tools:
+  - id: crypto-price
+  - id: stock-quote
+    optional: true # needs an API-key provider the operator creates; without it the sample runs on crypto-price alone
+# the registry MCP entry that fronts the gateway (seeded by the backend)
+mcp_server: sample-tools
+# a published shared instance users can try before cloning
+try_prompt: What are BTC and AAPL trading at right now?
+eval: eval.jsonl
+readme: README.md
+design_doc: docs/samples/investment-assistant/design.md

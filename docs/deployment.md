@@ -386,6 +386,12 @@ scheduler code, then open the portal:
 terraform -chdir=terraform output -raw portal_url
 ```
 
+Both scripts take their targets (bucket, distribution, function name) from
+the foundation's facts document, `/agent-platform<suffix>/foundation`; set
+`PLATFORM_NAME_SUFFIX=-staging` to address the staging environment. Under the
+maintained pipeline the frontend is published by the apply builds instead
+(`docs/ci-cd.md`).
+
 What runs where: the backend is two Deployments in the `portal` namespace of
 the `agent-platform` EKS cluster — `backend` (the management API, 2 replicas)
 and `entry` (the same image in `ENTRY_ONLY` mode behind the private
@@ -436,7 +442,7 @@ Auth modes (backend resolves in this order):
 |---|---|---|
 | Cognito | `PLATFORM_COGNITO_POOL_ID` + `PLATFORM_COGNITO_CLIENT_ID` set (the portal module does this) | Bearer ID token verified against the pool JWKS |
 | Static token | `PLATFORM_API_TOKEN` set | Exact Bearer match — CI / scripting |
-| Open | neither set | Local development only |
+| Open | neither set **and** `PLATFORM_ALLOW_OPEN_AUTH=1` | Local development only. Without the flag the backend refuses to start; it also refuses a Cognito pair with one value missing, and an OIDC issuer without `PLATFORM_OIDC_AUDIENCE`. |
 
 ## 6. Smoke test
 

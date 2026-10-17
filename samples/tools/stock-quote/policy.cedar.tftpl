@@ -1,0 +1,18 @@
+// stock-quote: which sample runtime may call it.
+//
+// Rendered by terraform/workloads/modules/sample_tools with the gateway ARN
+// and the sample runtimes' assumed-role principals. Default-deny engine: a
+// runtime not permitted here cannot call getQuote and does not see it.
+//
+// No input constraint beyond "a symbol is given": the upstream validates
+// tickers, the OpenAPI schema bounds the shape, and the key's own plan bounds
+// the rate. The lesson of this tool is the credential path, not the input.
+%{ for id, principal in principals ~}
+permit(
+  principal == AgentCore::IamEntity::"${principal}",
+  action == AgentCore::Action::"${target}___getQuote",
+  resource == AgentCore::Gateway::"${gateway_arn}"
+) when {
+  context.input has symbol
+};
+%{ endfor ~}

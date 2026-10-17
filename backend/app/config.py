@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     sdk_runtime_arns: dict[str, str] = {}
     # used when a session / published agent does not choose a version
     default_platform_version: str = "V1"
+    # Sample Agents: one runtime per sample, under the sample's own execution
+    # role (JSON {"<sample id>": arn}). An agent cloned from a sample records
+    # runtime = "sample:<id>" and is invoked here instead of the shared SDK
+    # runtime: the gateway's Cedar policies name that role, so the sample's
+    # tool boundary follows the identity, not the agent's configuration.
+    sample_runtime_arns: dict[str, str] = {}
+    # MCP URL of the sample-tools gateway, registered in the ecosystem as the
+    # entry the samples attach ("" = the feature is not deployed)
+    sample_tools_gateway_url: str = ""
 
     # S3 bucket where kernels persist per-session workspaces
     workspace_bucket: str = ""
@@ -82,6 +91,13 @@ class Settings(BaseSettings):
     # configured. Empty = open (local development only).
     api_token: str = ""
 
+    # The open mode (no IdP, no token: every caller is the super-admin
+    # demo user) must be asked for. Without this flag the backend refuses to
+    # start when no authentication is configured, and refuses a Cognito
+    # configuration that names the pool but not the client (or the reverse),
+    # which used to fall through to open mode without a word.
+    allow_open_auth: bool = False
+
     # RBAC: members of this IdP group (Cognito user-pool group / OIDC groups
     # claim / Keycloak realm role) are platform administrators; everyone else
     # gets the user surface (Workbench, Publish, Debug) scoped to their own
@@ -135,6 +151,11 @@ class Settings(BaseSettings):
     # as the portal admin via the named secret.
     portal_api_url: str = ""
     portal_admin_secret: str = "agent-platform/portal-admin"
+    # The portal users the schedule-runner Lambda signs in as. Only these may
+    # start a pipeline run on behalf of another user (on_behalf_of): the run,
+    # its invocations, quota and audit are then attributed to the schedule's
+    # owner, as architecture.md promises, instead of to this delegation user.
+    pipeline_delegation_users: str = "admin"
 
     # Unprivileged account the pipeline workflow script host (Node) is
     # switched to when the backend runs as root (see workflow_engine). The
@@ -208,3 +229,22 @@ def runtime_arn(kernel: str, platform_version: str = "") -> str:
     arns = settings.interactive_runtime_arns if kernel == "interactive" else settings.sdk_runtime_arns
     single = settings.interactive_runtime_arn if kernel == "interactive" else settings.sdk_runtime_arn
     return arns.get(effective_platform_version(kernel, platform_version)) or single
+
+
+SAMPLE_RUNTIME_PREFIX = "sample:"
+
+
+def sample_runtime_arn(runtime: str) -> str:
+    """ARN of a sample's runtime for an agent record's ``runtime`` field
+    (``sample:<id>``); "" for the shared SDK runtime (empty / unknown prefix).
+    Raises KeyError for a sample this deployment has no runtime for, so a
+    clone of an undeployed sample fails at publish, not at invoke."""
+    if not runtime:
+        return ""
+    if not runtime.startswith(SAMPLE_RUNTIME_PREFIX):
+        raise ValueError(f"unknown runtime reference {runtime!r}")
+    sample_id = runtime[len(SAMPLE_RUNTIME_PREFIX):]
+    arn = settings.sample_runtime_arns.get(sample_id)
+    if not arn:
+        raise KeyError(f"sample runtime {sample_id!r} is not deployed here")
+    return arn

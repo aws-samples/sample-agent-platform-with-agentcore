@@ -1,0 +1,15 @@
+# Publish manifest of the investment-assistant sample: the same shape
+# publish-from-session reads from a workspace (backend/app/services/agent_service.py).
+# system_prompt is prompt.md, inlined by the seed script.
+name: investment-assistant
+description: Crypto and US stock quotes with a timestamp and a source, through the sample-tools gateway. No investment advice.
+# the one MCP entry: the sample-tools gateway. Which of its tools this agent
+# may call is the gateway's policy decision (by this sample's runtime role),
+# not this list's.
+mcp_server_names:
+  - sample-tools
+skill_names: []
+# a quote is one tool round-trip (2-3 turns); a mixed question is two in
+# parallel; leave room for a retry on a rate limit
+max_turns: 8
+platform_version: V1

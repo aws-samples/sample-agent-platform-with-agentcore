@@ -127,6 +127,7 @@ class KernelService:
         user: str = "",
         trace: dict | None = None,
         platform_version: str = "",
+        runtime_arn_override: str = "",
     ) -> dict:
         """Proxy an invocation to the headless kernel.
 
@@ -145,8 +146,11 @@ class KernelService:
         payload for the kernel to tag its spans with the attributes.
         ``platform_version`` picks the runtime (V1/V2); "" = the default.
         A reused runtime_session_id only stays warm on the same version.
+        ``runtime_arn_override`` sends the call to another runtime running the
+        same kernel image (a sample agent's own runtime, under its own role)
+        instead of the shared SDK runtime; the payload is unchanged.
         """
-        target_arn = runtime_arn("sdk", platform_version)
+        target_arn = runtime_arn_override or runtime_arn("sdk", platform_version)
         if not target_arn:
             return {"ok": False, "result": "", "raw": {"error": "sdk_runtime_arn not configured"}}
 

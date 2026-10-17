@@ -16,6 +16,7 @@ from botocore.auth import SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 
 from app.config import runtime_arn, settings
+from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +73,12 @@ class SessionService:
         return item
 
     def list_sessions(self, user: str) -> list[dict]:
-        resp = self.table.query(
+        rows = query_all(
+            self.table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
             ExpressionAttributeValues={":pk": f"USER#{user}", ":prefix": "SESSION#"},
         )
-        items = [i for i in resp.get("Items", []) if i.get("status") != "terminated"]
+        items = [i for i in rows if i.get("status") != "terminated"]
         return sorted(items, key=lambda x: x["created_at"], reverse=True)
 
     def get_session(self, user: str, session_id: str) -> dict | None:

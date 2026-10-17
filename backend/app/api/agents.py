@@ -47,10 +47,11 @@ def publish_agent(req: AgentPublishRequest, user: Principal = Depends(get_curren
             model_backend=req.model_backend,
             model=req.model,
             platform_version=req.platform_version,
+            runtime=req.runtime,
         )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
+    except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     audit_service.record(user, "agent.publish", f"agent:{agent['name']}", f"v{agent['version']}")
     return agent

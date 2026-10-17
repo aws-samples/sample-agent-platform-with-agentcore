@@ -1,5 +1,7 @@
 """API request/response models."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -138,6 +140,13 @@ class AgentPublishRequest(BaseModel):
     # AgentCore Runtime platform version the agent runs on; "" = default.
     # Pipelines, schedules and channels calling the agent inherit it.
     platform_version: str = Field(default="", pattern="^(|V1|V2)$")
+    # Which runtime serves the agent: "" = the shared SDK kernel;
+    # "sample:<id>" = that sample's own runtime (and so its own IAM identity,
+    # the one the sample-tools gateway's policies name). Only an agent cloned
+    # from that sample may carry it: the backend refuses the field unless the
+    # agent's source is the same sample, so a user cannot publish an arbitrary
+    # agent onto a sample's identity.
+    runtime: str = Field(default="", pattern="^(|sample:[a-z][a-z0-9-]{1,40})$")
 
 
 class AgentPublishFromSessionRequest(BaseModel):
@@ -189,9 +198,22 @@ class EvalCase(BaseModel):
     expected: str = Field(default="", max_length=1000)
 
 
+class EvalScoringConfig(BaseModel):
+    method: Literal["json_exact", "llm_judge"] = "llm_judge"
+    output_field: str = Field(
+        default="category",
+        max_length=80,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,3}$",
+    )
+    rubric: str = Field(default="", max_length=1000)
+
+
 class EvalDatasetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=400)
+    scenario: str = Field(default="general", max_length=48, pattern=r"^[a-z][a-z0-9_-]*$")
+    scoring: EvalScoringConfig | None = None
+    synthetic: bool = False
     cases: list[EvalCase] = Field(min_length=1, max_length=20)
 
 
@@ -235,3 +257,30 @@ class ArtifactContent(BaseModel):
     key: str
     content: str
     truncated: bool = False
+
+
+# ----------------------------------------------------------- Sample Agents
+
+
+class SampleCloneRequest(BaseModel):
+    # the clone's name; "" = <sample id>-<user>, the default the portal shows.
+    # A clone keeps the sample's runtime and MCP attachment and may change
+    # nothing else at clone time; edits happen on the published agent after.
+    name: str = Field(default="", max_length=80, pattern="^(|[A-Za-z0-9_-]+)$")
+
+
+class SampleTryRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    session_id: str | None = None
+
+
+class SampleSeedRequest(BaseModel):
+    """One sample's content, as scripts/seed_samples.py reads it from
+    samples/agents/<id>/ (administrators only: the seed runs where the
+    repository is checked out, the backend image carries no samples)."""
+    sample: dict
+    agent: dict
+    readme: str = Field(default="", max_length=60_000)
+    eval_cases: list[dict] = Field(default_factory=list, max_length=20)
+    # also (re)publish the shared instance the Try button calls
+    publish_shared: bool = True

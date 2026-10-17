@@ -27,6 +27,12 @@ terraform {
       source  = "hashicorp/tls"
       version = ">= 4.0.0"
     }
+    # modules/sample_tools finds the sample tools' credential providers by
+    # name at plan time (scripts/discover_sample_tool_providers.py).
+    external = {
+      source  = "hashicorp/external"
+      version = ">= 2.3.0"
+    }
   }
 }
 

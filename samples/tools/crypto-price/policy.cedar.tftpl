@@ -1,0 +1,23 @@
+// crypto-price: which sample runtime may call it, with which inputs.
+//
+// Rendered by terraform/workloads/modules/sample_tools with the gateway ARN
+// and the sample runtimes' assumed-role principals. The engine is
+// default-deny: a runtime not permitted here cannot call this tool and does
+// not see it in tools/list. The shared SDK kernel's role is not a sample
+// principal, so a crypto-price attachment on an ordinary published agent is
+// refused at the gateway, whatever the agent's configuration says.
+//
+// The symbol allowlist is stated here as well as in the Lambda: the gateway
+// decides before the function runs, deterministically and in the audit trail,
+// and changing the set is a policy update, not a deployment.
+%{ for id, principal in principals ~}
+permit(
+  principal == AgentCore::IamEntity::"${principal}",
+  action == AgentCore::Action::"${target}___get_crypto_price",
+  resource == AgentCore::Gateway::"${gateway_arn}"
+) when {
+  context.input has symbol &&
+  ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "USDT", "USDC",
+   "btc", "eth", "sol", "bnb", "xrp", "ada", "doge", "avax", "usdt", "usdc"].contains(context.input.symbol)
+};
+%{ endfor ~}

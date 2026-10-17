@@ -22,6 +22,7 @@ import boto3
 
 from app.config import settings
 from app.services.session_binding import derive_channel_session_id
+from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +68,13 @@ class ChannelService:
         return out
 
     def list_channels(self) -> list[dict]:
-        resp = self.table.query(
+        items = query_all(
+            self.table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
             ExpressionAttributeValues={":pk": PK, ":p": "CH#"},
         )
         return sorted(
-            (self._to_public(i) for i in resp.get("Items", [])),
+            (self._to_public(i) for i in items),
             key=lambda c: c["created_at"],
             reverse=True,
         )

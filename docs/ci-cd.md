@@ -111,9 +111,10 @@ merge request ─► check    offline tests · adversarial-test gate on high-ris
                            terraform plan of staging
 default branch ─► build   images for the components the commit touched →
                            candidate image manifest · terraform plan of production
-              ─► deploy-staging    apply the workloads to staging
+              ─► deploy-staging    apply the workloads to staging, publish the frontend
               ─► verify-staging    acceptance checks against staging, from the facts document
-              ─► deploy-production (manual) re-plan, compare with the reviewed plan, apply
+              ─► deploy-production (manual) re-plan, compare with the reviewed plan, apply,
+                                   publish the frontend
               ─► verify            read-only checks against production
               ─► publish (manual)  compose and scan the public snapshot (dry run)
 nightly        ─► the full acceptance set against staging
@@ -142,7 +143,8 @@ pass, and a test count that drops is a failure. The checks that run here:
   private pattern list (customer names, internal workload names, account ids,
   resource ids) and must be ASCII text; binary changes need an explicit
   allow. A missing pattern list is an error, never a pass;
-- the frontend type-check and build;
+- the frontend type-check and build (the publish itself is the deploy
+  build's, above);
 - the pipeline's own invariants (`ci/tests/` in the internal tree): the
   verify builds address an environment only through the facts document; a
   non-production plan that imports anything is refused; an image reaches an
@@ -159,6 +161,23 @@ file variable, not a file in the repository, because a waiver list the merge
 request can edit lets the merge request waive itself; waiver entries match
 title and location as literal substrings, carry a reason, an author and an
 expiry, and a malformed file fails the job.
+
+**The second reviewer** (`judge:pr`) is a model of another family than the
+one that writes the code here, called through the OpenAI-compatible Responses
+API of `bedrock-runtime` on a role that can do exactly one thing: invoke that
+model. It shares no context with the author. It reads the diff and every test
+the change carries and answers in a fixed JSON shape: does each test *attack*
+an invariant through a hostile path (the other tenant's id, a replayed
+request, the control that must refuse being asked to allow) or *decorate* the
+implementation (assert its own wiring, pass with the fix reverted); which
+changed high-risk boundary has no attacking test; and what the catalog should
+learn from the change (a trigger a new code path needs, a path that belongs
+on the high-risk list, a `min_passed` that no longer matches). Its verdict can
+only add findings: nothing it says turns another check's result green. The
+diff is data to it, and the adapter executes only the tool calls the model
+makes, through allowlists (one tool here: read a tracked file). Advisory until
+the record shows which finding kinds hold up; findings reach the merge request
+as code-quality annotations.
 
 The **staging plan** runs in CodeBuild on the allowlist role. Its report is
 attached to the merge request. There is no production plan here.
@@ -184,12 +203,33 @@ own ECR repositories, its own realm on the same Keycloak, the production VPC
 endpoints reused. The apply re-plans and applies; an empty state is refused
 unless a bootstrap flag is set.
 
+The portal's frontend is a static site in the foundation's bucket behind the
+foundation's distribution, not a Terraform resource, so the apply build
+publishes it after the apply, every time: the commit's bundle is built from
+the reviewed source with dependency lifecycle scripts disabled, hashed assets
+are uploaded as immutable, `index.html` and a `version.json` naming the commit
+as never-cached, the distribution is invalidated, and the build refuses to
+report success until the distribution serves that commit's marker. The deploy
+role may write those objects and request that one distribution's invalidation,
+nothing about the bucket or the distribution itself; the two names come from
+the facts document. A plan with no changes still ships the site.
+
 The acceptance checks then run from the facts document: the layer-1
 resource inventory (`deploy-cli/tests/verify.sh`), the platform end-to-end
 flow (`scripts/e2e_*.py`), the service entry (unsigned and direct calls
 refused, allowlisted SigV4 callers served), and the live probes (two tenants
 submitting the same session id land on two sessions; publish cannot escalate
 privileges). They run no Terraform.
+
+When they have finished, the second reviewer runs over their result: it reads
+the run's verdicts and logs and, for every PASS, states the claim about the
+environment that PASS implies and tries to refute it with read-only tools
+(configuration reads in allowlisted services, unauthenticated GETs to the
+environment's own hosts, the logs). A refutation counts only when the adapter
+replays the tool call the model cites, finds the quoted observation again, and
+sees that the call addressed the check it refutes (its own log, or a route that
+log names); anything less is reported as unverified. The judge's verdict is reported next
+to the checks' own and never changes it.
 
 ### deploy-production and verify
 
@@ -198,8 +238,10 @@ same commit and a green staging verification. The build re-plans, downloads
 the reviewed plan file, normalises both with `terraform show -json`, compares
 the resource changes including values, and applies only if they match. There
 is no auto-approve anywhere; what is applied is always a plan file. Against
-production only read-only checks run; the engine refuses to load a check with
-side effects for that environment at catalog time.
+production the verify build first seeds the Sample Agents catalogue through
+the portal API as the administrator (idempotent upserts, the same writes a
+deploy makes), then only read-only checks run; the engine refuses to load a
+check with side effects for that environment at catalog time.
 
 ### publish
 
