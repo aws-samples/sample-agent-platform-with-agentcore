@@ -10,8 +10,10 @@ names and interpolations. Each is asserted against the Terraform text:
 
   1. a sample runtime role is created per sample id, named
      agent-platform-sample-<id>-role<suffix>, trusts bedrock-agentcore only,
-     and carries the interactive kernel's statement set (base + agent_common) plus the
-     telemetry statements: not sdk_extras (no async artifacts, no remote-MCP secrets, no memory)
+     and carries base + agent_common plus the telemetry statements: not sdk_extras
+     (no async artifacts, no remote-MCP secrets, no memory) and not bedrock_direct
+     (no model call of its own: models go through the inference gateway), and
+     agent_common itself holds no bedrock:InvokeModel*
   2. the gateway, its role, the policy engine and the Lambda role are all
      suffixed per environment; the engine name has no hyphen
   3. the gateway role invokes agent-platform-sample-*<suffix> Lambdas only,
@@ -110,11 +112,31 @@ def main() -> int:
         assert f"data.aws_iam_policy_document.{part}.json" in doc, f"sample statement set lacks {part}"
     assert "sdk_extras" not in doc and "data.aws_iam_policy_document.sdk.json" not in doc, \
         "a sample role must not carry sdk_extras (async artifacts, remote-MCP secrets, memory)"
+    assert "bedrock_direct" not in doc, \
+        "a sample role must not carry bedrock_direct (a wildcard model grant)"
+    sb = block(runtime_iam, r'data "aws_iam_policy_document" "sample_bedrock"')
+    assert "data.aws_iam_policy_document.sample_bedrock.json" in doc, "sample roles take their model grant from sample_bedrock"
+    assert '"*"' not in sb and "foundation-model/*" not in sb and "inference-profile/*" not in sb, \
+        "sample_bedrock names the configured profiles and models, never a wildcard"
+    assert sb.count('variable = "bedrock:InferenceProfileArn"') == 2, \
+        "both foundation-model grants are conditioned on the inference profile, so the model cannot be called around it"
+    assert 'values   = ["unspecified"]' in sb and "arn:aws:bedrock:::foundation-model/" in sb, \
+        "the region-less foundation model is granted for unspecified Region only (global cross-Region inference)"
+    assert re.search(r'can\(regex\("\^global', block(read(FOUNDATION, "modules", "runtime", "variables.tf"), r'variable "sample_bedrock_models"')), \
+        "sample_bedrock_models takes global. inference profiles only"
+    rt = block(root_main, r'module "runtime"')
+    assert re.search(r"sample_bedrock_models\s*=\s*var\.enable_agentcore_gateway_backend \? \[\] :", rt), \
+        "the root grants sample roles no Bedrock when the inference gateway is deployed"
+    assert "bedrock:InvokeModel" not in block(runtime_iam, r'data "aws_iam_policy_document" "agent_common"'), \
+        "agent_common reaches every sample role; direct Bedrock belongs in bedrock_direct"
+    for shared in ("interactive", "sdk"):
+        assert "data.aws_iam_policy_document.bedrock_direct.json" in block(runtime_iam, rf'data "aws_iam_policy_document" "{shared}"'), \
+            f"the {shared} kernel keeps direct Bedrock (the bedrock model backend)"
     tele = block(runtime_iam, r'data "aws_iam_policy_document" "telemetry"')
     assert "xray:PutTraceSegments" in tele and "cloudwatch:PutMetricData" in tele and "var.agent_observability" in tele
     assert re.search(r'validation\s*\{[^}]*regex\("\^\[a-z\]\[a-z0-9-\]', block(read(FOUNDATION, "modules", "runtime", "variables.tf"), r'variable "sample_runtimes"')), \
         "sample ids are validated to a safe name alphabet"
-    ok("one sample runtime role per sample id, suffixed, agentcore-trusted, base + agent_common + telemetry, no sdk_extras")
+    ok("one sample runtime role per sample id, suffixed, agentcore-trusted, base + agent_common + telemetry, no sdk_extras, no direct Bedrock")
 
     # 2. names suffixed, engine without hyphen
     for header, want in (

@@ -21,7 +21,7 @@ from app.services.agent_service import agent_service
 from app.services.ecosystem_service import ecosystem_service
 from app.services.governance_service import governance_service
 from app.services.kernel_service import kernel_service
-from app.services.model_config_service import model_config_service
+from app.services.model_config_service import model_config_service, require_gateway_routing
 from app.services.observability_service import observability_service
 from app.services.session_binding import resolve_session_id  # re-exported for the API routes
 
@@ -137,6 +137,8 @@ def _resolve_target(
     # None = container default. A disabled/misconfigured backend raises here,
     # before any quota is consumed.
     model_spec = model_config_service.resolve(model_backend, model)
+    if runtime_arn_override:
+        require_gateway_routing(model_spec, cfg["runtime"])
     return {"label": label, "system": system, "max_turns": max_turns,
             "memory_id": memory_id, "mcp_servers": mcp_servers, "skills": skills,
             "model_spec": model_spec,
@@ -209,6 +211,10 @@ def invoke(
     platform_version = cfg["platform_version"]
     mcp_servers, skills = forward_identity(cfg["mcp_servers"]), cfg["skills"]
     model_spec = model_spec if model_spec is not None else cfg["model_spec"]
+    if cfg["runtime_arn_override"]:
+        # again on the final route: an explicit model_spec replaces the one
+        # _resolve_target checked, and still must not send a sample to Bedrock
+        require_gateway_routing(model_spec, target)
     model_label = f"{model_spec['backend']}:{model_spec.get('model', '')}" if model_spec else ""
     trace = _with_platform_version(_with_model(trace, model_label), platform_version)
 

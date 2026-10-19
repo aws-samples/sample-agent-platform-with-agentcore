@@ -1,0 +1,388 @@
+{
+ "title": "Sample Agent \u00b7 investment-assistant \u00b7 how the model is reached",
+ "subtitle": "no model key in the agent on either route \u00b7 default: Bedrock on the sample's own role, scoped to the configured global. profiles \u00b7 optional: through an LLM gateway on a per-session grant",
+ "footer": "A (default): runtime signs with its own role, scoped to the configured global. profiles.   B (enable_agentcore_gateway_backend): per-session grant \u2192 gateway VPC endpoint \u2192 inference gateway \u2192 VPC Lattice \u2192 LLM gateway \u2192 Bedrock.",
+ "canvas": {
+  "w": 1580,
+  "h": 850
+ },
+ "nodes": [
+  {
+   "id": "user",
+   "x": 80,
+   "y": 300,
+   "icon": "tile:generic",
+   "label": "User",
+   "sub": "portal \u00b7 API \u00b7 clone"
+  },
+  {
+   "id": "backend",
+   "x": 250,
+   "y": 300,
+   "icon": "eks",
+   "label": "Backend (EKS)",
+   "sub": "routes \u00b7 mints grants"
+  },
+  {
+   "id": "runtime",
+   "x": 450,
+   "y": 300,
+   "icon": "agentcore",
+   "label": "Sample runtime",
+   "sub": "own role \u00b7 no model key"
+  },
+  {
+   "id": "role",
+   "x": 830,
+   "y": 170,
+   "icon": "iam",
+   "label": "A \u00b7 sample role",
+   "sub": "configured global. profiles only"
+  },
+  {
+   "id": "bedrock",
+   "x": 1440,
+   "y": 300,
+   "icon": "bedrock",
+   "label": "Amazon Bedrock",
+   "sub": "global. profiles"
+  },
+  {
+   "id": "vpce",
+   "x": 640,
+   "y": 530,
+   "icon": "endpoints",
+   "label": "Gateway VPC endpoint",
+   "sub": "private DNS"
+  },
+  {
+   "id": "infgw",
+   "x": 830,
+   "y": 530,
+   "icon": "agentcore",
+   "label": "B \u00b7 Inference Gateway",
+   "sub": "AWS_IAM \u00b7 path + model allowlist"
+  },
+  {
+   "id": "alb",
+   "x": 1040,
+   "y": 530,
+   "icon": "elb",
+   "label": "Internal ALB",
+   "sub": "ingress: Lattice SG only"
+  },
+  {
+   "id": "llmgw",
+   "x": 1230,
+   "y": 530,
+   "icon": "tile:gateway",
+   "label": "LLM gateway",
+   "sub": "e.g. LiteLLM \u00b7 own role"
+  },
+  {
+   "id": "vault",
+   "x": 1040,
+   "y": 690,
+   "icon": "secretsmanager",
+   "label": "AgentCore Identity",
+   "sub": "gateway key \u00b7 token vault"
+  },
+  {
+   "id": "sts",
+   "x": 250,
+   "y": 530,
+   "icon": "iam",
+   "label": "STS \u00b7 caller role",
+   "sub": "per session \u00b7 revocable"
+  }
+ ],
+ "groups": [
+  {
+   "kind": "region",
+   "x": 160,
+   "y": 100,
+   "w": 1370,
+   "h": 670,
+   "label": "AWS Cloud \u00b7 one Region \u00b7 platform account",
+   "lx": 176,
+   "ly": 118
+  },
+  {
+   "kind": "subnet",
+   "x": 380,
+   "y": 240,
+   "w": 140,
+   "h": 140,
+   "label": "Platform VPC",
+   "lx": 392,
+   "ly": 257
+  },
+  {
+   "kind": "event",
+   "x": 560,
+   "y": 440,
+   "w": 760,
+   "h": 160,
+   "label": "B \u00b7 optional: enable_agentcore_gateway_backend",
+   "lx": 576,
+   "ly": 458
+  }
+ ],
+ "edges": [
+  {
+   "from": "user",
+   "fs": "r",
+   "to": "backend",
+   "ts": "l",
+   "flow": "request"
+  },
+  {
+   "from": "backend",
+   "fs": "r",
+   "to": "runtime",
+   "ts": "l",
+   "flow": "request",
+   "label": "payload",
+   "lxy": [
+    350,
+    287
+   ]
+  },
+  {
+   "from": "runtime",
+   "fs": "r",
+   "to": "bedrock",
+   "ts": "l",
+   "flow": "request",
+   "label": "A \u00b7 SigV4 on its own role \u2192 InvokeModel",
+   "lxy": [
+    680,
+    287
+   ]
+  },
+  {
+   "from": "role",
+   "fs": "l",
+   "to": "runtime",
+   "ts": "t",
+   "flow": "aux",
+   "static": true,
+   "mids": [
+    [
+     450,
+     170
+    ]
+   ]
+  },
+  {
+   "from": "backend",
+   "fs": "l",
+   "to": "sts",
+   "ts": "l",
+   "flow": "schedule",
+   "label": "B \u00b7 AssumeRole per session",
+   "lxy": [
+    200,
+    420
+   ],
+   "mids": [
+    [
+     200,
+     300
+    ],
+    [
+     200,
+     530
+    ]
+   ]
+  },
+  {
+   "from": "runtime",
+   "fs": "r",
+   "to": "vpce",
+   "ts": "l",
+   "flow": "tool",
+   "label": "B \u00b7 SigV4 on the grant",
+   "lxy": [
+    560,
+    415
+   ],
+   "mids": [
+    [
+     540,
+     300
+    ],
+    [
+     540,
+     530
+    ]
+   ]
+  },
+  {
+   "from": "vpce",
+   "fs": "r",
+   "to": "infgw",
+   "ts": "l",
+   "flow": "tool"
+  },
+  {
+   "from": "infgw",
+   "fs": "r",
+   "to": "alb",
+   "ts": "l",
+   "flow": "tool",
+   "label": "VPC Lattice",
+   "lxy": [
+    935,
+    507
+   ]
+  },
+  {
+   "from": "alb",
+   "fs": "r",
+   "to": "llmgw",
+   "ts": "l",
+   "flow": "tool",
+   "label": "Bearer",
+   "lxy": [
+    1135,
+    507
+   ]
+  },
+  {
+   "from": "llmgw",
+   "fs": "r",
+   "to": "bedrock",
+   "ts": "r",
+   "flow": "tool",
+   "mids": [
+    [
+     1490,
+     530
+    ],
+    [
+     1490,
+     300
+    ]
+   ]
+  },
+  {
+   "from": "vault",
+   "fs": "t",
+   "to": "infgw",
+   "ts": "r",
+   "flow": "ambient",
+   "label": "key injected here",
+   "lxy": [
+    990,
+    627
+   ],
+   "mids": [
+    [
+     1040,
+     640
+    ],
+    [
+     935,
+     640
+    ],
+    [
+     935,
+     545
+    ],
+    [
+     853,
+     545
+    ]
+   ]
+  }
+ ],
+ "journeys": [
+  {
+   "flow": "request",
+   "dur": 2.6,
+   "hops": [
+    [
+     "user",
+     "backend"
+    ],
+    [
+     "backend",
+     "runtime"
+    ],
+    [
+     "runtime",
+     "bedrock"
+    ]
+   ]
+  },
+  {
+   "flow": "reply",
+   "dur": 2.8,
+   "reverse": true,
+   "hops": [
+    [
+     "runtime",
+     "bedrock"
+    ],
+    [
+     "backend",
+     "runtime"
+    ],
+    [
+     "user",
+     "backend"
+    ]
+   ]
+  },
+  {
+   "flow": "tool",
+   "dur": 3.0,
+   "hops": [
+    [
+     "runtime",
+     "vpce"
+    ],
+    [
+     "vpce",
+     "infgw"
+    ],
+    [
+     "infgw",
+     "alb"
+    ],
+    [
+     "alb",
+     "llmgw"
+    ],
+    [
+     "llmgw",
+     "bedrock"
+    ]
+   ]
+  }
+ ],
+ "steps": [
+  [
+   "user",
+   "backend",
+   1
+  ],
+  [
+   "backend",
+   "runtime",
+   2
+  ],
+  [
+   "runtime",
+   "bedrock",
+   3
+  ]
+ ],
+ "legend": [
+  "request",
+  "reply",
+  "tool"
+ ],
+ "legendY": 800
+}

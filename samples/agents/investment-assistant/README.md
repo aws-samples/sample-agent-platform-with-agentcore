@@ -32,6 +32,15 @@ sample runtime (own IAM role) --SigV4--> sample-tools gateway --> crypto-price (
 
 ![Architecture](../../../docs/samples/investment-assistant/architecture.svg)
 
+The model is reached without a key in the agent too, one of two ways chosen
+at deployment: by default with the runtime's own role, scoped to the
+configured Bedrock `global.` inference profiles; or, with
+`enable_agentcore_gateway_backend`, through an AgentCore inference gateway in
+front of an LLM gateway such as LiteLLM, on a credential minted per session,
+the runtime's own role then holding no model access at all.
+
+![Model access](../../../docs/samples/investment-assistant/model-access.svg)
+
 The full reasoning, decision by decision, is in
 [`docs/samples/investment-assistant/design.md`](../../../docs/samples/investment-assistant/design.md).
 

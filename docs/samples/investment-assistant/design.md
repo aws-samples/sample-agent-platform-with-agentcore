@@ -242,8 +242,58 @@ talks* is the author's.
 - **Policy in LOG_ONLY.** The engine records every decision and enforces none
   until the traces have been read for a week. Switching to ENFORCE is a
   one-line change in the foundation's variables.
+- **Direct Bedrock is only as narrow as the model list.** Without the
+  inference gateway (section 11, option A) a sample's role may call the
+  configured global inference profiles. A credential read from inside the
+  microVM can spend tokens on those models until it expires; option B is
+  the deployment that takes that away.
 
 ![Request flow](request-flow.svg)
+
+## 11. How the model is reached
+
+![Model access](model-access.svg)
+
+**Decision.** The agent holds no model key either way. How it signs its
+model calls is a deployment choice, made once in the foundation with
+`enable_agentcore_gateway_backend`, and the backend follows it:
+
+- **A. Direct Bedrock (default).** The runtime signs with its own role. The
+  role may invoke the configured models (`anthropic_model` and the default
+  opus / sonnet / haiku settings) and nothing else: for each `global.`
+  inference profile, the AWS three-part grant (the profile in this Region;
+  the foundation model in this Region and region-less, each conditioned on
+  `bedrock:InferenceProfileArn` so the model cannot be called around the
+  profile). Nothing else to deploy.
+- **B. Through an LLM gateway** (`enable_agentcore_gateway_backend = true`).
+  The backend mints a per-session STS credential whose session policy allows
+  `InvokeGateway` on one AgentCore inference gateway; the runtime's own role
+  holds no Bedrock grant and is explicitly denied that gateway. The gateway
+  (`AWS_IAM`; `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, each
+  with a model allowlist) adds the upstream key from an AgentCore Identity
+  API-key provider and reaches the LLM gateway over VPC Lattice to an internal
+  ALB. This repository runs LiteLLM there; any gateway that serves those paths
+  behind one API key has the same shape, though only LiteLLM has been run.
+
+In option B the backend refuses a sample whose model resolves to Bedrock, at
+publish and at invoke, so a clone fails with a message rather than with
+AccessDenied inside the kernel.
+
+**Which to pick.**
+
+| | A. Direct Bedrock | B. Through an LLM gateway |
+|---|---|---|
+| fits | Bedrock only, no central LLM gateway | a gateway already fronts the models (keys, quotas, several providers) |
+| extra to run | nothing | inference gateway, Lattice path, the LLM gateway |
+| a credential read inside the microVM can | invoke the configured models until it expires | reach no model: the role has none |
+| revoking one session | not possible; wait for expiry | one `Deny` on its session id |
+| model allowlist enforced by | IAM, on the role | the gateway, per path |
+
+**Costs.** A: the role's credential is the boundary, and IAM cannot tell one
+session from another. B: one STS call per invocation and a gateway hop on
+every model request; the per-session model allowlist is recorded with the
+grant but not enforced by IAM, which cannot see a request body, so the
+gateway's per-path model list is the boundary that holds.
 
 ## Where things are
 

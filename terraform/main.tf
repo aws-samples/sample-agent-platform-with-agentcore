@@ -78,7 +78,17 @@ module "runtime" {
   # empty suffix) and agent-platform-inference-staging-<id> alike.
   deny_gateway_arns = var.enable_agentcore_gateway_backend ? ["arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:gateway/agent-platform-inference*"] : []
   sample_runtimes   = var.enable_sample_tools ? var.sample_runtimes : {}
-  name_suffix       = var.name_suffix
+  # With the inference gateway a sample's model calls go through it on a
+  # per-session grant and its role holds no Bedrock; without it the role may
+  # call the models the kernels are configured with, through their profiles.
+  sample_bedrock_models = var.enable_agentcore_gateway_backend ? [] : distinct(compact([
+    var.anthropic_model,
+    var.anthropic_small_fast_model,
+    var.anthropic_default_opus_model,
+    var.anthropic_default_sonnet_model,
+    var.anthropic_default_haiku_model,
+  ]))
+  name_suffix = var.name_suffix
 }
 
 # Optional: the Sample Agents tool gateway (modules/sample_tools), the
