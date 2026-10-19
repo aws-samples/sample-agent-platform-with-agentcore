@@ -29,6 +29,8 @@
     "vite": "^6.4.3"
   },
   "overrides": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "postcss-selector-parser": "^7.1.6",
+    "source-map-js": "^1.2.2"
   }
 }
