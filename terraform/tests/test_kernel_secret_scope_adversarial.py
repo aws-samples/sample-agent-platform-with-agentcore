@@ -88,8 +88,8 @@ def main() -> int:
 
     # I4
     sample = doc(iam, "sample")
-    assert sources(sample) == {"kernel_base", "agent_common", "telemetry"}, sources(sample)
-    for name in ("kernel_base", "telemetry"):
+    assert sources(sample) == {"kernel_base", "agent_common", "telemetry", "sample_bedrock"}, sources(sample)
+    for name in ("kernel_base", "telemetry", "sample_bedrock"):
         assert "mcp-hub" not in doc(iam, name), name
     ok("sample roles carry no mcp-hub secret grant")
 

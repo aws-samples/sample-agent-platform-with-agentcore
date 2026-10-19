@@ -275,4 +275,43 @@ class ModelConfigService:
         return aliases
 
 
+
+# backends whose kernel calls go to an HTTP endpoint with a per-session grant,
+# never to Bedrock on the runtime's own role
+GATEWAY_SPEC_BACKENDS = ("gateway", "agentcore_gateway")
+
+
+def sample_needs_gateway() -> bool:
+    """Whether this deployment sends sample runtimes' models through a gateway.
+
+    The foundation decides it with one switch, enable_agentcore_gateway_backend,
+    and the backend sees the outcome as the caller role it is given: with the
+    inference gateway, sample roles hold no Bedrock grant at all; without it,
+    they hold a grant on the configured global inference profiles only
+    (modules/runtime sample_bedrock).
+    """
+    return bool(settings.agentcore_gateway_caller_role_arn)
+
+
+def require_gateway_routing(spec: dict | None, runtime: str) -> None:
+    """Refuse a model route a sample runtime cannot serve.
+
+    In a deployment with the inference gateway, a sample runtime's role holds
+    no Bedrock grant, so a resolved spec of ``None`` (container default,
+    Bedrock on the role) or ``backend=bedrock`` would fail inside the kernel
+    with AccessDenied. Refuse it here instead, at publish and again at invoke,
+    since the platform default can change between the two. Without the
+    gateway, Bedrock is the sample's route and nothing is refused here.
+    """
+    if not sample_needs_gateway():
+        return
+    if spec is None or spec.get("backend") not in GATEWAY_SPEC_BACKENDS:
+        backend = spec.get("backend") if spec else "bedrock (container default)"
+        raise ValueError(
+            f"{runtime} reaches models through a gateway backend only "
+            f"(litellm or agentcore_gateway), not {backend}; set the agent's "
+            "model backend, or make a gateway backend the platform default"
+        )
+
+
 model_config_service = ModelConfigService()

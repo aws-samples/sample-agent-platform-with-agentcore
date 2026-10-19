@@ -219,10 +219,12 @@ class AgentService:
             )
 
             mcp_hub_credentials_service.require_iam_available()
-        if model_backend or model:
+        if model_backend or model or runtime:
             # fail the publish, not the future invocation, on a bad reference
-            from app.services.model_config_service import model_config_service
-            model_config_service.resolve(model_backend, model)
+            from app.services.model_config_service import model_config_service, require_gateway_routing
+            spec = model_config_service.resolve(model_backend, model)
+            if runtime:
+                require_gateway_routing(spec, runtime)
         if platform_version:
             # same: an undeployed version fails here, not at invoke time
             resolve_platform_version("sdk", platform_version)

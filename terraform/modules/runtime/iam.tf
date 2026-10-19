@@ -75,8 +75,24 @@ data "aws_iam_policy_document" "kernel_base" {
   }
 }
 
-# agent kernels (interactive + sdk + samples): skills read, Bedrock, MCP
-# runtimes, gateways, built-in tools. MCP hub credentials are per kernel below.
+# Direct Bedrock, for the shared kernels only. The model control plane
+# (Governance -> Model backends) can route any agent on the shared runtimes to
+# Bedrock per invocation, regardless of the deployment default. Sample
+# runtimes are not given it: with the inference gateway the backend routes a
+# sample's model calls through the gateway only, and without it sample_bedrock
+# grants just the configured models (below). A wildcard here would be a model
+# credential wider than anything on a sample's path, readable from inside its
+# microVM.
+data "aws_iam_policy_document" "bedrock_direct" {
+  statement {
+    sid       = "BedrockInvoke"
+    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = ["*"] # cross-region inference profiles span regions
+  }
+}
+
+# agent kernels (interactive + sdk + samples): skills read, MCP runtimes,
+# gateways, built-in tools. Direct Bedrock is bedrock_direct, not here. MCP hub credentials are per kernel below.
 data "aws_iam_policy_document" "agent_common" {
   # Skill packages (read-only) — both agent kernels mount them.
   statement {
@@ -103,14 +119,6 @@ data "aws_iam_policy_document" "agent_common" {
   # whose users have the gateway key, whatever the code does with it. Only the
   # llm-edge task role holds that read now (modules/llm_edge/iam.tf), and
   # kernels reach the gateway through it with a per-session grant.
-
-  # The model control plane (Governance -> Model backends) can route any
-  # agent to Bedrock per invocation, regardless of the deployment default.
-  statement {
-    sid       = "BedrockInvoke"
-    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-    resources = ["*"] # cross-region inference profiles span regions
-  }
 
   # Agent kernels reach AgentCore-hosted MCP servers through
   # mcp-proxy-for-aws, which signs requests with the container's role.
@@ -318,6 +326,7 @@ data "aws_iam_policy_document" "interactive" {
   source_policy_documents = [
     data.aws_iam_policy_document.kernel_base.json,
     data.aws_iam_policy_document.agent_common.json,
+    data.aws_iam_policy_document.bedrock_direct.json,
     data.aws_iam_policy_document.mcp_hub_workbench.json,
   ]
 }
@@ -326,20 +335,82 @@ data "aws_iam_policy_document" "sdk" {
   source_policy_documents = [
     data.aws_iam_policy_document.kernel_base.json,
     data.aws_iam_policy_document.agent_common.json,
+    data.aws_iam_policy_document.bedrock_direct.json,
     data.aws_iam_policy_document.sdk_extras.json,
     data.aws_iam_policy_document.mcp_hub_agents.json,
     data.aws_iam_policy_document.telemetry.json,
   ]
 }
 
+# A sample's direct Bedrock, when the deployment has no inference gateway:
+# the models the kernel is configured with and nothing else, each through its
+# global cross-Region inference profile only (the AWS three-part policy: the
+# profile in this Region; the foundation model in this Region and region-less,
+# conditioned on that profile so the model cannot be called around it).
+# Empty with the agentcore_gateway backend, whose sample calls go through the
+# gateway on a per-session grant.
+locals {
+  sample_bedrock_profiles = {
+    for m in var.sample_bedrock_models : m => {
+      profile = "arn:aws:bedrock:${local.region}:${local.account}:inference-profile/${m}"
+      model   = trimprefix(m, "global.")
+    }
+  }
+}
+
+data "aws_iam_policy_document" "sample_bedrock" {
+  dynamic "statement" {
+    for_each = length(local.sample_bedrock_profiles) > 0 ? [1] : []
+    content {
+      sid       = "SampleBedrockProfiles"
+      actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+      resources = sort([for p in values(local.sample_bedrock_profiles) : p.profile])
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.sample_bedrock_profiles
+    content {
+      actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+      resources = ["arn:aws:bedrock:${local.region}::foundation-model/${statement.value.model}"]
+      condition {
+        test     = "StringEquals"
+        variable = "bedrock:InferenceProfileArn"
+        values   = [statement.value.profile]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.sample_bedrock_profiles
+    content {
+      actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+      resources = ["arn:aws:bedrock:::foundation-model/${statement.value.model}"]
+      condition {
+        test     = "StringEquals"
+        variable = "aws:RequestedRegion"
+        values   = ["unspecified"]
+      }
+      condition {
+        test     = "StringEquals"
+        variable = "bedrock:InferenceProfileArn"
+        values   = [statement.value.profile]
+      }
+    }
+  }
+}
+
 # A sample runtime runs the headless kernel image under its own role: the
 # interactive kernel's statement set (what any agent kernel needs) plus the
-# telemetry of the observability image variant. Not sdk_extras.
+# telemetry of the observability image variant. Not sdk_extras, and never
+# bedrock_direct: with the inference gateway its model calls go through the
+# gateway; without it, sample_bedrock grants the configured models only.
 data "aws_iam_policy_document" "sample" {
   source_policy_documents = [
     data.aws_iam_policy_document.kernel_base.json,
     data.aws_iam_policy_document.agent_common.json,
     data.aws_iam_policy_document.telemetry.json,
+    data.aws_iam_policy_document.sample_bedrock.json,
   ]
 }
 
@@ -370,9 +441,10 @@ resource "aws_iam_role_policy" "mcp_tools" {
 # is its own role. The shared SDK role is in no sample policy, so a tool
 # attached to an ordinary published agent is denied at the gateway.
 #
-# Same statements as the interactive kernel (base + agent_common), and not
-# sdk_extras: a sample agent writes no async artifacts and holds no remote-MCP
-# or memory grants. Its one tool gateway is covered by agent_common's
+# Base + agent_common like the interactive kernel, but not bedrock_direct
+# (sample_bedrock instead: the configured models without the inference gateway,
+# nothing with it) and not sdk_extras: a sample agent writes no async artifacts
+# and holds no remote-MCP or memory grants. Its one tool gateway is covered by agent_common's
 # InvokeGateways, with the inference-gateway Deny applying as to every kernel.
 
 resource "aws_iam_role" "sample" {

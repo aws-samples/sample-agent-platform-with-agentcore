@@ -151,6 +151,9 @@ def test_i1_publish_refuses_a_name_that_lives_on_a_later_page(monkeypatch):
 def test_i2_republish_keeps_the_stored_source(monkeypatch):
     svc, _ = _agents(monkeypatch)
     monkeypatch.setattr(agent_mod, "sample_runtime_arn", lambda ref: "arn:aws:bedrock-agentcore:us-east-1:ACCOUNTID001:runtime/x")
+    # a sample clone's publish resolves its model route (gateway backends only)
+    from app.services.model_config_service import model_config_service
+    monkeypatch.setattr(model_config_service, "resolve", lambda b="", m="": {"backend": "agentcore_gateway", "model": "m"})
     clone = svc.publish(user="alice", name="my-clone", system_prompt="v1", source="sample:inv", runtime="sample:inv")
     assert clone["source"] == "sample:inv"
     edited = svc.publish(user="alice", name="my-clone", system_prompt="v2")  # Publish page: no source, no runtime

@@ -41,6 +41,17 @@ variable "sample_runtimes" {
   }
 }
 
+variable "sample_bedrock_models" {
+  description = "Global inference profile IDs (global.<model>) a sample runtime role may invoke directly, for deployments without the agentcore_gateway model backend. Each becomes the three-part global cross-Region grant: the profile in this Region, and the foundation model in this Region and region-less, both only through that profile. Empty = no direct Bedrock on sample roles (the gateway deployment)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for m in var.sample_bedrock_models : can(regex("^global\\.[a-z0-9][a-z0-9.:-]+$", m))])
+    error_message = "sample_bedrock_models takes global cross-Region inference profile IDs (global.<model id>)."
+  }
+}
+
 variable "deny_gateway_arns" {
   description = "Gateway ARNs (wildcards allowed) the kernel roles are explicitly denied, overriding their gateway/* InvokeGateway allow. Used for the agentcore_gateway model backend's inference gateway."
   type        = list(string)
