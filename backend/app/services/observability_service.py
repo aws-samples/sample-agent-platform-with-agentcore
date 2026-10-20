@@ -18,6 +18,7 @@ from decimal import Decimal
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ class ObservabilityService:
                 item["num_turns"] = int(num_turns)
             if total_cost_usd is not None:
                 item["total_cost_usd"] = _to_decimal(float(total_cost_usd))
+            retention.with_ttl(item, retention.ttl_after_days(settings.retention_ledger_days))
             self.table.put_item(Item=item)
         except Exception:
             logger.exception("invocation record failed")

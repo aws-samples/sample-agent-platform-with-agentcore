@@ -1,5 +1,16 @@
-import { useEffect, useState } from 'react'
-import { Loader2, Play, RefreshCw, RotateCcw } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useSearchParams } from 'react-router'
+import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  MessageSquarePlus,
+  RefreshCw,
+  SendHorizontal,
+  Settings2,
+  User,
+} from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import { PLATFORM_VERSION_LABEL, PlatformVersionSelect } from '@/components/common/PlatformVersion'
 import {
@@ -13,23 +24,106 @@ import {
 } from '@/services/api'
 import { getUser } from '@/services/auth'
 
-interface HistoryEntry {
-  prompt: string
-  target: string
-  result: InvokeResult
+/** One bubble in the conversation. An assistant message is ``pending`` from
+ * the moment the request leaves until the kernel answers (the invoke contract
+ * is a single request/response; there is no token stream to render yet). */
+interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
   at: string
-  memoryActor?: string
+  pending?: boolean
+  error?: string
+  usage?: InvokeResult['usage']
+  raw?: unknown
+  /** how many earlier exchanges were sent along as client-side context */
+  contextTurns?: number
+}
+
+// Client-side context keeps the kernel from seeing each message in isolation
+// when the target has no memory binding. Bounded so a long chat cannot grow
+// the prompt without limit; the oldest exchanges drop first.
+const CONTEXT_MAX_CHARS = 12_000
+
+function buildPrompt(messages: ChatMessage[], next: string, carryContext: boolean): { prompt: string; turns: number } {
+  if (!carryContext) return { prompt: next, turns: 0 }
+  const settled = messages.filter((m) => !m.pending && !m.error && m.text)
+  const lines: string[] = []
+  let budget = CONTEXT_MAX_CHARS
+  let turns = 0
+  for (let i = settled.length - 1; i >= 0; i--) {
+    const m = settled[i]
+    const line = `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`
+    if (line.length > budget) break
+    budget -= line.length
+    lines.unshift(line)
+    if (m.role === 'user') turns++
+  }
+  if (!lines.length) return { prompt: next, turns: 0 }
+  return {
+    prompt: `Conversation so far:\n\n${lines.join('\n\n')}\n\nUser: ${next}\n\nReply to the last user message only.`,
+    turns,
+  }
+}
+
+const fmtCost = (v: unknown) => (typeof v === 'number' ? v.toFixed(4) : String(v))
+
+let seq = 0
+const nextId = () => `m${Date.now()}-${seq++}`
+
+function ElapsedTimer({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(t)
+  }, [])
+  return <span className="font-mono tabular-nums">{((now - since) / 1000).toFixed(1)}s</span>
+}
+
+function AssistantMeta({ m }: { m: ChatMessage }) {
+  const [open, setOpen] = useState(false)
+  const u = m.usage || {}
+  return (
+    <div className="mt-2 text-[11px] text-slate-400">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {u.num_turns != null && (
+          <span title="Model turns the kernel ran for this reply (each tool call adds a turn)">
+            turns: {String(u.num_turns)}
+          </span>
+        )}
+        {u.duration_ms != null && <span>duration: {String(u.duration_ms)} ms</span>}
+        {u.total_cost_usd != null && <span>cost: ${fmtCost(u.total_cost_usd)}</span>}
+        {m.contextTurns ? (
+          <span className="badge bg-slate-100 text-slate-500" title="Earlier exchanges sent with this message as client-side context">
+            +{m.contextTurns} earlier turn{m.contextTurns > 1 ? 's' : ''} as context
+          </span>
+        ) : null}
+        <span>{m.at}</span>
+        {m.raw != null && (
+          <button className="inline-flex items-center gap-0.5 hover:text-slate-600" onClick={() => setOpen((v) => !v)}>
+            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />} raw
+          </button>
+        )}
+      </div>
+      {open && (
+        <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-[11px] leading-relaxed text-slate-100">
+          {JSON.stringify(m.raw, null, 2)}
+        </pre>
+      )}
+    </div>
+  )
 }
 
 export default function DebugPage() {
+  const [params, setParams] = useSearchParams()
   const [prompt, setPrompt] = useState('')
   const [system, setSystem] = useState('')
-  const [target, setTarget] = useState('agent-sdk')
+  const [target, setTarget] = useState(params.get('target') || 'agent-sdk')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [agents, setAgents] = useState<PublishedAgent[]>([])
+  const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [sdkKernel, setSdkKernel] = useState<Kernel | undefined>()
   const [platformVersion, setPlatformVersion] = useState<PlatformVersion | ''>('')
   const [mcpOptions, setMcpOptions] = useState<EcosystemEntry[]>([])
@@ -40,6 +134,13 @@ export default function DebugPage() {
   const [memoryId, setMemoryId] = useState('')
   const [memoryActor, setMemoryActor] = useState('')
   const [storesLoading, setStoresLoading] = useState(false)
+  const [carryContext, setCarryContext] = useState<boolean | null>(null) // null = follow the memory binding
+  const [showSettings, setShowSettings] = useState(true)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  // bumped whenever the conversation is reset, so a reply that lands after
+  // the reset cannot write the old session id (or its text) into the new one
+  const conversationRef = useRef(0)
 
   const isAgent = target.startsWith('agent:')
   const targetAgent = isAgent ? agents.find((a) => a.id === target.slice('agent:'.length)) : undefined
@@ -48,6 +149,13 @@ export default function DebugPage() {
     ? memoryStores.find((m) => m.id === targetAgent.memory_id)
     : undefined
   const memoryActive = isAgent ? Boolean(targetAgent?.memory_id) : Boolean(memoryId)
+  // with a memory binding the kernel replays this session's turns itself
+  const effectiveCarry = carryContext ?? !memoryActive
+  const targetLabel = isAgent
+    ? targetAgent
+      ? `${targetAgent.name} v${targetAgent.version}`
+      : target
+    : 'Claude Agent SDK kernel (raw)'
 
   const loadStores = () => {
     setStoresLoading(true)
@@ -57,7 +165,7 @@ export default function DebugPage() {
   useEffect(() => {
     api.listMcpServers().then(setMcpOptions).catch(() => {})
     api.listSkills().then(setSkillOptions).catch(() => {})
-    api.listAgents().then(setAgents).catch(() => {})
+    api.listAgents().then(setAgents).catch(() => {}).finally(() => setAgentsLoaded(true))
     api
       .listKernels()
       .then((ks) => setSdkKernel(ks.find((k) => k.id === 'agent-sdk')))
@@ -72,25 +180,54 @@ export default function DebugPage() {
     if (memoryActive && !memoryActor) setMemoryActor(getUser() || '')
   }, [memoryActive]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // switching target or platform version (a different runtime) invalidates
-  // the warm session
+  // a ?target= pointing at an agent that no longer exists (deleted, or another
+  // environment's id) falls back to the raw kernel instead of a dead select
   useEffect(() => {
-    setSessionId(null)
-  }, [target, platformVersion])
+    if (agentsLoaded && isAgent && !targetAgent) setTarget('agent-sdk')
+  }, [agentsLoaded, isAgent, targetAgent])
 
-  const invoke = async () => {
-    if (!prompt.trim()) return
+  // switching target or platform version (a different runtime) invalidates
+  // the warm session and ends the conversation
+  useEffect(() => {
+    conversationRef.current++
+    setSessionId(null)
+    setMessages([])
+    setCarryContext(null)
+    if (target.startsWith('agent:')) setParams({ target }, { replace: true })
+    else if (params.get('target')) setParams({}, { replace: true })
+  }, [target, platformVersion]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [messages])
+
+  const newConversation = () => {
+    conversationRef.current++
+    setSessionId(null)
+    setMessages([])
+    composerRef.current?.focus()
+  }
+
+  const send = async () => {
+    const text = prompt.trim()
+    if (!text || busy) return
+    const { prompt: wirePrompt, turns } = buildPrompt(messages, text, effectiveCarry)
+    const started = Date.now()
+    const userMsg: ChatMessage = { id: nextId(), role: 'user', text, at: new Date().toLocaleTimeString() }
+    const pendingId = nextId()
+    setMessages((cur) => [...cur, userMsg, { id: pendingId, role: 'assistant', text: '', at: '', pending: true, contextTurns: turns }])
+    setPrompt('')
     setBusy(true)
-    setError('')
+    const conversation = conversationRef.current
     try {
       const result = isAgent
         ? await api.invokeAgent(target.slice('agent:'.length), {
-            prompt,
+            prompt: wirePrompt,
             session_id: sessionId || undefined,
             memory_actor_id: memoryActor || undefined,
           })
         : await api.invokeSdkKernel({
-            prompt,
+            prompt: wirePrompt,
             system: system || undefined,
             session_id: sessionId || undefined,
             mcp_server_ids: selMcp.length ? selMcp : undefined,
@@ -99,34 +236,64 @@ export default function DebugPage() {
             memory_actor_id: memoryActor || undefined,
             platform_version: platformVersion || undefined,
           })
+      if (conversationRef.current !== conversation) return // reset while in flight
       setSessionId(result.runtime_session_id)
-      setHistory((h) => [
-        {
-          prompt,
-          target,
-          result,
-          at: new Date().toLocaleTimeString(),
-          memoryActor: memoryActive ? memoryActor || '(you)' : undefined,
-        },
-        ...h,
-      ])
-      setPrompt('')
+      const text = result.result || ''
+      const failed = !result.ok
+      setMessages((cur) =>
+        cur.map((m) =>
+          m.id === pendingId
+            ? {
+                ...m,
+                pending: false,
+                text: text || (failed ? '' : JSON.stringify(result.raw, null, 2)),
+                error: failed ? `The kernel reported a failed run${text ? '' : ` (${JSON.stringify(result.raw).slice(0, 300)})`}` : undefined,
+                usage: result.usage,
+                raw: result.raw,
+                at: new Date().toLocaleTimeString(),
+              }
+            : m,
+        ),
+      )
     } catch (e) {
-      setError(String(e))
+      if (conversationRef.current !== conversation) return
+      setMessages((cur) =>
+        cur.map((m) =>
+          m.id === pendingId
+            ? { ...m, pending: false, error: String(e), at: new Date().toLocaleTimeString(), usage: { duration_ms: Date.now() - started } }
+            : m,
+        ),
+      )
     } finally {
       setBusy(false)
+      composerRef.current?.focus()
     }
   }
 
-  return (
-    <div className="p-8 animate-fade-in">
-      <SectionTitle
-        title="Debug"
-        subtitle="Invoke the headless kernel or any published agent through the /invocations contract"
-      />
+  const onComposerKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault()
+      send()
+    }
+  }
 
-      <div className="grid gap-5 lg:grid-cols-[420px_1fr]">
-        <div className="card h-fit p-5">
+  const pendingSince = useMemo(() => (busy ? Date.now() : 0), [busy])
+
+  return (
+    <div className="flex h-screen flex-col p-8 animate-fade-in">
+      <div className="flex items-start justify-between">
+        <SectionTitle
+          title="Debug"
+          subtitle="Talk to the headless kernel or any published agent the way an end user would — every message goes through the /invocations contract"
+        />
+        <button className="btn-secondary lg:hidden" onClick={() => setShowSettings((v) => !v)}>
+          <Settings2 size={14} /> {showSettings ? 'Hide' : 'Show'} settings
+        </button>
+      </div>
+
+      <div className="grid min-h-0 flex-1 gap-5 lg:grid-cols-[380px_1fr]">
+        {/* -------------------- target & settings -------------------- */}
+        <div className={`card h-fit max-h-full overflow-y-auto p-5 ${showSettings ? '' : 'hidden lg:block'}`}>
           <label className="mb-1 block text-sm font-medium text-slate-700">Target</label>
           <select className="input" value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="agent-sdk">Claude Agent SDK kernel (raw)</option>
@@ -153,14 +320,6 @@ export default function DebugPage() {
           {!isAgent && (
             <PlatformVersionSelect kernel={sdkKernel} value={platformVersion} onChange={setPlatformVersion} />
           )}
-
-          <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">Prompt</label>
-          <textarea
-            className="input min-h-28"
-            placeholder="Ask the hosted target anything…"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-          />
 
           {!isAgent && mcpOptions.length > 0 && (
             <>
@@ -272,9 +431,27 @@ export default function DebugPage() {
           {memoryActive && (
             <p className="mt-1 text-[11px] text-slate-400">
               Recall needs the <strong>same actor id</strong> when writing and asking. Long-term extraction is async
-              (~1 min): tell it a fact, wait a moment, click <em>new</em> for a fresh session, then ask.
+              (~1 min): tell it a fact, wait a moment, start a <em>new conversation</em>, then ask.
             </p>
           )}
+
+          <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">Conversation context</label>
+          <label className="flex cursor-pointer items-start gap-2 text-xs text-slate-700">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={effectiveCarry}
+              onChange={(e) => setCarryContext(e.target.checked)}
+            />
+            <span>
+              Send earlier turns with each message
+              <span className="block text-[11px] text-slate-400">
+                {memoryActive
+                  ? 'Off by default here: the memory binding replays this session’s turns inside the kernel.'
+                  : 'The kernel starts a fresh run per call; without this, every message is answered in isolation. Earlier turns are prepended to the prompt (bounded, oldest dropped first).'}
+              </span>
+            </span>
+          </label>
 
           {!isAgent && (
             <>
@@ -289,59 +466,103 @@ export default function DebugPage() {
               />
             </>
           )}
-
-          <div className="mt-4 flex items-center justify-between">
-            <div className="text-xs text-slate-500">
-              {sessionId ? (
-                <span className="flex items-center gap-2">
-                  Warm session <code className="rounded bg-slate-100 px-1 font-mono">{sessionId.slice(0, 12)}…</code>
-                  <button
-                    className="inline-flex items-center gap-1 text-brand-600 hover:underline"
-                    onClick={() => setSessionId(null)}
-                  >
-                    <RotateCcw size={11} /> new
-                  </button>
-                </span>
-              ) : (
-                'A new runtime session starts on first invoke'
-              )}
-            </div>
-            <button className="btn-primary" onClick={invoke} disabled={busy || !prompt.trim()}>
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Invoke
-            </button>
-          </div>
-          {error && (
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>
-          )}
         </div>
 
-        <div className="space-y-4">
-          {history.length === 0 && (
-            <div className="card p-10 text-center text-sm text-slate-400">
-              Responses appear here — the first invoke has cold-start latency while AgentCore provisions the microVM.
-            </div>
-          )}
-          {history.map((h, i) => (
-            <div key={i} className="card p-5">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-sm font-medium text-slate-900">{h.prompt}</p>
-                <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                  {h.memoryActor && (
-                    <span className="badge bg-indigo-50 text-indigo-700">memory: {h.memoryActor}</span>
+        {/* -------------------- conversation -------------------- */}
+        <div className="card flex min-h-0 flex-col">
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white">
+                <Bot size={14} />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-900">{targetLabel}</p>
+                <p className="flex items-center gap-2 text-[11px] text-slate-400">
+                  {sessionId ? (
+                    <>
+                      warm session <code className="rounded bg-slate-100 px-1 font-mono">{sessionId.slice(0, 12)}…</code>
+                    </>
+                  ) : (
+                    'new runtime session on first message'
                   )}
-                  {h.target} · {h.at}
-                </span>
-              </div>
-              <pre className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-800">
-                {h.result.result || JSON.stringify(h.result.raw, null, 2)}
-              </pre>
-              <div className="mt-2 flex gap-4 text-[11px] text-slate-400">
-                {h.result.usage?.num_turns != null && <span>turns: {String(h.result.usage.num_turns)}</span>}
-                {h.result.usage?.duration_ms != null && <span>duration: {String(h.result.usage.duration_ms)} ms</span>}
-                {h.result.usage?.total_cost_usd != null && <span>cost: ${String(h.result.usage.total_cost_usd)}</span>}
+                  {memoryActive && (
+                    <span className="badge bg-indigo-50 text-indigo-700">memory: {memoryActor || '(you)'}</span>
+                  )}
+                </p>
               </div>
             </div>
-          ))}
+            <button className="btn-secondary !py-1.5 text-xs" onClick={newConversation} disabled={busy || messages.length === 0}>
+              <MessageSquarePlus size={13} /> New conversation
+            </button>
+          </div>
+
+          <div ref={scrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+            {messages.length === 0 && (
+              <div className="flex h-full flex-col items-center justify-center text-center text-sm text-slate-400">
+                <Bot size={28} className="mb-3 text-slate-300" />
+                <p>Send a message to start. The first reply has cold-start latency while AgentCore provisions the microVM.</p>
+                <p className="mt-1 text-xs">Enter to send · Shift+Enter for a new line</p>
+              </div>
+            )}
+            {messages.map((m) =>
+              m.role === 'user' ? (
+                <div key={m.id} className="flex justify-end gap-2.5">
+                  <div className="max-w-[75%]">
+                    <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-brand-600 px-4 py-2.5 text-sm text-white">
+                      {m.text}
+                    </div>
+                    <p className="mt-1 text-right text-[11px] text-slate-400">{m.at}</p>
+                  </div>
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 text-slate-600">
+                    <User size={13} />
+                  </div>
+                </div>
+              ) : (
+                <div key={m.id} className="flex gap-2.5">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white">
+                    <Bot size={13} />
+                  </div>
+                  <div className="min-w-0 max-w-[85%]">
+                    {m.pending ? (
+                      <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-500">
+                        <Loader2 size={14} className="animate-spin" /> running… <ElapsedTimer since={pendingSince} />
+                      </div>
+                    ) : (
+                      <>
+                        {m.text && (
+                          <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800">
+                            {m.text}
+                          </div>
+                        )}
+                        {m.error && (
+                          <div className="mt-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{m.error}</div>
+                        )}
+                        <AssistantMeta m={m} />
+                      </>
+                    )}
+                  </div>
+                </div>
+              ),
+            )}
+          </div>
+
+          <div className="border-t border-slate-100 p-4">
+            <div className="flex items-end gap-2">
+              <textarea
+                ref={composerRef}
+                className="input max-h-40 min-h-[44px] flex-1 resize-y"
+                rows={1}
+                placeholder={`Message ${targetLabel}…`}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={onComposerKey}
+                disabled={busy}
+              />
+              <button className="btn-primary !px-3" onClick={send} disabled={busy || !prompt.trim()} title="Send (Enter)">
+                {busy ? <Loader2 size={16} className="animate-spin" /> : <SendHorizontal size={16} />}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

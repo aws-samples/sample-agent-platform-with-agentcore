@@ -28,15 +28,38 @@ from decimal import Decimal
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
 PK = "PIPELINE"
 PK_RUN = "PIPELINERUN"
+
+
+def _run_partition(run_id: str) -> str:
+    """A run's own partition: ``SK=META`` points at the run item (lookup by id),
+    ``SK=AGENT#...`` holds one item per agent call."""
+    return f"{PK_RUN}#{run_id}"
+
+
+def _run_pointer_key(run_id: str) -> dict:
+    return {"PK": _run_partition(run_id), "SK": "META"}
+
+
+def _run_ttl() -> int | None:
+    """Pipeline-run retention applies to the run and everything in its partition."""
+    return retention.ttl_after_days(settings.retention_pipeline_run_days)
 SOURCE = "pipeline"
 MAX_SCRIPT = 100_000
 MAX_HISTORY = 10
-RESULT_CAP = 24_000
+# Item-size budget for a run item (DynamoDB's limit is 400 KB per item). The
+# result and logs are capped in UTF-8 bytes, not characters: CJK text is three
+# bytes per character, so a character cap let a run grow past the limit.
+RESULT_CAP = 72_000
+LOGS_BYTES_CAP = 96_000
+# Every agent call is stored as its own item in the run's partition; the run
+# item keeps only the first AGENT_PREVIEW_CAP for the run list, plus totals.
+AGENT_PREVIEW_CAP = 100
 
 # A nested pipeline (a script's workflow() call) runs inside its caller's wall
 # clock: the parent's kill timer keeps running while the child works, and the
@@ -74,6 +97,25 @@ def _parse_json(text: str) -> dict | None:
         return json.loads(match.group(0))
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
+
+
+def _utf8_prefix(text: str, max_bytes: int) -> str:
+    """The longest prefix of ``text`` that encodes to at most ``max_bytes``."""
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _cap_logs(logs: list, max_bytes: int = LOGS_BYTES_CAP) -> list[str]:
+    """Keep log lines in order until the byte budget is spent."""
+    kept, used = [], 0
+    for line in logs[:200]:
+        line = str(line)
+        size = len(line.encode("utf-8"))
+        if used + size > max_bytes:
+            kept.append("… (further log lines dropped to fit the run record)")
+            break
+        kept.append(line)
+        used += size
+    return kept
 
 
 def _decimalize(v):
@@ -192,6 +234,10 @@ class PipelineService:
             "phase": item.get("phase", ""),
             "trace_id": item.get("trace_id", ""),
             "agents": item.get("agents", []),
+            # totals cover every call; ``agents`` is the first AGENT_PREVIEW_CAP
+            # (all of them on GET /pipeline-runs/{id})
+            "agents_total": int(item.get("agents_total", len(item.get("agents", []) or []))),
+            "cost_usd_total": float(item["cost_usd_total"]) if "cost_usd_total" in item else None,
             "logs": item.get("logs", []),
             "result": item.get("result"),
             "error": item.get("error", ""),
@@ -245,6 +291,29 @@ class PipelineService:
 
     def _run_summary(self, item: dict) -> dict:
         agents = item.get("agents", []) or []
+        phases = item.get("phases_summary")
+        if phases is None:  # still running, or written before phases_summary
+            phases = self._phase_stats(agents)
+        result = item.get("result")
+        slim = {k: result[k] for k in self.SUMMARY_RESULT_KEYS if k in result} if isinstance(result, dict) else None
+        return _plain({
+            "id": item.get("run_id", ""),
+            "pipeline": item.get("pipeline", ""),
+            "status": item.get("status", ""),
+            "source": item.get("source", ""),
+            "parent_run": item.get("parent_run", ""),
+            "started_at": item.get("started_at", ""),
+            "finished_at": item.get("finished_at", ""),
+            "trace_id": item.get("trace_id", ""),
+            "error": item.get("error", ""),
+            "agents_total": int(item.get("agents_total", len(agents))),
+            "phases": phases,
+            "result": slim,
+        })
+
+    @staticmethod
+    def _phase_stats(agents: list[dict]) -> list[dict]:
+        """Per-phase call counts, failures, cost and duration percentiles."""
         order: list[str] = []
         by: dict[str, list[dict]] = {}
         for a in agents:
@@ -274,28 +343,52 @@ class PipelineService:
                 "duration_ms_p95": pct(durs, 95),
                 "duration_ms_max": durs[-1] if durs else None,
             })
-        result = item.get("result")
-        slim = {k: result[k] for k in self.SUMMARY_RESULT_KEYS if k in result} if isinstance(result, dict) else None
-        return _plain({
-            "id": item.get("run_id", ""),
-            "pipeline": item.get("pipeline", ""),
-            "status": item.get("status", ""),
-            "source": item.get("source", ""),
-            "parent_run": item.get("parent_run", ""),
-            "started_at": item.get("started_at", ""),
-            "finished_at": item.get("finished_at", ""),
-            "trace_id": item.get("trace_id", ""),
-            "error": item.get("error", ""),
-            "agents_total": len(agents),
-            "phases": phases,
-            "result": slim,
-        })
+        return phases
+
+    def get_run_full(self, run_id: str) -> dict | None:
+        """The run with every agent call, not just the preview on the run item."""
+        run = self.get_run(run_id)
+        if run and run["agents_total"] > len(run["agents"]):
+            run["agents"] = self._agent_rows(run_id)
+        return run
+
+    def _final_phase_stats(self, sk: str, run_id: str) -> list[dict]:
+        rows = self._agent_rows(run_id)
+        if not rows:
+            # a run already in flight when this code was deployed has its calls
+            # only in the run item's preview, not as AGENT# items
+            item = self.table.get_item(Key={"PK": PK_RUN, "SK": sk}, ConsistentRead=True).get("Item") or {}
+            rows = item.get("agents") or []
+        return self._phase_stats(rows)
+
+    def _agent_rows(self, run_id: str) -> list[dict]:
+        rows: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :p)",
+            "ExpressionAttributeValues": {":pk": _run_partition(run_id), ":p": "AGENT#"},
+        }
+        while True:
+            resp = self.table.query(**kwargs)
+            rows.extend({k: v for k, v in i.items() if k not in ("PK", "SK")} for i in resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                return rows
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
     def get_run(self, run_id: str) -> dict | None:
+        pointer = self.table.get_item(Key=_run_pointer_key(run_id)).get("Item")
+        if pointer:
+            return self._get_run_by_sk(pointer["run_sk"])
+        # Runs created before the pointer existed: look in the recent window.
         for run in self.list_runs(limit=50):
             if run["id"] == run_id:
                 return run
         return None
+
+    def _get_run_by_sk(self, sk: str) -> dict | None:
+        # Strongly consistent: callers read a run right after writing it
+        # (start_run returns it; run_sync reads the final status to report ok).
+        item = self.table.get_item(Key={"PK": PK_RUN, "SK": sk}, ConsistentRead=True).get("Item")
+        return self._run_public(item) if item else None
 
     def _update_run(self, sk: str, **fields) -> None:
         # alias every name: status/error are DynamoDB reserved words
@@ -312,12 +405,29 @@ class PipelineService:
         )
 
     def _append_agent(self, sk: str, entry: dict) -> None:
-        # server-side atomic — safe under fan-out concurrency
+        """Record one agent call. Every call is its own item, so a run with
+        thousands of calls never approaches the item size limit; the run item
+        gets atomic totals and a bounded preview. All three writes are
+        server-side atomic, so concurrent fan-out workers are safe."""
+        row = _decimalize(entry)
+        run_id = sk.partition("#")[2]
+        self.table.put_item(Item=retention.with_ttl({
+            "PK": _run_partition(run_id), "SK": f"AGENT#{_now()}#{uuid.uuid4().hex[:8]}", **row,
+        }, _run_ttl()))
         self.table.update_item(
             Key={"PK": PK_RUN, "SK": sk},
-            UpdateExpression="SET agents = list_append(if_not_exists(agents, :empty), :e)",
-            ExpressionAttributeValues={":empty": [], ":e": [_decimalize(entry)]},
+            UpdateExpression="ADD agents_total :one, cost_usd_total :c",
+            ExpressionAttributeValues={":one": 1, ":c": row.get("cost_usd") or Decimal(0)},
         )
+        try:
+            self.table.update_item(
+                Key={"PK": PK_RUN, "SK": sk},
+                UpdateExpression="SET agents = list_append(if_not_exists(agents, :empty), :e)",
+                ConditionExpression="attribute_not_exists(agents) OR size(agents) < :cap",
+                ExpressionAttributeValues={":empty": [], ":e": [row], ":cap": AGENT_PREVIEW_CAP},
+            )
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass  # preview full; the call is in its own item and in the totals
 
     def _create_run(self, pipeline: str, user: str, source: str,
                     parent_run: str | None = None) -> str:
@@ -330,7 +440,11 @@ class PipelineService:
         }
         if parent_run:
             item["parent_run"] = parent_run
+        ttl = _run_ttl()
+        retention.with_ttl(item, ttl)
         self.table.put_item(Item=item)
+        # the pointer and the agent rows expire with the run, or they would outlive it
+        self.table.put_item(Item=retention.with_ttl({**_run_pointer_key(run_id), "run_sk": sk}, ttl))
         return sk
 
     # ------------------------------------------------------------ entrypoints
@@ -347,7 +461,7 @@ class PipelineService:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return self.get_run(sk.partition("#")[2]) or {
+        return self._get_run_by_sk(sk) or {
             "id": sk.partition("#")[2], "pipeline": name, "status": "running"}
 
     def run_sync(self, name: str, user: str = "scheduler", *, args=None,
@@ -365,7 +479,7 @@ class PipelineService:
         sk = self._create_run(name, user, source, parent_run=parent_run)
         self._execute(sk, pipe, user, args, allow_nested=not nested,
                       timeout_s=timeout_s)
-        run = self.get_run(sk.partition("#")[2]) or {}
+        run = self._get_run_by_sk(sk) or {}
         return {"ok": run.get("status") == "completed", "run_id": run.get("id"),
                 "result": _plain(run.get("result"))}
 
@@ -416,14 +530,17 @@ class PipelineService:
             )
             result = out.get("result")
             if isinstance(result, (dict, list)):
-                # keep the stored copy within item-size bounds
-                if len(json.dumps(result, ensure_ascii=False, default=str)) > RESULT_CAP:
-                    result = {"truncated": True,
-                              "preview": json.dumps(result, ensure_ascii=False, default=str)[:RESULT_CAP]}
+                # keep the stored copy within item-size bounds (bytes, not chars)
+                encoded = json.dumps(result, ensure_ascii=False, default=str)
+                if len(encoded.encode("utf-8")) > RESULT_CAP:
+                    result = {"truncated": True, "preview": _utf8_prefix(encoded, RESULT_CAP)}
+            elif isinstance(result, str):
+                result = _utf8_prefix(result, RESULT_CAP)
             fields = {
                 "status": "completed" if out["ok"] else "failed",
-                "finished_at": _now(), "logs": out.get("logs", [])[:200],
+                "finished_at": _now(), "logs": _cap_logs(out.get("logs", [])),
                 "result": result, "error": out.get("error", ""),
+                "phases_summary": self._final_phase_stats(sk, run_id),
             }
             if out["ok"]:
                 fields["phase"] = "完成"
@@ -432,7 +549,12 @@ class PipelineService:
                       error=not out["ok"])
         except Exception as e:
             logger.exception("pipeline run failed: %s", sk)
-            self._update_run(sk, status="failed", finished_at=_now(), error=str(e)[:300])
+            fields = {"status": "failed", "finished_at": _now(), "error": str(e)[:300]}
+            try:
+                fields["phases_summary"] = self._final_phase_stats(sk, run_id)
+            except Exception:  # noqa: BLE001 — the failure record matters more
+                logger.exception("could not summarise phases for %s", run_id)
+            self._update_run(sk, **fields)
             tb.finish(annotations={"pipeline": pipe["name"], "run_id": run_id, "error": str(e)[:200]},
                       error=True)
 

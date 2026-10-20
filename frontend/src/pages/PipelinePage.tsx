@@ -92,10 +92,19 @@ function AgentRow({ a }: { a: PipelineRunAgent }) {
 function RunCard({ run, region }: { run: PipelineRun; region: string }) {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'agents' | 'artifact' | 'logs' | 'result'>('agents')
+  // The run list carries only the first calls of a large run; load all of
+  // them when the card is opened (and again as the run adds calls).
+  const [allAgents, setAllAgents] = useState<PipelineRunAgent[] | null>(null)
+  const truncated = (run.agents_total ?? run.agents.length) > run.agents.length
+  useEffect(() => {
+    if (!open || !truncated) return
+    api.getPipelineRun(run.id).then((full) => setAllAgents(full.agents)).catch(() => {})
+  }, [open, truncated, run.id, run.agents_total])
+  const agents = truncated && allAgents ? allAgents : run.agents
   // phases in first-seen order — the script defines them, nothing hardcoded
   const phaseOrder: string[] = []
   const byPhase = new Map<string, PipelineRunAgent[]>()
-  for (const a of run.agents) {
+  for (const a of agents) {
     const p = a.phase || '(no phase)'
     if (!byPhase.has(p)) {
       byPhase.set(p, [])
@@ -103,7 +112,7 @@ function RunCard({ run, region }: { run: PipelineRun; region: string }) {
     }
     byPhase.get(p)!.push(a)
   }
-  const totalCost = run.agents.reduce((s, a) => s + (Number(a.cost_usd) || 0), 0)
+  const totalCost = run.cost_usd_total ?? agents.reduce((s, a) => s + (Number(a.cost_usd) || 0), 0)
   // the script's own one-line funnel + health verdict (see TrendPanel for the contract);
   // the raw counts stay in the Result JSON tab
   const summary = summaryOf(run.result)

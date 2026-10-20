@@ -88,6 +88,7 @@ module "runtime" {
   mcp_tools_platform_version    = var.mcp_tools_platform_version
   sample_platform_version       = var.sample_platform_version
   platform_version_python       = var.platform_version_python
+  runtime_log_retention_days    = var.runtime_log_retention_days
   name_suffix                   = var.name_suffix
   runtime_name_suffix           = local.facts.runtime_suffix
 }

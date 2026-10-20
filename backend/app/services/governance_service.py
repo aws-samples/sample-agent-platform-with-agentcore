@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import boto3
 
 from app.config import settings
+from app.services import retention
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +86,19 @@ class GovernanceService:
     # -------------------------------------------------------------- usage
 
     def _increment(self, sk: str) -> int:
+        ttl = retention.ttl_after_days(settings.retention_usage_days)
+        if ttl is None:
+            update, names, values = "ADD #c :one", {"#c": "count"}, {":one": 1}
+        else:
+            # if_not_exists: the day's first increment fixes the deletion date
+            update = "ADD #c :one SET #t = if_not_exists(#t, :ttl)"
+            names = {"#c": "count", "#t": retention.TTL_ATTR}
+            values = {":one": 1, ":ttl": ttl}
         resp = self.table.update_item(
             Key={"PK": USAGE_PK, "SK": sk},
-            UpdateExpression="ADD #c :one",
-            ExpressionAttributeNames={"#c": "count"},
-            ExpressionAttributeValues={":one": 1},
+            UpdateExpression=update,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
             ReturnValues="UPDATED_NEW",
         )
         return int(resp["Attributes"]["count"])

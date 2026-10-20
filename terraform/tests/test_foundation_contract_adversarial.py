@@ -148,6 +148,20 @@ def main() -> int:
         assert not missing, f"the application maps names this test's frozen copy lacks; refresh FROZEN_OUTPUTS: {sorted(missing)}"
     ok(f"every name in {source} is published")
 
+    # 3b. the table's TTL attribute is the one the application writes
+    platform_tf = open(os.path.join(FOUNDATION, "modules", "platform", "main.tf"), encoding="utf-8").read()
+    table = re.search(r'resource "aws_dynamodb_table" "platform" \{(.*?)\n\}', platform_tf, re.S).group(1)
+    ttl = re.search(r'ttl\s*\{\s*attribute_name\s*=\s*"(\w+)"\s*enabled\s*=\s*(\w+)', table)
+    assert ttl and ttl.group(2) == "true", "the platform table has no enabled TTL"
+    app_retention = os.path.join(os.environ.get("QA_ENGINE_DIR", ""), "backend", "app", "services", "retention.py")
+    if os.path.isfile(app_retention):
+        wanted = re.search(r'^TTL_ATTR\s*=\s*"(\w+)"', open(app_retention, encoding="utf-8").read(), re.M).group(1)
+        source = app_retention
+    else:
+        wanted, source = "ttl", "the frozen name (no application checkout)"
+    assert ttl.group(1) == wanted, f"table TTL attribute {ttl.group(1)!r} != application's {wanted!r} ({source})"
+    ok(f"the table's TTL attribute matches {source}")
+
     # 4. paths resolve; validate
     for f in tf_files(FOUNDATION):
         text = open(f, encoding="utf-8").read()
