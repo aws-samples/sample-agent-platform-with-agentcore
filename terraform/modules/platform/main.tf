@@ -100,6 +100,17 @@ resource "aws_dynamodb_table" "platform" {
   point_in_time_recovery {
     enabled = true
   }
+
+  # Items that carry a `ttl` (epoch seconds) are deleted by DynamoDB some time
+  # after it, at no cost: the ledger, quota counters, credential rows,
+  # service-entry results, terminated sessions. Items without it are kept.
+  # The attribute name is a contract with the application's
+  # backend/app/services/retention.py (TTL_ATTR); per-type retention is
+  # backend configuration (RETENTION_*_DAYS).
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
 }
 
 # ------------------------------ ECR repos ----------------------------------

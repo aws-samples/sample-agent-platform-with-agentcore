@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import {
   ArrowRight,
   Bot,
+  ChevronDown,
+  ChevronRight,
   Cpu,
   FileCode2,
   History,
@@ -10,9 +12,11 @@ import {
   Pencil,
   RefreshCw,
   Rocket,
+  Search,
   Terminal,
   Trash2,
   UploadCloud,
+  X,
 } from 'lucide-react'
 import { Modal, SectionTitle, StatusBadge } from '@/components/common/ui'
 import { PLATFORM_VERSION_LABEL, PlatformVersionSelect, PlatformVersionTag } from '@/components/common/PlatformVersion'
@@ -45,6 +49,25 @@ export default function PublishPage() {
   const [agents, setAgents] = useState<PublishedAgent[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  // name, id, description, attachments, model and publisher all count as a
+  // match; sorted by name so the list stays stable as agents are republished
+  const visibleAgents = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const sorted = [...agents].sort((a, b) => a.name.localeCompare(b.name))
+    if (!q) return sorted
+    return sorted.filter((a) =>
+      [a.name, a.id, a.description, a.created_by, a.model_backend, a.model, a.runtime, ...a.mcp_server_names, ...a.skill_names]
+        .some((v) => v && v.toLowerCase().includes(q)),
+    )
+  }, [agents, query])
+
+  const removeAgent = (a: PublishedAgent) => {
+    if (!window.confirm(`Delete ${a.name} (v${a.version})? Channels, schedules and API callers referencing agent:${a.id} will fail.`)) return
+    api.deleteAgent(a.id).then(refresh).catch((err) => setError(String(err)))
+  }
 
   const [showPublish, setShowPublish] = useState(false)
   const [publishSession, setPublishSession] = useState('')
@@ -188,93 +211,171 @@ export default function PublishPage() {
       </div>
 
       {/* -------------------- published agents -------------------- */}
-      <p className="mb-2 text-xs font-medium text-slate-500">Published agents</p>
-      <div className="mb-8 grid gap-4 lg:grid-cols-2">
-        {agents.map((a) => (
-          <div
-            key={a.id}
-            className="card cursor-pointer p-5 transition hover:border-brand-200 hover:shadow-md"
-            title="Click to edit — saving publishes a new version"
-            onClick={() => openEdit(a)}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white">
-                  <Bot size={15} />
+      <div className="mb-2 flex items-center justify-between gap-4">
+        <p className="text-xs font-medium text-slate-500">
+          Published agents
+          <span className="ml-2 font-normal text-slate-400">
+            {query ? `${visibleAgents.length} of ${agents.length}` : agents.length}
+          </span>
+        </p>
+        {agents.length > 0 && (
+          <div className="relative w-80">
+            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              className="input !py-1.5 !pl-9 !pr-8 text-xs"
+              placeholder="Search name, id, description, tool, skill, publisher…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-600"
+                onClick={() => setQuery('')}
+                title="Clear"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="card mb-8 divide-y divide-slate-100">
+        {visibleAgents.map((a) => {
+          const open = expanded === a.id
+          return (
+            <div key={a.id}>
+              <div
+                className="flex cursor-pointer items-center gap-3 px-4 py-2.5 transition hover:bg-slate-50"
+                onClick={() => setExpanded(open ? null : a.id)}
+                title={open ? 'Collapse' : 'Show details'}
+              >
+                <span className="text-slate-400">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white">
+                  <Bot size={14} />
                 </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">
-                    {a.name} <span className="ml-1 badge bg-brand-50 text-brand-700">v{a.version}</span>
-                    <span className="ml-2 font-mono text-[10px] font-normal text-slate-400" title="Agent ID — what channels/schedules reference as agent:<id>">
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <span className="truncate">{a.name}</span>
+                    <span className="badge shrink-0 bg-brand-50 text-brand-700">v{a.version}</span>
+                    <span className="truncate font-mono text-[10px] font-normal text-slate-400" title="Agent ID — what channels/schedules reference as agent:<id>">
                       {a.id}
                     </span>
                   </p>
-                  <p className="text-xs text-slate-400">{a.description || 'no description'}</p>
+                  <p className="truncate text-xs text-slate-400">{a.description || 'no description'}</p>
+                </div>
+                <div className="hidden shrink-0 items-center gap-1.5 md:flex">
+                  {a.mcp_server_names.length > 0 && (
+                    <span className="badge bg-teal-50 text-teal-700" title={a.mcp_server_names.join(', ')}>
+                      {a.mcp_server_names.length} mcp
+                    </span>
+                  )}
+                  {a.skill_names.length > 0 && (
+                    <span className="badge bg-violet-50 text-violet-700" title={a.skill_names.join(', ')}>
+                      {a.skill_names.length} skill{a.skill_names.length > 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {a.memory_id && <span className="badge bg-indigo-50 text-indigo-700">memory</span>}
+                  {a.model_backend && (
+                    <span className="badge bg-cyan-50 text-cyan-700" title={a.model || 'backend default model'}>
+                      {a.model_backend}
+                    </span>
+                  )}
+                  <PlatformVersionTag version={a.platform_version} />
+                </div>
+                <div className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <Link to={`/debug?target=agent:${a.id}`} className="btn-secondary !px-2.5 !py-1 text-xs" title="Open this agent in Debug">
+                    <Rocket size={12} /> Try
+                  </Link>
+                  <button className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title="Edit — saving publishes a new version" onClick={() => openEdit(a)}>
+                    <Pencil size={13} />
+                  </button>
+                  <button className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" title="Delete" onClick={() => removeAgent(a)}>
+                    <Trash2 size={13} />
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-1">
-                <span className="flex items-center gap-1 rounded p-1.5 text-slate-300" title="Click card to edit">
-                  <Pencil size={13} />
-                </span>
-                <button
-                  className="rounded p-1.5 text-slate-300 hover:bg-red-50 hover:text-red-600"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    api.deleteAgent(a.id).then(refresh).catch((err) => setError(String(err)))
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {a.mcp_server_names.map((n) => (
-                <span key={n} className="badge bg-teal-50 text-teal-700">mcp: {n}</span>
-              ))}
-              {a.skill_names.map((n) => (
-                <span key={n} className="badge bg-violet-50 text-violet-700">skill: {n}</span>
-              ))}
-              {a.memory_id && <span className="badge bg-indigo-50 text-indigo-700">memory</span>}
-              {a.model_backend && (
-                <span className="badge bg-cyan-50 text-cyan-700" title={a.model || 'backend default model'}>
-                  {a.model_backend}{a.model ? ` · ${a.model.length > 28 ? a.model.slice(0, 28) + '…' : a.model}` : ''}
-                </span>
+
+              {open && (
+                <div className="grid gap-4 border-t border-slate-100 bg-slate-50/60 px-4 py-4 pl-14 lg:grid-cols-[1fr_320px]">
+                  <div className="min-w-0">
+                    <p className="mb-1 text-[11px] font-medium text-slate-500">System prompt</p>
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 font-mono text-xs text-slate-700">
+                      {a.system_prompt || '(kernel default)'}
+                    </pre>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {a.mcp_server_names.map((n) => (
+                        <span key={n} className="badge bg-teal-50 text-teal-700">mcp: {n}</span>
+                      ))}
+                      {a.skill_names.map((n) => (
+                        <span key={n} className="badge bg-violet-50 text-violet-700">skill: {n}</span>
+                      ))}
+                      {a.memory_id && (
+                        <span className="badge bg-indigo-50 text-indigo-700" title={a.memory_id}>
+                          memory: {memoryStores.find((m) => m.id === a.memory_id)?.name || a.memory_id}
+                        </span>
+                      )}
+                      {a.model_backend && (
+                        <span className="badge bg-cyan-50 text-cyan-700">
+                          {a.model_backend}{a.model ? ` · ${a.model}` : ' · backend default model'}
+                        </span>
+                      )}
+                      <PlatformVersionTag version={a.platform_version} />
+                      <span className="badge bg-slate-100 text-slate-500">{a.max_turns} turns</span>
+                      {a.runtime && <span className="badge bg-amber-50 text-amber-700" title="Runs on this sample's own runtime">{a.runtime}</span>}
+                      {a.mcp_hub_access_key && (
+                        <span
+                          className="badge bg-amber-50 font-mono text-amber-700"
+                          title="This agent signs its MCP hub requests as this Actor — register the access key (and its secret from Secrets Manager) with your hub"
+                        >
+                          hub actor: {a.mcp_hub_access_key}
+                        </span>
+                      )}
+                      {a.mcp_hub_actor && (
+                        <span
+                          className="badge bg-emerald-50 font-mono text-emerald-700"
+                          title="This agent reaches the MCP hub through its IAM entry: the kernel assumes the hub caller role under this session name, which the hub sees as the actor. Nothing to register."
+                        >
+                          hub actor (IAM): {a.mcp_hub_actor}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2 text-xs text-slate-500">
+                    <p className="font-mono text-[11px] text-slate-500">POST /api/v1/agents/{a.id}/invoke</p>
+                    <p>source: {a.source} · by {a.created_by}</p>
+                    <p>updated {fmtTs(a.updated_at)} · created {fmtTs(a.created_at)}</p>
+                    {a.history.length > 0 && (
+                      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                        <p className="mb-1 flex items-center gap-1 text-[11px] font-medium text-slate-500">
+                          <History size={11} /> Version history
+                        </p>
+                        <div className="space-y-0.5 text-[11px] text-slate-400">
+                          {a.history.slice(0, 5).map((h) => (
+                            <p key={h.version}>v{h.version} · {fmtTs(h.at)} · by {h.by}</p>
+                          ))}
+                          {a.history.length > 5 && <p>… {a.history.length - 5} more</p>}
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex gap-2 pt-1">
+                      <Link to={`/debug?target=agent:${a.id}`} className="btn-primary !py-1.5 text-xs">
+                        <Rocket size={13} /> Try in Debug
+                      </Link>
+                      <button className="btn-secondary !py-1.5 text-xs" onClick={() => openEdit(a)}>
+                        <Pencil size={13} /> Edit · publish v{a.version + 1}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
-              <PlatformVersionTag version={a.platform_version} />
-              <span className="badge bg-slate-100 text-slate-500">{a.max_turns} turns</span>
-              {a.mcp_hub_access_key && (
-                <span
-                  className="badge bg-amber-50 font-mono text-amber-700"
-                  title="This agent signs its MCP hub requests as this Actor — register the access key (and its secret from Secrets Manager) with your hub"
-                >
-                  hub actor: {a.mcp_hub_access_key}
-                </span>
-              )}
-              {a.mcp_hub_actor && (
-                <span
-                  className="badge bg-emerald-50 font-mono text-emerald-700"
-                  title="This agent reaches the MCP hub through its IAM entry: the kernel assumes the hub caller role under this session name, which the hub sees as the actor. Nothing to register."
-                >
-                  hub actor (IAM): {a.mcp_hub_actor}
-                </span>
-              )}
             </div>
-            <p className="mt-2 font-mono text-[10px] text-slate-400">
-              POST /api/v1/agents/{a.id}/invoke · {a.source} · by {a.created_by}
-            </p>
-            <div className="mt-3">
-              <Link
-                to="/debug"
-                className="btn-primary !py-1.5 text-xs"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Rocket size={13} /> Try in Debug
-              </Link>
-            </div>
-          </div>
-        ))}
+          )
+        })}
+        {agents.length > 0 && visibleAgents.length === 0 && (
+          <p className="px-4 py-6 text-center text-sm text-slate-400">No agent matches “{query}”.</p>
+        )}
         {agents.length === 0 && (
-          <div className="card flex items-start gap-4 p-6 lg:col-span-2">
+          <div className="flex items-start gap-4 p-6">
             <FileCode2 size={18} className="mt-0.5 shrink-0 text-slate-400" />
             <div className="min-w-0">
               <p className="text-sm text-slate-600">

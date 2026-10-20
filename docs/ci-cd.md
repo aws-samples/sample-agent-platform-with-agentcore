@@ -139,10 +139,13 @@ pass, and a test count that drops is a failure. The checks that run here:
 - the authorization proofs: a request-supplied memory actor cannot address
   another principal's memory; a caller-submitted session id is namespaced
   under the authenticated caller;
-- the **redaction scan**: added lines on publishable paths must not match a
-  private pattern list (customer names, internal workload names, account ids,
-  resource ids) and must be ASCII text; binary changes need an explicit
-  allow. A missing pattern list is an error, never a pass;
+- the **redaction scan**: added lines on publishable paths must not match the
+  public rules kept in the internal tree (account ids, VPC resource ids,
+  CloudFront hosts, internal mail addresses) or a private pattern list
+  (customer and internal workload names), and must be ASCII text; binary
+  changes need an explicit allow. In the pipeline a missing or empty list is
+  an error, never a pass; a contributor's local run without the private list
+  applies the public rules and reports the private part as skipped;
 - the frontend type-check and build (the publish itself is the deploy
   build's, above);
 - the pipeline's own invariants (`ci/tests/` in the internal tree): the

@@ -32,6 +32,7 @@ runtime_platform_versions        = ["V1"]
 runtime_default_platform_version = "V1"
 mcp_tools_platform_version       = "V1"
 # platform_version_python = "python3"   # needs botocore >= 1.43.98
+# runtime_log_retention_days = 30       # runtime log groups (kernel stdout, prompt/answer records); 0 = leave as created
 
 # Must match the foundation's agent_observability.
 agent_observability = false

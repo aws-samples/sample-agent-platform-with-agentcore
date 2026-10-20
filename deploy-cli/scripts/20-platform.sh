@@ -106,8 +106,16 @@ fi
 aws dynamodb update-continuous-backups --table-name "$TABLE" \
   --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true >/dev/null 2>&1 \
   || log "PITR already enabled"
+# TTL on the `ttl` attribute (see backend/app/services/retention.py). Like PITR,
+# enabling it again errors, so only enable when it is not already on.
+if [ "$(aws dynamodb describe-time-to-live --table-name "$TABLE" \
+      --query 'TimeToLiveDescription.TimeToLiveStatus' --output text 2>/dev/null)" != "ENABLED" ]; then
+  aws dynamodb update-time-to-live --table-name "$TABLE" \
+    --time-to-live-specification Enabled=true,AttributeName=ttl >/dev/null 2>&1 \
+    || log "TTL already enabled or being enabled"
+fi
 save TABLE "$TABLE"
-log "table ready (PITR + SSE)"
+log "table ready (PITR + SSE + TTL)"
 
 # ------------------------------------------------------------------ ecr
 for r in "${KERNEL_REPOS[@]}" "${SERVICE_REPOS[@]}"; do

@@ -110,6 +110,12 @@ variable "mcp_tools_platform_version" {
   }
 }
 
+variable "runtime_log_retention_days" {
+  description = "Retention in days for the runtimes' /aws/bedrock-agentcore/runtimes/<id>-DEFAULT log groups (kernel stdout, and prompt/answer event records when agent_observability is on). Must be a CloudWatch Logs retention value; 0 leaves the groups as AgentCore created them (never expire)."
+  type        = number
+  default     = 30
+}
+
 variable "platform_version_python" {
   description = "Python interpreter for scripts/set_platform_version.py (needs boto3/botocore >= 1.43.98, the first release with platformVersion)."
   type        = string

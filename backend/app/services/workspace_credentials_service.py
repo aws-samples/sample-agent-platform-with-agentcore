@@ -27,6 +27,9 @@ import secrets
 import boto3
 
 from app.config import settings
+from app.services import retention
+
+WS_TOKEN_RETENTION_DAYS = 2
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +135,9 @@ class WorkspaceCredentialsService:
                     "runtime_session_id": runtime_session_id,
                     "user": user,
                     "session_id": session_id,
+                    # AgentCore sessions live at most 8 hours and every connect
+                    # re-issues this token, so the row is dead long before this.
+                    retention.TTL_ATTR: retention.ttl_after_days(WS_TOKEN_RETENTION_DAYS),
                 }
             )
         return token

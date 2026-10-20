@@ -366,8 +366,12 @@ POST {ServiceEntryApiUrl}/service/v1/channels/<id>/invocations   (SigV4)
   {"message": "...", "conversation_id": "order-1234"}
   → 202 {"invocation_id": "...", "poll": "/service/v1/invocations/..."}
 GET  {ServiceEntryApiUrl}/service/v1/invocations/<invocation_id> (SigV4)
-  → {"status": "queued|running|succeeded|failed", "result": "...", ...}
+  → {"status": "queued|running|succeeded|failed", "result": "...", "result_truncated": false, ...}
 ```
+
+`result` holds at most 300,000 bytes of UTF-8, about 100,000 CJK characters.
+A longer answer is cut at that point and `result_truncated` is `true`. For
+large outputs, have the agent write to the workspace and return a reference.
 
 Invocation records are private to the submitting role, and the ledger
 attributes every call to the caller's role ARN. If the target agent uses
@@ -412,9 +416,11 @@ with source (debug / api / schedule / channel / eval), target, who ran it,
 latency, turns, cost and the error if it failed. Stat tiles summarize the
 recent window (success rate, average duration, total cost).
 
-This is the platform-side aggregate view. For span-level traces (per tool
-call, per model turn), the runtimes emit OTel data to CloudWatch GenAI
-Observability under `/aws/bedrock-agentcore/runtimes/*`.
+This is the platform-side aggregate view. For span-level traces, the headless
+kernel emits OTel data to CloudWatch GenAI Observability when trace delivery
+is enabled: one span per invocation with token and cost totals, plus one per
+tool call. Model calls inside an invocation do not get spans of their own
+(see [observability.md](observability.md#gotchas)).
 
 ## Evaluation
 
