@@ -76,3 +76,10 @@ variable "enable_agentcore_gateway_backend" {
   type        = bool
   default     = false
 }
+
+# WAFv2 web ACL ARN (CLOUDFRONT scope) for the distribution; modules/edge_waf.
+# null: no web ACL (enable_edge_waf = false)
+variable "web_acl_arn" {
+  type    = string
+  default = null
+}

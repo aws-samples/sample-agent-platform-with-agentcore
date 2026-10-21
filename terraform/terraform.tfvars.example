@@ -80,3 +80,7 @@ enable_runtime   = true
 enable_portal    = true
 enable_team_auth = false
 enable_team_demo = false
+
+# WAF in front of the portal / team-auth CloudFront distributions (default on).
+# A short-lived test deployment can turn it off to skip the web ACL charges.
+# enable_edge_waf = false
