@@ -164,6 +164,7 @@ resource "aws_cloudfront_distribution" "portal" {
   enabled             = true
   default_root_object = "index.html"
   is_ipv6_enabled     = true # CDK default; the provider's default is false
+  web_acl_id          = var.web_acl_arn
 
   origin {
     origin_id                = local.s3_origin_id

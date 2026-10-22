@@ -60,6 +60,16 @@ module "platform" {
   name_suffix = var.name_suffix
 }
 
+# WAF in front of the portal and team-auth distributions (both environments);
+# enable_edge_waf = false leaves the distributions without a web ACL
+module "edge_waf" {
+  source = "./modules/edge_waf"
+  count  = var.enable_edge_waf && (var.enable_portal || var.enable_team_auth) ? 1 : 0
+
+  platform_egress_ips = [module.network.nat_eip]
+  name_suffix         = var.name_suffix
+}
+
 module "runtime" {
   source = "./modules/runtime"
   count  = var.enable_runtime ? 1 : 0
@@ -233,6 +243,7 @@ module "portal" {
   platform_table            = module.platform.platform_table
   log_bucket                = module.platform.log_bucket
   cf_log_destination_arn    = module.platform.cf_log_destination_arn
+  web_acl_arn               = one(module.edge_waf[*].web_acl_arn)
   workspace_access_role_arn = module.runtime[0].workspace_access_role_arn
   # external caller VPCs' endpoints, plus the platform VPC's own: created here
   # when the mcp-hub demo is on, the owner's when joining its cluster
@@ -259,6 +270,7 @@ module "team_auth" {
   keycloak_image_tag     = coalesce(var.keycloak_image_tag, var.team_auth_image_tag, var.image_tag)
   log_bucket             = module.platform.log_bucket
   cf_log_destination_arn = module.platform.cf_log_destination_arn
+  web_acl_arn            = one(module.edge_waf[*].web_acl_arn)
   eks                    = local.eks_facts
   name_suffix            = var.name_suffix
 }

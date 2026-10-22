@@ -296,6 +296,7 @@ resource "aws_cloudfront_distribution" "team_auth" {
   enabled         = true
   comment         = "agent-platform team-auth (Keycloak IdP + team APIs)"
   is_ipv6_enabled = true # CDK default; the provider's default is false
+  web_acl_id      = var.web_acl_arn
 
   origin {
     origin_id   = "team-auth-alb"

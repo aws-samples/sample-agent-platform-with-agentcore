@@ -53,3 +53,10 @@ variable "name_suffix" {
   type    = string
   default = ""
 }
+
+# WAFv2 web ACL ARN (CLOUDFRONT scope) for the distribution; modules/edge_waf.
+# null: no web ACL (enable_edge_waf = false)
+variable "web_acl_arn" {
+  type    = string
+  default = null
+}

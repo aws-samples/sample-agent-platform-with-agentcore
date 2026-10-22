@@ -248,6 +248,12 @@ variable "agentcore_gateway_private_endpoint" {
   default = null
 }
 
+variable "enable_edge_waf" {
+  description = "Put a WAF web ACL (modules/edge_waf: AWS managed rules + per-IP rate limits, CLOUDFRONT scope) in front of the portal and team-auth distributions. Recommended for anything reachable by real users; a short-lived test deployment can turn it off to save the web ACL charges (about USD 20/month per environment plus per-request fees)."
+  type        = bool
+  default     = true
+}
+
 variable "enable_team_auth" {
   description = "Optional enterprise-SSO demo: Keycloak + team APIs (requires team-auth images pushed)."
   type        = bool
