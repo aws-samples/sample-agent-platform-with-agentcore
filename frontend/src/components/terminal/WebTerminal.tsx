@@ -109,6 +109,10 @@ export default function WebTerminal({ websocketUrl, sessionId, onReconnectUrl }:
       fontSize: 13,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       theme: { background: '#0f172a', foreground: '#e2e8f0' },
+      // tmux runs with mouse mode on so the wheel scrolls Claude Code, which
+      // means a plain drag goes to tmux too. Shift-drag (Option-drag on macOS)
+      // still makes a browser selection for copying.
+      macOptionClickForcesSelection: true,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
