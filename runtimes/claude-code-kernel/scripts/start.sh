@@ -233,6 +233,12 @@ setw -g aggressive-resize on
 set -g default-command "bash -l"
 set -g history-limit 10000
 set -sg escape-time 0
+# Without mouse mode, tmux never asks xterm.js for mouse reports, so the
+# browser turns wheel scrolling in tmux's alternate screen into arrow keys and
+# Claude Code reads them as input-history navigation ("Scroll wheel is sending
+# arrow keys"). With it on, the wheel either reaches Claude Code as mouse
+# events (when it tracks the mouse) or scrolls tmux's history in copy mode.
+set -g mouse on
 # Keep the tmux server alive even when no session exists yet
 set -g exit-empty off
 TMUXCONF
