@@ -32,6 +32,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 FOUNDATION = os.path.join(ROOT, "terraform")
 WORKLOADS = os.path.join(FOUNDATION, "modules", "portal", "workloads.tf")
 GROUP_ARN = '"arn:aws:scheduler:${local.region}:${local.account}:schedule/${aws_scheduler_schedule_group.portal.name}/*"'
+SCHEDULER_VALUES = r'values\s*=\s*\[\s*"scheduler\.amazonaws\.com"\s*\]'
 CRUD = {"scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule", "scheduler:GetSchedule"}
 
 
@@ -87,7 +88,8 @@ def main() -> int:
     ok("schedule CRUD stays on this group's schedule ARN; no list or group-level action rides along")
 
     # I3
-    pass_role = [s for s in statements(text) if "iam:PassRole" in s and "scheduler.amazonaws.com" in s]
+    # the service is matched as the condition's exact value list, not as a substring
+    pass_role = [s for s in statements(text) if "iam:PassRole" in s and re.search(SCHEDULER_VALUES, s)]
     assert len(pass_role) == 1, "one PassRole statement for the scheduler"
     assert strings(pass_role[0], "resources") == ["aws_iam_role.scheduler.arn"], "PassRole only on the scheduler role"
     assert re.search(r'variable\s*=\s*"iam:PassedToService"', pass_role[0]) and re.search(r'test\s*=\s*"StringEquals"', pass_role[0])
