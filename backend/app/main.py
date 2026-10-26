@@ -3,6 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 from jwt import PyJWTError
@@ -20,6 +21,7 @@ from app.api import (
     observability,
     pipelines,
     samples,
+    sandboxes,
     schedules,
     service_entry,
     sessions,
@@ -29,6 +31,7 @@ from app.auth import verify_oidc_token
 from app.config import settings
 from app.context import CallerTokenMiddleware
 from app.dependencies import auth_mode, check_auth_configuration, get_current_user
+from app.services.sandbox_service import sandbox_service
 from app.services.schedule_service import schedule_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -42,6 +45,9 @@ async def lifespan(app: FastAPI):
     # mounts the same settings and gets the same check.
     check_auth_configuration()
     logging.getLogger(__name__).info("auth mode: %s", auth_mode())
+    # sync routes (every sandbox and ledger call) run on this pool; it must
+    # be as wide as the AWS connection pools behind them (config.py)
+    anyio.to_thread.current_default_thread_limiter().total_tokens = settings.threadpool_tokens
     if settings.entry_only:
         # the management deployment owns schedule reconciliation; a second
         # reconciler here would fight it over the EventBridge group
@@ -50,6 +56,9 @@ async def lifespan(app: FastAPI):
     # eventbridge mode (PortalStack): reconcile the EventBridge schedule
     # group with DynamoDB; local mode (uvicorn dev): start the tick loop.
     schedule_service.start()
+    # closes sandboxes the platform no longer owns (boot timeouts, failed
+    # stops, idle-reclaimed microVMs) without ever invoking an id to check
+    sandbox_service.start_reaper()
     yield
     schedule_service.stop()
 
@@ -75,6 +84,7 @@ if settings.entry_only:
     # the serving path. No CORS, no token middleware: the only callers are
     # API Gateway integrations carrying the gateway-injected entry secret.
     app.include_router(service_entry.router)
+    app.include_router(sandboxes.service)
 else:
     # outermost: record the caller's bearer token in the request context so
     # identity-forwarding attachments can use it (see app/context.py)
@@ -103,6 +113,9 @@ else:
     app.include_router(pipelines.router)
     app.include_router(gateways.router)
     app.include_router(team_demo.router)
+    app.include_router(sandboxes.portal)
+    app.include_router(sandboxes.mcp)
+    app.include_router(sandboxes.service)
     # kept on the management deployment for compatibility (existing callers
     # may still point at it); the dedicated data-plane deployment is the
     # production home for this traffic

@@ -492,8 +492,9 @@ def main() -> int:
 
     print(
         "\nSeeded. Try it from the demo-app instance:\n"
-        f"  aws ssm start-session --target $(terraform -chdir={TERRAFORM_DIR} "
-        "output -raw demo_app_instance_id)\n"
+        # the instance id is a foundation fact: the operations project's
+        # terraform state is not ours to read (TERRAFORM_DIR predates the split)
+        f"  aws ssm start-session --target {_fact('demo_app_instance_id')}\n"
         f"  python3.11 /opt/demo-app/invoke_agent.py --channel {channel['id']} "
         "--message 'list recent orders'\n"
         "or run scripts/e2e_mcp_hub.py to drive the whole chain over SSM."

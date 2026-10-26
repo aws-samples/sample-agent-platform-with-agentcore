@@ -20,4 +20,11 @@ WORKDIR /app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Keep idle connections longer than every load balancer in front of the pod
+# (the portal ALB idles at 60 s, the service-entry NLB behind API Gateway's
+# VPC link at 350 s): with uvicorn's default of 5 s the pod closes a
+# connection the balancer still reuses, and the request sent on it fails as
+# a 504 "Network error communicating with endpoint" that never reaches the
+# pod. The balancer, not the pod, must be the side that drops idle
+# connections.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "400"]

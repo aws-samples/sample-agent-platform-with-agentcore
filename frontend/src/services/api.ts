@@ -418,6 +418,87 @@ export interface InvocationRecord {
   ref: string
 }
 
+/** One row of the platform's live-session ledger. AgentCore Runtime has no
+ * session list or status API, so this record is the only source; "presumed"
+ * states are the platform's inference, never a probe of the session. */
+export type LiveSessionKind = 'workbench' | 'headless' | 'sandbox'
+export interface LiveSession {
+  runtime_session_id: string
+  kind: LiveSessionKind
+  owner: string
+  target: string
+  source: string
+  status: 'creating' | 'running' | 'idle' | 'stopping' | 'stop_failed' | 'stopped' | 'lost'
+  presumed_state: string
+  created_at: string
+  created_ts: number
+  updated_ts: number
+  last_invoke_ts: number
+  idle_timeout_s: number
+  max_lifetime_s: number
+  ended_at?: string
+  // sandbox rows
+  version?: string
+  runtime?: 'standard' | 'fast'
+  run_id?: string
+  owner_session?: string
+  create_ms?: number
+  build_info?: Record<string, unknown>
+  lost_reason?: string
+  stop_outcome?: string
+  stop_reason?: string
+  task_id?: string
+  // workbench rows
+  session_id?: string
+  name?: string
+}
+
+export interface LiveSessionSummary {
+  ledger: Record<LiveSessionKind, Record<string, number>>
+  ledger_presumed_live: number
+  cloudwatch: Record<string, { value: number; at: string } | null>
+  kinds: LiveSessionKind[]
+}
+
+export type SandboxRuntime = 'standard' | 'fast'
+
+export interface SandboxConfig {
+  enabled: boolean
+  // image version -> its Standard Runtime's name
+  versions: Record<string, string>
+  // image version -> its Fast Runtime's name, for the versions that have one
+  fast_versions?: Record<string, string>
+  runtimes?: Record<string, SandboxRuntime[]>
+  default_version: string
+  default_runtime?: SandboxRuntime
+  idle_timeout_s: number
+  max_lifetime_s: number
+  job_memory_mib: number
+  max_per_owner_session: number
+}
+
+export interface SandboxRunStep {
+  name: string
+  ok: boolean
+  ms?: number
+  error?: string
+  code?: string
+}
+
+export interface SandboxRunReport {
+  ok: boolean
+  sandbox_id?: string
+  steps: SandboxRunStep[]
+  build_info?: Record<string, unknown>
+  machine?: string
+  files?: { path: string; size: number; sha256: string }[]
+  state?: string
+  exit_code?: number | null
+  stdout_tail?: string
+  stderr_tail?: string
+  error?: string
+}
+
 export interface ObservabilityStats {
   window: number
   ok: number
@@ -702,6 +783,32 @@ export const api = {
   // Observability
   listInvocations: () => request<InvocationRecord[]>('/api/v1/observability/invocations'),
   getObservabilityStats: () => request<ObservabilityStats>('/api/v1/observability/stats'),
+  listLiveSessions: (opts: { kind?: LiveSessionKind | ''; includeClosed?: boolean } = {}) =>
+    request<LiveSession[]>(
+      `/api/v1/observability/live-sessions?kind=${opts.kind ?? ''}&include_closed=${opts.includeClosed ? 'true' : 'false'}`,
+    ),
+  getLiveSessionSummary: () => request<LiveSessionSummary>('/api/v1/observability/live-sessions/summary'),
+  stopLiveSession: (id: string) =>
+    request<LiveSession>(`/api/v1/observability/live-sessions/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+
+  // One-shot code sandboxes (administrators)
+  getSandboxConfig: () => request<SandboxConfig>('/api/v1/sandboxes/config'),
+  listSandboxes: (includeClosed = false) =>
+    request<LiveSession[]>(`/api/v1/sandboxes?include_closed=${includeClosed ? 'true' : 'false'}`),
+  stopSandbox: (id: string) =>
+    request<LiveSession>(`/api/v1/sandboxes/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  // a run outlives the API's front-door timeouts: submit, then poll
+  submitSandboxRun: (body: {
+    version?: string
+    runtime?: SandboxRuntime
+    files: Record<string, string>
+    command?: string
+    timeout_s?: number
+  }) =>
+    request<{ run_ref: string; status: string }>('/api/v1/sandboxes/run', { method: 'POST', body: JSON.stringify(body) }),
+  getSandboxRun: (ref: string) =>
+    request<{ run_ref: string; status: string; report?: SandboxRunReport }>(`/api/v1/sandboxes/runs/${encodeURIComponent(ref)}`),
+  reapSandboxes: () => request<{ enabled: boolean; lost?: string[]; restopped?: string[] }>('/api/v1/sandboxes/reap', { method: 'POST' }),
 
   // Model backend control plane
   getModelConfig: () => request<ModelConfig>('/api/v1/model-config'),
@@ -740,7 +847,13 @@ export const api = {
   },
   listGateways: () => request<Gateway[]>('/api/v1/gateways'),
   listGatewayTools: (id: string) =>
-    request<{ gateway_id: string; mcp_url: string; tools: GatewayTool[] }>(
+    request<{
+      gateway_id: string
+      mcp_url: string
+      tools: GatewayTool[]
+      listable: boolean
+      reason?: string
+    }>(
       `/api/v1/gateways/${id}/tools`,
     ),
 

@@ -31,9 +31,40 @@ enable_gateway_vpce = false
 # staging callers.
 service_api_allowed_vpces = []
 
+# The sandbox acceptance runs (N01 / N02: 200 jobs, each polled every second,
+# plus creates) need about 300 requests per second through this one stage; the
+# default 50 throttled them at 100 jobs (2026-10-24). Production keeps the
+# default until the customer's polling interval is settled.
+service_api_throttle = { rate_limit = 500, burst_limit = 1000 }
+
 # Demo stacks are not part of what staging verifies.
 enable_mcp_hub_demo = false
 enable_team_demo    = false
+
+# One-shot code sandboxes. Staging shares production's VPC, so it must never
+# inherit production's sandbox_network (its subnets would collide): the whole
+# object is restated here with staging's own subnets, next to production's
+# 10.2.64.0/22 + 10.2.68.0/22. The ECR / Logs interface endpoints are the
+# VPC's, shared by both environments.
+enable_sandbox = true
+sandbox_network = {
+  subnets = [
+    { cidr = "10.2.72.0/22", az = "ap-northeast-1a" },
+    { cidr = "10.2.76.0/22", az = "ap-northeast-1c" },
+  ]
+  # endpoint_security_group_ids left out: the root looks up the security groups
+  # of the VPC's ECR and Logs endpoints, the same ones production's sandboxes use
+  # The simulated customer host the acceptance cases run on (an EC2 instance at
+  # a fixed address in the platform's private subnet, outside Terraform): its
+  # callback service, and the state prefix its presigned URLs point at (F06).
+  # Written as a CIDR and a prefix of staging's own workspaces bucket (the
+  # root makes it that bucket's exact ARN), so no resource id or account lands
+  # here.
+  callback_targets = [
+    { description = "acceptance host callback service", port = 9000, cidr = "10.2.40.90/32" },
+  ]
+  state_prefixes = ["sandbox-sim/"]
+}
 
 # Identity: same Keycloak as production (no second Keycloak + RDS), but its own
 # realm with test-only users. Tokens from either realm carry a different
@@ -71,3 +102,13 @@ agentcore_gateway_credential_provider_name = "staging-litellm-agentcore-gateway"
 # crypto-price alone.
 enable_sample_tools = true
 sample_runtimes     = { investment-assistant = {} }
+
+# Custom domains belong to production's distributions. CloudFront refuses an
+# alias another distribution already holds, so the staging portal keeps its
+# *.cloudfront.net domain even when production's tfvars name one. Keycloak is
+# production's (enable_team_auth = false above): its domain and the snapshot
+# seed are reset too, so nothing of them reaches this state.
+portal_custom_domain            = null
+team_auth_custom_domain         = null
+keycloak_db_snapshot_identifier = null
+keycloak_db_kms_key_arn         = null

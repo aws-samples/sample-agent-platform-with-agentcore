@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import ApplicationOutcomes from '@/components/observability/ApplicationOutcomes'
+import LiveSessionsPanel from '@/components/observability/LiveSessionsPanel'
+import { Tabs, useUrlTab, type TabDef } from '@/components/common/Tabs'
 import { api, type InvocationRecord, type ObservabilityStats } from '@/services/api'
 import { fmtTs } from '@/services/format'
 
@@ -23,7 +25,15 @@ const SOURCE_STYLES: Record<string, string> = {
   eval: 'bg-pink-50 text-pink-700',
 }
 
+type ObsTab = 'live' | 'history' | 'outcomes'
+const TABS: TabDef<ObsTab>[] = [
+  { id: 'live', label: 'Live sessions', hint: 'What the platform has open right now' },
+  { id: 'history', label: 'Invocation history', hint: 'Every finished headless call' },
+  { id: 'outcomes', label: 'Application outcomes', hint: 'Pipeline run results' },
+]
+
 export default function ObservabilityPage() {
+  const [tab, setTab] = useUrlTab(TABS, 'live')
   const [stats, setStats] = useState<ObservabilityStats | null>(null)
   const [invocations, setInvocations] = useState<InvocationRecord[]>([])
   const [error, setError] = useState('')
@@ -40,10 +50,18 @@ export default function ObservabilityPage() {
       <div className="flex items-start justify-between">
         <SectionTitle
           title="Observability"
-          subtitle="The platform invocation ledger — every headless call with latency, turns and cost. Span-level traces live in CloudWatch GenAI Observability."
+          subtitle="Live sessions, the invocation ledger (every headless call with latency, turns and cost) and application outcomes. Span-level traces live in CloudWatch GenAI Observability."
         />
-        <button className="btn-secondary" onClick={() => { refresh(); setRefreshKey((k) => k + 1) }}><RefreshCw size={14} /> Refresh</button>
+        {tab !== 'live' && (
+          <button className="btn-secondary" onClick={() => { refresh(); setRefreshKey((k) => k + 1) }}><RefreshCw size={14} /> Refresh</button>
+        )}
       </div>
+
+      <Tabs tabs={TABS} value={tab} onChange={setTab} />
+
+      {tab === 'live' && <LiveSessionsPanel />}
+
+      {tab === 'history' && (<>
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
 
@@ -56,7 +74,6 @@ export default function ObservabilityPage() {
         </div>
       )}
 
-      <ApplicationOutcomes refreshKey={refreshKey} />
 
       <h2 className="mb-3 text-lg font-semibold text-slate-900">Invocation ledger</h2>
       <div className="card overflow-x-auto">
@@ -111,6 +128,9 @@ export default function ObservabilityPage() {
           </tbody>
         </table>
       </div>
+      </>)}
+
+      {tab === 'outcomes' && <ApplicationOutcomes refreshKey={refreshKey} />}
     </div>
   )
 }

@@ -25,3 +25,8 @@ output "alb_dns_name" {
 output "team_api_mcp_urls" {
   value = { for t in local.teams : t => "${local.base_url}/${t}/mcp" }
 }
+
+output "distribution_domain" {
+  description = "The distribution's *.cloudfront.net domain (the CNAME target when a custom domain is set)."
+  value       = aws_cloudfront_distribution.team_auth.domain_name
+}

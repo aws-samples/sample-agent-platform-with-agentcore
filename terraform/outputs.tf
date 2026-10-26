@@ -214,3 +214,12 @@ output "agentcore_gateway_inference_base_url" {
   description = "base_url for the agentcore_gateway backend (Governance -> Model backends)"
   value       = try(module.agentcore_gateway_backend[0].inference_base_url, "")
 }
+
+# The CNAME targets for the custom domains (point each name at its value).
+output "custom_domain_targets" {
+  value = {
+    # a module that is off (staging runs no team_auth) has no target, whatever the inherited tfvars say
+    portal    = var.portal_custom_domain == null || length(module.portal) == 0 ? null : { name = var.portal_custom_domain.name, target = module.portal[0].distribution_domain }
+    team_auth = var.team_auth_custom_domain == null || length(module.team_auth) == 0 ? null : { name = var.team_auth_custom_domain.name, target = module.team_auth[0].distribution_domain }
+  }
+}

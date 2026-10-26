@@ -464,14 +464,17 @@ function startTtyd() {
  * Sync /workspace and Claude Code state to the session's S3 prefix.
  * Throttled; also invoked from /ping so periodic health checks keep the
  * workspace fresh even when the background loop in start.sh is starved.
+ * ``force`` skips the throttle and ``done(ok)`` is called when both syncs
+ * finish: the backend's stop flushes this way before it ends the microVM,
+ * so a stop does not lose the last interval's edits.
  */
-function triggerSync() {
+function triggerSync(force = false, done = () => {}) {
   const now = Date.now();
-  if (now - lastSyncTime < SYNC_INTERVAL_MS) return;
-  if (!runtimeSessionId) return;
+  if (!force && now - lastSyncTime < SYNC_INTERVAL_MS) return done(false);
+  if (!runtimeSessionId) return done(false);
 
   const bucket = process.env.WORKSPACE_S3_BUCKET;
-  if (!bucket) return;
+  if (!bucket) return done(false);
   const prefix = process.env.WORKSPACE_S3_PREFIX || "workspaces";
   const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
   lastSyncTime = now;
@@ -484,7 +487,10 @@ function triggerSync() {
     .flatMap((p) => ["--exclude", p]);
   const env = workspaceSyncEnv();
   execFile("aws", syncArgs("/workspace/", `${base}/`, excludes), { timeout: 20_000, env }, (err) => {
-    if (err) return console.log(`[workspace] sync error: ${err.message}`);
+    if (err) {
+      console.log(`[workspace] sync error: ${err.message}`);
+      return done(false);
+    }
     execFile(
       "aws",
       syncArgs("/root/.claude/", `${base}/.claude-home/`, ["--exclude", "*.lock"]),
@@ -492,6 +498,7 @@ function triggerSync() {
       (err2) => {
         if (err2) console.log(`[workspace] sync error: ${err2.message}`);
         else console.log(`[workspace] synced at ${new Date().toISOString()}`);
+        done(!err2);
       },
     );
   });
@@ -577,6 +584,25 @@ function applySessionConfig(config) {
           command: "python3",
           args: ["/opt/platform/mcp_hub_proxy.py"],
           env,
+        };
+      } else if (s.kind === "sandbox") {
+        // Platform sandbox tools, served by the backend. The token is bound to
+        // this workbench session and goes into a 0600 file under /tmp, never
+        // into .mcp.json (which syncs to S3); a re-warmup rewrites it in place.
+        if (!s.url || !s.token || !s.session) continue;
+        const safeName = s.name.replace(/[^a-zA-Z0-9_-]/g, "");
+        const tokenFile = `/tmp/.sandbox-mcp-token-${safeName}`;
+        // nosemgrep: detect-non-literal-fs-filename  (fixed /tmp prefix, name stripped to [a-zA-Z0-9_-])
+        fs.writeFileSync(tokenFile, String(s.token), { mode: 0o600 });
+        servers[s.name] = {
+          type: "stdio",
+          command: "python3",
+          args: ["/opt/platform/sandbox_mcp_proxy.py"],
+          env: {
+            SANDBOX_MCP_URL: String(s.url),
+            SANDBOX_MCP_TOKEN_FILE: tokenFile,
+            SANDBOX_MCP_SESSION: String(s.session),
+          },
         };
       } else if (s.kind === "url") {
         servers[s.name] = { type: "http", url: s.target };
@@ -710,6 +736,16 @@ function handleHttp(req, res) {
             sessionId: runtimeSessionId,
           }),
         );
+        return;
+      }
+
+      if (action === "flush") {
+        // Sent by the backend right before StopRuntimeSession: persist the
+        // workspace now instead of trusting a final sync on shutdown.
+        triggerSync(true, (ok) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: ok ? "flushed" : "flush_skipped" }));
+        });
         return;
       }
 

@@ -338,8 +338,13 @@ resource "aws_cloudfront_distribution" "team_auth" {
     }
   }
 
+  aliases = var.custom_domain == null ? [] : [var.custom_domain.name]
+
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.custom_domain == null
+    acm_certificate_arn            = try(var.custom_domain.certificate_arn, null)
+    ssl_support_method             = var.custom_domain == null ? null : "sni-only"
+    minimum_protocol_version       = var.custom_domain == null ? "TLSv1" : "TLSv1.2_2021"
   }
 }
 
@@ -366,7 +371,9 @@ resource "aws_cloudwatch_log_delivery" "team_auth_cf" {
 }
 
 locals {
-  base_url      = "https://${aws_cloudfront_distribution.team_auth.domain_name}"
+  # The public hostname Keycloak signs into its issuer; the custom domain when set.
+  public_host   = try(var.custom_domain.name, aws_cloudfront_distribution.team_auth.domain_name)
+  base_url      = "https://${local.public_host}"
   issuer_url    = "${local.base_url}/realms/${local.realm}"
   discovery_url = "${local.issuer_url}/.well-known/openid-configuration"
 }

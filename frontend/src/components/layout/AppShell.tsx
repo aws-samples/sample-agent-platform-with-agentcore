@@ -18,6 +18,7 @@ import {
   Workflow,
   BarChart3,
   BookOpen,
+  Box,
 } from 'lucide-react'
 import { getUser, signOut } from '@/services/auth'
 import { api, type Identity } from '@/services/api'
@@ -34,6 +35,7 @@ const NAV = [
   { to: '/ecosystem', label: 'MCP & Skills', icon: Boxes, admin: true },
   { to: '/gateway', label: 'Gateway', icon: KeyRound, admin: true },
   { to: '/channels', label: 'Channels', icon: Webhook, admin: true },
+  { to: '/sandbox', label: 'Sandbox', icon: Box, admin: true },
   { to: '/observability', label: 'Observability', icon: Activity, admin: true },
   { to: '/memory', label: 'Memory', icon: Database, admin: true },
   { to: '/eval', label: 'Evaluation', icon: FlaskConical, admin: true },

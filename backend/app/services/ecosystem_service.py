@@ -23,6 +23,7 @@ from app.services.dynamo import query_all
 logger = logging.getLogger(__name__)
 
 PK = "ECOSYSTEM"
+SANDBOX_MCP_NAME = "platform-sandbox"
 
 
 def _now() -> str:
@@ -54,6 +55,17 @@ class EcosystemService:
                     description="Demo internal tools (directory / KB / ticketing) hosted on AgentCore Runtime",
                     kind="agentcore-runtime",
                     target=settings.mcp_tools_runtime_arn,
+                    builtin=True,
+                )
+            if SANDBOX_MCP_NAME not in existing_mcp and (settings.sandbox_versions or settings.sandbox_runtime_arn):
+                # served by this backend (app/api/sandboxes.py, POST /api/v1/sandbox-mcp);
+                # seeded only, never registrable: the kernel trusts this kind to
+                # carry a platform-issued token
+                self._put_mcp(
+                    name=SANDBOX_MCP_NAME,
+                    description="One-shot code sandboxes on AgentCore Runtime (create, exec, files, run, stop)",
+                    kind="sandbox",
+                    target="platform",
                     builtin=True,
                 )
             for name, description in BUILTIN_TOOLS.items():
@@ -88,7 +100,7 @@ class EcosystemService:
             "SK": f"MCP#{uuid.uuid4().hex[:12]}",
             "name": name,
             "description": description,
-            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | mcp-hub | builtin
+            "kind": kind,  # agentcore-runtime | agentcore-gateway | url | mcp-hub | builtin | sandbox
             "target": target,  # runtime ARN | gateway MCP URL | http(s) URL
             # mcp-hub only: how the application authenticates — hmac (per-agent
             # key pair, target = the hub) | iam (kernel IAM identity through the

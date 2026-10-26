@@ -97,6 +97,13 @@ resource "aws_db_instance" "keycloak" {
   username = local.db_username
   password = random_password.keycloak_db.result
 
+  # Seed the database from a snapshot (moving the IdP to another account
+  # keeps its realms, users and client secrets). The restored instance comes
+  # up with the snapshot's master password; the password above is applied
+  # in the same apply, so the keycloak-db secret stays authoritative.
+  snapshot_identifier = var.db_snapshot_identifier
+  kms_key_id          = var.db_snapshot_identifier == null ? null : var.db_kms_key_arn
+
   db_subnet_group_name   = aws_db_subnet_group.keycloak.name
   vpc_security_group_ids = [aws_security_group.keycloak_db.id]
   publicly_accessible    = false
@@ -128,6 +135,12 @@ resource "aws_db_instance" "keycloak" {
   enabled_cloudwatch_logs_exports = ["postgresql"]
 
   depends_on = [aws_cloudwatch_log_group.keycloak_db]
+
+  lifecycle {
+    # Only read at create time; the snapshot may be deleted afterwards and
+    # must not then force a replacement.
+    ignore_changes = [snapshot_identifier, kms_key_id]
+  }
 }
 
 locals {

@@ -284,3 +284,43 @@ class SampleSeedRequest(BaseModel):
     eval_cases: list[dict] = Field(default_factory=list, max_length=20)
     # also (re)publish the shared instance the Try button calls
     publish_shared: bool = True
+
+
+# ------------------------------------------------------------- sandboxes
+
+
+class SandboxCreateRequest(BaseModel):
+    version: str = Field(default="", max_length=64)
+    # "standard" (default) or "fast"; AgentCore's "V1" / "V2" are accepted, in
+    # runtime or in platform_version (the AWS docs' name), and must agree
+    runtime: str = Field(default="", max_length=16)
+    platform_version: str = Field(default="", max_length=16)
+    run_id: str = Field(default="", max_length=64)
+    labels: dict[str, str] = Field(default_factory=dict, max_length=16)
+
+
+class SandboxExecRequest(BaseModel):
+    """exec waits for the command (bounded by PLATFORM_SANDBOX_SYNC_EXEC_MAX_S);
+    jobs runs it in the background, up to timeout_s."""
+    cmd: str = Field(min_length=1, max_length=64_000)
+    cwd: str = Field(default="", max_length=1024)
+    env: dict[str, str] = Field(default_factory=dict, max_length=64)
+    timeout_s: int = Field(default=20, ge=1, le=1800)
+    memory_limit_mib: int = Field(default=0, ge=0, le=8192)
+
+
+class SandboxFileWriteRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+    content_b64: str
+    mode: int = Field(default=0, ge=0, le=0o777)
+
+
+class SandboxRunRequest(BaseModel):
+    version: str = Field(default="", max_length=64)
+    runtime: str = Field(default="", max_length=16)
+    platform_version: str = Field(default="", max_length=16)
+    # path -> base64 content, written under the sandbox workspace
+    files: dict[str, str] = Field(default_factory=dict, max_length=64)
+    command: str = Field(default="", max_length=64_000)
+    timeout_s: int = Field(default=600, ge=1, le=1800)
+    env: dict[str, str] = Field(default_factory=dict, max_length=64)

@@ -12,8 +12,10 @@ through `terraform plan`), then checks the staging overlay:
   - envs/staging.tfvars sets the list explicitly (an inherited production list
     is production's external callers, and once held a deleted endpoint that
     broke the first staging apply);
-  - the owner-endpoint lookup is only active when joining a cluster without
-    the demo stack, and its id reaches the portal module.
+  - the cluster owner creates the platform VPC's endpoint whenever it runs the
+    portal, independent of the demo stack; a joining state never creates one
+    and looks the owner's up instead; its id reaches the portal module; the
+    demo (which indexes that endpoint) runs only where it is created.
 
 Run: python3 terraform/tests/test_staging_vpce_isolation.py
 """
@@ -88,9 +90,26 @@ def main() -> int:
     assert re.search(r'^existing_eks_cluster_name\s*=\s*"[^"]+"', staging, re.M), \
         "envs/staging.tfvars must join an existing cluster for the owner endpoint lookup"
 
+    # the cluster owner creates the platform VPC's endpoint whenever it runs the
+    # portal, demo or not (533 production ran without the demo and its private
+    # API had no in-VPC endpoint; staging's owner lookup then failed); a state
+    # joining that cluster never creates one, it looks the owner's up
+    on = re.search(r"^\s*service_entry_vpce_on\s*=\s*(.+)$", main_tf, re.M)
+    assert on, "local.service_entry_vpce_on missing"
+    terms = {t.strip() for t in on.group(1).split("&&")}
+    assert terms == {"var.enable_portal", "var.enable_runtime", "!local.join_existing_eks"}, \
+        f"service_entry_vpce_on must be portal && runtime && !join_existing_eks, got {on.group(1)}"
+    assert "enable_mcp_hub_demo" not in on.group(1), "the endpoint must not depend on the demo stack"
+    for header in ('resource "aws_vpc_endpoint" "service_entry"', 'resource "aws_security_group" "service_entry_vpce"'):
+        assert re.search(r"count\s*=\s*local\.service_entry_vpce_on\s*\?", _block(main_tf, header)), \
+            f"{header} must be counted on local.service_entry_vpce_on"
     lookup = _block(main_tf, 'data "aws_vpc_endpoint" "owner_service_entry"')
-    assert re.search(r"count\s*=\s*local\.join_existing_eks\s*&&\s*!local\.mcp_hub_demo_on", lookup), \
-        "owner endpoint lookup must be limited to joining environments without the demo stack"
+    assert re.search(r"count\s*=\s*local\.join_existing_eks\s*&&\s*var\.enable_portal\s*&&\s*var\.enable_runtime\s*\?", lookup), \
+        "owner endpoint lookup must be exactly the joining environments that run a portal"
+    # the demo indexes service_entry[0]: it must only run where that endpoint exists
+    demo = re.search(r"^\s*mcp_hub_demo_on\s*=\s*(.+)$", main_tf, re.M)
+    assert demo and "local.service_entry_vpce_on" in demo.group(1), \
+        "mcp_hub_demo_on must require local.service_entry_vpce_on"
     assert 'state        = "available"' in lookup or re.search(r'state\s*=\s*"available"', lookup)
     assert "data.aws_vpc_endpoint.owner_service_entry[*].id" in main_tf, \
         "the owner endpoint must reach the portal module's allow list"

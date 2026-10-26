@@ -114,6 +114,53 @@ module "sample_tools" {
   name_suffix              = var.name_suffix
 }
 
+# Optional: one-shot code sandboxes (modules/sandbox), the foundation's half.
+# Its own subnets with no default route, its own S3 gateway endpoint and
+# security group, an execution role that can only pull its image and log.
+# The workloads root creates the sandbox runtime on these.
+module "sandbox" {
+  source = "./modules/sandbox"
+  count  = var.enable_sandbox && var.enable_runtime ? 1 : 0
+
+  vpc_id                      = module.network.vpc_id
+  subnets                     = var.sandbox_network.subnets
+  endpoint_security_group_ids = local.sandbox_endpoint_security_group_ids
+  callback_targets            = var.sandbox_network.callback_targets
+  state_object_arns = concat(
+    var.sandbox_network.state_object_arns,
+    [for p in var.sandbox_network.state_prefixes : "${module.platform.workspace_bucket.arn}/${p}*"],
+  )
+  extra_image_repository_arns = var.sandbox_network.extra_image_repository_arns
+  repository_url              = module.platform.sandbox_kernel_repo.url
+  repository_arn              = module.platform.sandbox_kernel_repo.arn
+  name_suffix                 = var.name_suffix
+}
+
+# The interface endpoints a sandbox pulls its image and writes its logs
+# through are the VPC's, outside this state. Unless sandbox_network names their
+# security groups, they are looked up here: each must exist and be available in
+# the platform VPC, or the plan fails (no endpoint, no image pull).
+data "aws_vpc_endpoint" "sandbox_reach" {
+  for_each = var.enable_sandbox && var.enable_runtime && length(try(var.sandbox_network.endpoint_security_group_ids, [])) == 0 ? toset(["ecr.api", "ecr.dkr", "logs"]) : toset([])
+
+  vpc_id       = module.network.vpc_id
+  service_name = "com.amazonaws.${var.aws_region}.${each.key}"
+  state        = "available"
+}
+
+locals {
+  sandbox_endpoint_security_group_ids = length(try(var.sandbox_network.endpoint_security_group_ids, [])) > 0 ? var.sandbox_network.endpoint_security_group_ids : sort(distinct(flatten([
+    for e in data.aws_vpc_endpoint.sandbox_reach : tolist(e.security_group_ids)
+  ])))
+}
+
+# The repository moved to modules/platform (every environment needs it, not
+# only those running sandboxes): production's keeps its images.
+moved {
+  from = module.sandbox[0].aws_ecr_repository.sandbox
+  to   = module.platform.aws_ecr_repository.sandbox_kernel
+}
+
 # The cluster every platform container runs on. Created whenever a module
 # that ships containers is enabled; the AgentCore runtimes do not need it.
 locals {
@@ -246,7 +293,8 @@ module "portal" {
   web_acl_arn               = one(module.edge_waf[*].web_acl_arn)
   workspace_access_role_arn = module.runtime[0].workspace_access_role_arn
   # external caller VPCs' endpoints, plus the platform VPC's own: created here
-  # when the mcp-hub demo is on, the owner's when joining its cluster
+  # by the cluster owner, the owner's when joining its cluster
+  service_api_throttle = var.service_api_throttle
   service_api_allowed_vpces = concat(
     var.service_api_allowed_vpces,
     aws_vpc_endpoint.service_entry[*].id,
@@ -254,8 +302,10 @@ module "portal" {
   )
   agentcore_gateway_caller_role_arn = try(module.agentcore_gateway_backend[0].caller_role_arn, "")
   enable_agentcore_gateway_backend  = var.enable_agentcore_gateway_backend
+  enable_sandbox_entry              = var.enable_sandbox && var.enable_runtime
   eks                               = local.eks_facts
   name_suffix                       = var.name_suffix
+  custom_domain                     = var.portal_custom_domain
 }
 
 module "team_auth" {
@@ -273,13 +323,22 @@ module "team_auth" {
   web_acl_arn            = one(module.edge_waf[*].web_acl_arn)
   eks                    = local.eks_facts
   name_suffix            = var.name_suffix
+  custom_domain          = var.team_auth_custom_domain
+  db_snapshot_identifier = var.keycloak_db_snapshot_identifier
+  db_kms_key_arn         = var.keycloak_db_kms_key_arn
 }
 
 # Optional: a customer-owned MCP hub as the tool backend (in place of
 # AgentCore Gateway) plus an EC2 playing the calling application. Verifies
 # tokens against the team_auth Keycloak, so that module is a prerequisite.
 locals {
-  mcp_hub_demo_on = var.enable_mcp_hub_demo && var.enable_portal && var.enable_team_auth && var.enable_runtime
+  # The platform VPC's own execute-api endpoint: the state that owns the
+  # cluster creates it whenever it runs the portal (the private service entry
+  # is unreachable from inside the VPC without one, demo or not: the CI checks
+  # and in-VPC callers use it); a state joining that cluster uses the owner's.
+  service_entry_vpce_on = var.enable_portal && var.enable_runtime && !local.join_existing_eks
+  # the demo app calls this state's endpoint, so it runs only where the endpoint is created
+  mcp_hub_demo_on = var.enable_mcp_hub_demo && var.enable_team_auth && local.service_entry_vpce_on
 }
 
 # The service-entry API is PRIVATE: reachable only through execute-api
@@ -294,7 +353,7 @@ locals {
 # portal needs this endpoint's id (policy + association) while the demo
 # module needs portal's API id.
 resource "aws_security_group" "service_entry_vpce" {
-  count = local.mcp_hub_demo_on ? 1 : 0
+  count = local.service_entry_vpce_on ? 1 : 0
 
   name        = "agent-platform-svc-entry-vpce${var.name_suffix}"
   description = "execute-api interface endpoint - HTTPS from inside the VPC"
@@ -317,7 +376,7 @@ resource "aws_security_group" "service_entry_vpce" {
 }
 
 resource "aws_vpc_endpoint" "service_entry" {
-  count = local.mcp_hub_demo_on ? 1 : 0
+  count = local.service_entry_vpce_on ? 1 : 0
 
   vpc_id              = module.network.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.execute-api"
@@ -332,12 +391,12 @@ resource "aws_vpc_endpoint" "service_entry" {
 }
 
 # An environment that joins another state's cluster (staging) does not create
-# that endpoint (it comes with the demo stack, which staging leaves off); it
+# that endpoint (one per VPC is enough, and the owner's state holds it); it
 # reuses the owner's, so its private API stays reachable from inside the VPC
 # (the CI checks call it from there). No match fails the plan rather than
 # leaving the API without a caller endpoint.
 data "aws_vpc_endpoint" "owner_service_entry" {
-  count = local.join_existing_eks && !local.mcp_hub_demo_on ? 1 : 0
+  count = local.join_existing_eks && var.enable_portal && var.enable_runtime ? 1 : 0
 
   vpc_id       = module.network.vpc_id
   service_name = "com.amazonaws.${var.aws_region}.execute-api"

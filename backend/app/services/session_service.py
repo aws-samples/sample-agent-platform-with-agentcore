@@ -141,6 +141,43 @@ class SessionService:
             logger.warning("warmup failed: %s", e)
             return "error"
 
+    def end_compute(
+        self, runtime_session_id: str, platform_version: str = "", *, flush: bool
+    ) -> str:
+        """End the session's microVM now instead of waiting for AgentCore's
+        idle reclaim (at least 15 minutes of billed compute, longer while the
+        kernel reports HealthyBusy). The S3 workspace stays; the next connect
+        cold-starts and restores it.
+
+        ``flush`` asks the kernel to sync the workspace first. Only send it
+        when the session was invoked recently: an invocation of an id whose
+        microVM is already gone boots a fresh, empty one, which is exactly
+        what a stop must not do. Returns "stopped", "not_running" or "error"."""
+        arn = runtime_arn("interactive", platform_version)
+        if flush:
+            try:
+                self.agentcore.invoke_agent_runtime(
+                    agentRuntimeArn=arn,
+                    qualifier=settings.runtime_qualifier,
+                    runtimeSessionId=runtime_session_id,
+                    payload=json.dumps({"action": "flush"}).encode(),
+                )["response"].read()
+            except Exception as e:  # noqa: BLE001 - the stop matters more than the flush
+                logger.warning("flush before stop failed (%s): %s", runtime_session_id, e)
+        try:
+            self.agentcore.stop_runtime_session(
+                agentRuntimeArn=arn,
+                qualifier=settings.runtime_qualifier,
+                runtimeSessionId=runtime_session_id,
+            )
+            return "stopped"
+        except self.agentcore.exceptions.ResourceNotFoundException:
+            # already reclaimed (or never started): nothing is running
+            return "not_running"
+        except Exception as e:  # noqa: BLE001 - reported, never raised to the user
+            logger.warning("StopRuntimeSession failed (%s): %s", runtime_session_id, e)
+            return "error"
+
     def generate_presigned_wss_url(
         self, runtime_session_id: str, expires: int = 300, platform_version: str = ""
     ) -> str:

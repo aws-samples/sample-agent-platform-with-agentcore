@@ -53,6 +53,10 @@ COPY scripts/builtin_tools_mcp.py /opt/platform/builtin_tools_mcp.py
 COPY scripts/mcp_hub_proxy.py /opt/platform/mcp_hub_proxy.py
 COPY scripts/mcphub_hmac.py /opt/platform/mcphub_hmac.py
 
+# stdio -> HTTP proxy for the platform's sandbox tools (kind=sandbox), which
+# the backend serves; keeps the per-session token out of .mcp.json
+COPY scripts/sandbox_mcp_proxy.py /opt/platform/sandbox_mcp_proxy.py
+
 COPY contract-server/ /opt/contract-server/
 WORKDIR /opt/contract-server
 RUN npm install --production

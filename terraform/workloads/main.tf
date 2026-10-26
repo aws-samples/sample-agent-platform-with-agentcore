@@ -37,7 +37,10 @@ locals {
   # the Sample Agents tool stack: the foundation publishes its half (gateway,
   # engine, roles) only when it runs the feature; this root adds the tools
   run_sample_tools = tobool(local.features.runtime) && tobool(try(local.features.sample_tools, false))
-  cluster_name     = try(local.facts.eks.cluster_name, "")
+  # one-shot code sandboxes: the foundation publishes the network, role and
+  # repository only when it runs the feature
+  run_sandbox  = tobool(local.features.runtime) && tobool(try(local.features.sandbox, false))
+  cluster_name = try(local.facts.eks.cluster_name, "")
 
   kernel_tags = {
     "claude-code-kernel" = coalesce(var.claude_code_image_tag, var.image_tag)
@@ -111,6 +114,29 @@ module "sample_tools" {
   name_suffix              = var.name_suffix
 }
 
+module "sandbox" {
+  source = "./modules/sandbox"
+  count  = local.run_sandbox ? 1 : 0
+
+  images = {
+    for v, img in var.sandbox_images : v => {
+      uri  = img.uri
+      tag  = img.uri != "" ? "" : coalesce(img.tag, var.sandbox_image_tag, var.image_tag)
+      fast = img.fast
+    }
+  }
+  repository_url      = local.facts.sandbox.repository_url
+  role_arn            = local.facts.sandbox.role_arn
+  security_group_id   = local.facts.sandbox.security_group_id
+  subnet_ids          = local.facts.sandbox.subnet_ids
+  idle_timeout_s      = var.sandbox_idle_timeout_s
+  max_lifetime_s      = var.sandbox_max_lifetime_s
+  log_retention_days  = var.runtime_log_retention_days
+  runtime_name_suffix = local.facts.runtime_suffix
+
+  platform_version_python = var.platform_version_python
+}
+
 module "llm_edge" {
   source = "./modules/llm_edge"
   count  = local.run_llm_edge ? 1 : 0
@@ -153,6 +179,17 @@ module "portal" {
   agentcore_gateway_caller_role_arn = local.facts.portal.agentcore_gateway_caller_role_arn
   # the MCP hub IAM entry's caller role; "" when this environment runs no hub demo
   mcp_hub_caller_role_arn = try(local.facts.mcp_hub.caller_role_arn, "")
-  oidc                    = local.facts.portal.oidc
-  name_suffix             = var.name_suffix
+  sandbox = {
+    versions        = local.run_sandbox ? module.sandbox[0].runtime_arns : {}
+    fast_versions   = local.run_sandbox ? module.sandbox[0].fast_runtime_arns : {}
+    default_version = var.sandbox_default_version
+    idle_timeout_s  = var.sandbox_idle_timeout_s
+    max_lifetime_s  = var.sandbox_max_lifetime_s
+    service_callers = concat(
+      var.sandbox_service_callers,
+      [for n in var.sandbox_service_caller_role_names : "arn:aws:iam::${local.facts.account_id}:role/${n}"],
+    )
+  }
+  oidc        = local.facts.portal.oidc
+  name_suffix = var.name_suffix
 }

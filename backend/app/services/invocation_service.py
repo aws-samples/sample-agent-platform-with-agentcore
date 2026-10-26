@@ -23,6 +23,7 @@ from app.services.governance_service import governance_service
 from app.services.kernel_service import kernel_service
 from app.services.model_config_service import model_config_service, require_gateway_routing
 from app.services.observability_service import observability_service
+from app.services.live_session_service import live_session_service
 from app.services.session_binding import resolve_session_id  # re-exported for the API routes
 
 logger = logging.getLogger(__name__)
@@ -350,6 +351,8 @@ def invoke_async_and_wait(
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
                 time.sleep(poll_s)
+                # the task keeps its microVM busy; keep the live row fresh
+                live_session_service.heartbeat(out["runtime_session_id"])
                 try:
                     body = s3.get_object(
                         Bucket=settings.workspace_bucket, Key=status_key
@@ -365,6 +368,10 @@ def invoke_async_and_wait(
                 out["error"] = f"async task did not finish within {timeout_s}s"
     except Exception as e:  # noqa: BLE001 — recorded below, caller sees the error
         out["error"] = str(e)[:300]
+
+    if out["runtime_session_id"]:
+        live_session_service.set_status(out["runtime_session_id"], "idle")
+        live_session_service.heartbeat(out["runtime_session_id"])
 
     spec = cfg["model_spec"]
     observability_service.record(
