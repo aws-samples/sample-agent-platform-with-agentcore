@@ -194,6 +194,58 @@ resource "aws_api_gateway_integration" "poll" {
   }
 }
 
+# ------------------------- sandbox service API ----------------------------
+# /service/v1/sandboxes and everything under it (create, exec, jobs, files,
+# stop, run), when the one-shot code sandbox feature is on. Same front door as
+# the channel routes: AWS_IAM, the gateway-verified caller ARN and the entry
+# secret injected, HTTP_PROXY over the VPC link. The backend admits a caller
+# only if its role is on PLATFORM_SANDBOX_SERVICE_CALLERS.
+
+resource "aws_api_gateway_resource" "sandboxes" {
+  count       = var.enable_sandbox_entry ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "sandboxes"
+}
+
+resource "aws_api_gateway_resource" "sandboxes_proxy" {
+  count       = var.enable_sandbox_entry ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.sandboxes[0].id
+  path_part   = "{proxy+}"
+}
+
+resource "aws_api_gateway_method" "sandboxes" {
+  for_each      = var.enable_sandbox_entry ? { root = "", proxy = "/{proxy}" } : {}
+  rest_api_id   = aws_api_gateway_rest_api.service_entry.id
+  resource_id   = each.key == "root" ? aws_api_gateway_resource.sandboxes[0].id : aws_api_gateway_resource.sandboxes_proxy[0].id
+  http_method   = "ANY"
+  authorization = "AWS_IAM"
+
+  request_parameters = each.key == "root" ? {} : {
+    "method.request.path.proxy" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "sandboxes" {
+  for_each                = aws_api_gateway_method.sandboxes
+  rest_api_id             = aws_api_gateway_rest_api.service_entry.id
+  resource_id             = each.value.resource_id
+  http_method             = each.value.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://${aws_lb.service_entry.dns_name}/service/v1/sandboxes${each.key == "root" ? "" : "/{proxy}"}"
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.service_entry.id
+
+  request_parameters = merge({
+    "integration.request.header.x-caller-arn"           = "context.identity.userArn"
+    "integration.request.header.x-service-entry-secret" = local.entry_secret_header
+    }, each.key == "root" ? {} : {
+    "integration.request.path.proxy" = "method.request.path.proxy"
+  })
+}
+
 # ------------------------------- deployment --------------------------------
 
 resource "aws_api_gateway_deployment" "service_entry" {
@@ -215,6 +267,8 @@ resource "aws_api_gateway_deployment" "service_entry" {
       aws_api_gateway_method.poll.id,
       aws_api_gateway_integration.submit.uri,
       aws_api_gateway_integration.poll.uri,
+      [for k, m in aws_api_gateway_method.sandboxes : m.id],
+      [for k, i in aws_api_gateway_integration.sandboxes : i.uri],
       data.aws_iam_policy_document.service_entry_api.json,
     ]))
   }
@@ -229,6 +283,7 @@ resource "aws_api_gateway_deployment" "service_entry" {
   depends_on = [
     aws_api_gateway_integration.submit,
     aws_api_gateway_integration.poll,
+    aws_api_gateway_integration.sandboxes,
     aws_api_gateway_rest_api_policy.service_entry,
   ]
 }
@@ -271,8 +326,9 @@ resource "aws_api_gateway_method_settings" "svc" {
   stage_name  = aws_api_gateway_stage.svc.stage_name
   method_path = "*/*"
 
+  # stage-wide, every caller and route together (root var.service_api_throttle)
   settings {
-    throttling_rate_limit  = 50
-    throttling_burst_limit = 100
+    throttling_rate_limit  = var.service_api_throttle.rate_limit
+    throttling_burst_limit = var.service_api_throttle.burst_limit
   }
 }

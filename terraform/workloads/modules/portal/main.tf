@@ -49,6 +49,16 @@ locals {
       PLATFORM_SERVICE_API_ARN_BASE      = "arn:aws:execute-api:${local.region}:${var.account_id}:${var.portal.service_entry_api_id}/svc"
       PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
       PLATFORM_MCP_HUB_CALLER_ROLE_ARN   = var.mcp_hub_caller_role_arn
+      # one-shot code sandboxes (empty versions = feature off, APIs answer 503)
+      PLATFORM_SANDBOX_VERSIONS        = jsonencode(var.sandbox.versions)
+      PLATFORM_SANDBOX_FAST_VERSIONS   = jsonencode(var.sandbox.fast_versions)
+      PLATFORM_SANDBOX_DEFAULT_VERSION = var.sandbox.default_version
+      PLATFORM_SANDBOX_IDLE_TIMEOUT_S  = tostring(var.sandbox.idle_timeout_s)
+      PLATFORM_SANDBOX_MAX_LIFETIME_S  = tostring(var.sandbox.max_lifetime_s)
+      PLATFORM_SANDBOX_SERVICE_CALLERS = join(",", var.sandbox.service_callers)
+      # where a workbench container reaches the sandbox tools: this backend
+      # through the portal's own entry (CloudFront forwards /api/*)
+      PLATFORM_SANDBOX_MCP_URL = length(var.sandbox.versions) > 0 ? "https://${var.portal.cloudfront_domain}/api/v1/sandbox-mcp" : ""
     },
     var.oidc.issuer != "" ? {
       PLATFORM_OIDC_ISSUER    = var.oidc.issuer

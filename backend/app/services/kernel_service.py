@@ -9,6 +9,7 @@ from botocore.config import Config
 from botocore.exceptions import ConnectionClosedError, EndpointConnectionError
 
 from app.config import platform_versions, runtime_arn, settings
+from app.services.live_session_service import live_session_service
 from app.services.llm_credentials_service import llm_credentials_service
 
 logger = logging.getLogger(__name__)
@@ -225,17 +226,32 @@ class KernelService:
                 **trace_headers,
             )
 
+        # Live-session ledger (bookkeeping, never fails the call): "running"
+        # while the synchronous call is in flight, "idle" once it returns, so
+        # the Observability live tab can show it and presume it reclaimed after
+        # the idle timeout. An async task keeps its microVM alive through
+        # HealthyBusy; invocation_service refreshes the row while it polls.
+        live_target = f"{'sample' if runtime_arn_override else 'sdk'}:{platform_version or settings.default_platform_version}"
+        live_session_service.touch(
+            sid, kind="headless", owner=user or "", target=live_target,
+            source="async" if async_output else "sync", status="running",
+        )
         try:
-            resp = _invoke()
-        except (ConnectionClosedError, EndpointConnectionError):
-            # A pooled keep-alive connection the endpoint had already closed
-            # (idle backend between runs) — surfaces as "Connection was closed
-            # before we received a valid response". Retry once on a fresh
-            # connection; read timeouts stay non-retried on purpose (retrying
-            # a genuinely long run would double model cost).
-            logger.warning("stale connection to AgentCore — retrying once (session %s)", sid)
-            resp = _invoke()
-        body = resp["response"].read()
+            try:
+                resp = _invoke()
+            except (ConnectionClosedError, EndpointConnectionError):
+                # A pooled keep-alive connection the endpoint had already closed
+                # (idle backend between runs) - surfaces as "Connection was closed
+                # before we received a valid response". Retry once on a fresh
+                # connection; read timeouts stay non-retried on purpose (retrying
+                # a genuinely long run would double model cost).
+                logger.warning("stale connection to AgentCore - retrying once (session %s)", sid)
+                resp = _invoke()
+            body = resp["response"].read()
+        finally:
+            if not async_output:
+                live_session_service.set_status(sid, "idle")
+                live_session_service.heartbeat(sid)
         try:
             data = json.loads(body)
         except json.JSONDecodeError:

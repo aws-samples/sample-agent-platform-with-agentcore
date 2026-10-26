@@ -1,5 +1,5 @@
 output "portal_url" {
-  value = "https://${aws_cloudfront_distribution.portal.domain_name}"
+  value = "https://${local.public_host}"
 }
 
 output "distribution_id" {
@@ -62,7 +62,7 @@ output "workload_facts" {
     service_security_group_id = aws_security_group.service.id
     backend_target_group_arn  = aws_lb_target_group.backend.arn
     entry_target_group_arn    = aws_lb_target_group.service_entry.arn
-    cloudfront_domain         = aws_cloudfront_distribution.portal.domain_name
+    cloudfront_domain         = local.public_host # the custom domain when set; the CORS origin and API URL the workloads derive from it
     cognito_pool_id           = aws_cognito_user_pool.portal.id
     cognito_client_id         = aws_cognito_user_pool_client.portal.id
     scheduler_group           = aws_scheduler_schedule_group.portal.name
@@ -75,4 +75,9 @@ output "workload_facts" {
     service_entry_api_id      = aws_api_gateway_rest_api.service_entry.id
     portal_admin_secret_name  = local.portal_admin_secret
   }
+}
+
+output "distribution_domain" {
+  description = "The distribution's *.cloudfront.net domain (the CNAME target when a custom domain is set)."
+  value       = aws_cloudfront_distribution.portal.domain_name
 }

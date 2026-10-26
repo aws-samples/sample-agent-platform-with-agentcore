@@ -161,6 +161,19 @@ variable "oidc_audience" {
   default = "agent-platform"
 }
 
+variable "service_api_throttle" {
+  description = "Stage-wide throttle of the private service-entry API, shared by every caller and route (channels, the sandbox service API). Every sandbox job poll is a request: 200 jobs polled each second plus creates is about 300 requests per second. The account-level API Gateway limit (10000 rps) is above any value here."
+  type = object({
+    rate_limit  = number
+    burst_limit = number
+  })
+  default = { rate_limit = 50, burst_limit = 100 }
+  validation {
+    condition     = var.service_api_throttle.rate_limit >= 1 && var.service_api_throttle.burst_limit >= var.service_api_throttle.rate_limit && var.service_api_throttle.rate_limit <= 5000
+    error_message = "service_api_throttle: 1 <= rate_limit <= 5000, and burst_limit at least rate_limit."
+  }
+}
+
 variable "service_api_allowed_vpces" {
   description = "Caller interface-VPC-endpoint IDs pinned in (and associated with) the private service-entry API."
   type        = list(string)
@@ -406,6 +419,64 @@ variable "enable_sample_tools" {
   default     = false
 }
 
+# ------------------------------- sandboxes ----------------------------------
+# One-shot code sandboxes (modules/sandbox + the workloads root's sandbox
+# runtime). Off by default.
+
+variable "enable_sandbox" {
+  description = "Create the one-shot code sandbox network, role and image repository (requires enable_runtime)."
+  type        = bool
+  default     = false
+}
+
+variable "sandbox_network" {
+  description = "Where sandboxes run and what they may reach. Required when enable_sandbox: see modules/sandbox/variables.tf for each field."
+  type = object({
+    subnets = list(object({
+      cidr = string
+      az   = string
+    }))
+    # empty: the security groups of the VPC's ECR api/dkr and Logs interface
+    # endpoints, looked up by the root (main.tf), so no tfvars names one
+    endpoint_security_group_ids = optional(list(string), [])
+    callback_targets = optional(list(object({
+      description       = string
+      port              = number
+      security_group_id = optional(string, "")
+      cidr              = optional(string, "")
+    })), [])
+    state_object_arns = optional(list(string), [])
+    # key prefixes in THIS environment's workspaces bucket ("sandbox-sim/"):
+    # the root turns each into that one bucket's exact object ARN, so an
+    # overlay names state locations without an account id and without a
+    # bucket-name wildcard (a "*" there spans the account and region segments
+    # and admits every account's bucket: Security Agent on MR !45)
+    state_prefixes              = optional(list(string), [])
+    extra_image_repository_arns = optional(list(string), [])
+  })
+  default = null
+  validation {
+    condition = var.sandbox_network == null || alltrue([
+      for p in try(var.sandbox_network.state_prefixes, []) : can(regex("^[A-Za-z0-9][A-Za-z0-9._-]*/$", p))
+    ])
+    error_message = "a state prefix is one path segment ending in / (\"sandbox-sim/\"): no wildcard, no leading /, no nesting."
+  }
+  # The bucket must be exact: a wildcard there ("*" spans the account and
+  # region segments, "?" matches one character each) admits other accounts'
+  # buckets. An allowlist of the characters a bucket name may have, so no
+  # wildcard character is left out (Security Agent on MR !45, twice).
+  validation {
+    condition = var.sandbox_network == null || alltrue([
+      for a in try(var.sandbox_network.state_object_arns, []) : can(regex("^arn:aws:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/", a))
+    ])
+    error_message = "state_object_arns: arn:aws:s3:::<exact bucket name>/<key pattern> (no wildcard in the bucket name: * or ? there matches other accounts' buckets); use state_prefixes for this environment's workspaces bucket."
+  }
+  validation {
+    condition     = !var.enable_sandbox || var.sandbox_network != null
+    error_message = "enable_sandbox needs sandbox_network (subnets and the VPC endpoint security groups)."
+  }
+}
+
 variable "sample_runtimes" {
   description = "Sample agents that get their own runtime and execution role, by sample id. Keys must match the workloads root's sample list."
   type        = map(object({}))
@@ -422,4 +493,40 @@ variable "sample_tools_policy_mode" {
   description = "Policy engine mode on the sample-tools gateway: LOG_ONLY (trace, do not enforce) or ENFORCE."
   type        = string
   default     = "LOG_ONLY"
+}
+
+# Custom domains for the two CloudFront distributions. null = the default
+# *.cloudfront.net domain. A distribution's default domain changes every time
+# it is recreated (a new account, a rebuild), and the Keycloak one is baked
+# into the OIDC issuer every token is checked against; a custom domain keeps
+# both stable. certificate_arn: ACM in us-east-1. The DNS CNAME to the
+# distribution is created outside Terraform (see the custom_domain_targets output).
+variable "portal_custom_domain" {
+  type = object({
+    name            = string
+    certificate_arn = string
+  })
+  default = null
+}
+
+variable "team_auth_custom_domain" {
+  type = object({
+    name            = string
+    certificate_arn = string
+  })
+  default = null
+}
+
+# Seed the Keycloak database from an RDS snapshot (see modules/team_auth
+# db_snapshot_identifier); create-time only. Used to move the IdP between
+# accounts with its realms and client secrets intact.
+variable "keycloak_db_snapshot_identifier" {
+  type    = string
+  default = null
+}
+
+variable "keycloak_db_kms_key_arn" {
+  description = "KMS key for the restored Keycloak database; required when the snapshot is shared from another account."
+  type        = string
+  default     = null
 }

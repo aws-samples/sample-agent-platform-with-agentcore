@@ -168,6 +168,19 @@ def list_gateway_tools(
     enforcement = {t["name"]: t["enforcement"] for t in gateway["targets"]}
 
     token = _caller_token(authorization)
+    # An IAM-authorized gateway takes SigV4 only: listing it with the caller's
+    # bearer token is refused every time, so the page showed every such gateway
+    # as "not reachable" while agents (signing with their execution role) used
+    # it fine. Say what is true instead: not listable with a user identity.
+    if gateway.get("authorizer_type") == "AWS_IAM":
+        return {
+            "gateway_id": gateway_id,
+            "mcp_url": gateway["mcp_url"],
+            "tools": [],
+            "listable": False,
+            "reason": "AWS_IAM inbound: callers sign with SigV4 (agents use their execution "
+            "role), so the catalog cannot be listed with your portal token",
+        }
     tools: list[dict] = []
     cursor = None
     for _ in range(20):
@@ -175,6 +188,15 @@ def list_gateway_tools(
             gateway["mcp_url"], token, "tools/list", {"cursor": cursor} if cursor else {}
         )
         if status != 200 or "result" not in resp:
+            # 401/403 here is the *gateway* refusing the caller's token (an
+            # IAM-authorized gateway never accepts a bearer JWT), not the portal
+            # session ending. Passed through, the SPA reads it as "signed out"
+            # and drops the session, so opening the Gateway page on such a
+            # gateway logged the user out. Report it as an upstream failure.
+            if status in (401, 403):
+                raise HTTPException(
+                    502, f"gateway refused this identity ({status}): {json.dumps(resp)[:300]}"
+                )
             raise HTTPException(status if status >= 400 else 502, json.dumps(resp)[:400])
         for tool in resp["result"].get("tools", []):
             # gateway tool names are "<target>___<tool>"
@@ -190,6 +212,6 @@ def list_gateway_tools(
         cursor = resp["result"].get("nextCursor")
         if not cursor:
             break
-    return {"gateway_id": gateway_id, "mcp_url": gateway["mcp_url"], "tools": tools}
+    return {"gateway_id": gateway_id, "mcp_url": gateway["mcp_url"], "tools": tools, "listable": True}
 
 

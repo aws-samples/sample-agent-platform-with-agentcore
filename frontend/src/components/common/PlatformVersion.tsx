@@ -1,16 +1,18 @@
 import type { Kernel, PlatformVersion } from '@/services/api'
 
-// AgentCore Runtime platform versions, named by what the user trades:
-// V2 restores each session from a snapshot (fast, steady cold start) and
-// bills a higher unit price; V1 boots each session from the image.
+// AgentCore Runtime platform versions, named as two ways of deploying (not
+// an old and a new release): V1 is the Standard Runtime, booting each
+// session from the image; V2 the Fast Runtime, restoring it from a snapshot
+// (fast, steady cold start) at a higher unit price. The UI says Standard /
+// Fast; AgentCore's V1 / V2 stay in the hints, to match the AWS docs.
 export const PLATFORM_VERSION_LABEL: Record<PlatformVersion, string> = {
-  V1: 'Standard (V1)',
-  V2: 'Fast start (V2)',
+  V1: 'Standard',
+  V2: 'Fast',
 }
 
 const HINT: Record<PlatformVersion, string> = {
-  V1: 'Boots each session from the image. Slower cold start, lower unit price.',
-  V2: 'Restores each session from a snapshot: ~2 s cold start regardless of image size, higher unit price, idle memory reclaimed.',
+  V1: 'Standard Runtime (AgentCore platform V1): boots each session from the image. Slower cold start, lower unit price.',
+  V2: 'Fast Runtime (AgentCore platform V2): restores each session from a snapshot, ~2 s cold start regardless of image size, higher unit price, idle memory reclaimed.',
 }
 
 /** Version picker for a kernel. Renders nothing on single-runtime

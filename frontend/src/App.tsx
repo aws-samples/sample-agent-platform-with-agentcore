@@ -18,6 +18,7 @@ import GovernancePage from '@/pages/GovernancePage'
 import GatewayPage from '@/pages/GatewayPage'
 import SamplesPage from '@/pages/SamplesPage'
 import SampleDetailPage from '@/pages/SampleDetailPage'
+import SandboxPage from '@/pages/SandboxPage'
 import { getPublicConfig, getToken } from '@/services/auth'
 import { api } from '@/services/api'
 
@@ -98,6 +99,7 @@ export default function App() {
         <Route path="/pipeline/insights" element={<RequireAdmin><WorkflowInsightsPage /></RequireAdmin>} />
         <Route path="/governance" element={<RequireAdmin><GovernancePage /></RequireAdmin>} />
         <Route path="/gateway" element={<RequireAdmin><GatewayPage /></RequireAdmin>} />
+        <Route path="/sandbox" element={<RequireAdmin><SandboxPage /></RequireAdmin>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

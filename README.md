@@ -40,6 +40,7 @@ provides, the gap, and how this code closes it.
 | 4 | [Every invocation goes through one governed pipeline](#4-every-invocation-goes-through-one-governed-pipeline) | Six entry points, one answer to "who spent what, and can we stop it" |
 | 5 | [Workflow scripts from the laptop run as governed cloud pipelines](#5-workflow-scripts-from-the-laptop-run-as-governed-cloud-pipelines) | Running an admin's arbitrary script on the pod that holds the platform's credentials |
 | 6 | [Runtime platform version is chosen per workload](#6-runtime-platform-version-is-chosen-per-workload) | V2 is cheaper for some workloads and dearer for others, and the setting is per runtime |
+| 7 | [A one-shot sandbox stays one-shot](#7-a-one-shot-sandbox-stays-one-shot) | AgentCore boots a fresh microVM for any id, even a stopped one, without an error |
 
 Decision 3, workspace file access and session-id handling all follow from one
 fact about the Workbench, covered after the list:
@@ -281,6 +282,45 @@ the same review.
 
 Details: [docs/architecture.md § Platform versions](docs/architecture.md#platform-versions-v1--v2).
 
+### 7. A one-shot sandbox stays one-shot
+
+**Requirement.** Run untrusted code (a customer's job, model-written code) in
+a microVM of its own, on an image the customer pins, with no internet egress,
+and throw the microVM away when the run ends. Once stopped, a sandbox must
+never answer again.
+
+**What AgentCore provides.** Runtime runs any arm64 image in a per-session
+microVM, in VPC mode, with `StopRuntimeSession` and idle / lifetime limits.
+
+**The gap.** A `runtimeSessionId` stays valid until the runtime is deleted.
+Invoking an id whose microVM was stopped or idle-reclaimed boots a fresh,
+empty one and answers normally, so a host can carry on with empty state
+without noticing. There is no API to list sessions or read one's state, so an
+id that was not written down can be neither found nor stopped.
+
+**What this platform does.** A sandbox service in the backend, behind three
+entry points (a SigV4 service API for applications, the portal's Sandbox page,
+MCP tools for the Workbench):
+
+- **Write before invoke.** The sandbox is recorded in the live-session ledger
+  before its first invocation; no record, no boot.
+- **Claim.** The first operation hands the microVM a one-time nonce and every
+  later one carries it. A microVM that AgentCore re-booted behind the id was
+  never claimed, answers `unclaimed`, and is stopped; the request fails with
+  410 instead of running on empty state.
+- **Ledger gate.** An id that is not running in the ledger is refused without
+  being invoked, so a stopped sandbox is never re-booted through the platform.
+  A reaper closes boot timeouts, failed stops and idle sandboxes from the
+  ledger alone.
+- Sandbox subnets have no NAT or internet gateway; egress is VPC endpoints,
+  listed S3 prefixes and listed private callback targets. The execution role
+  can pull its image and write logs, nothing else. One runtime per image
+  version pins what each run executes on.
+
+![One-shot code sandboxes](docs/images/sandbox.svg?v=1)
+
+Details: [docs/sandbox.md](docs/sandbox.md).
+
 ### One fact behind three of these decisions
 
 The Dev Workbench gives a user a real terminal in the session's microVM, and
@@ -313,7 +353,8 @@ security review).
 ├── runtimes/
 │   ├── claude-code-kernel/   # Interactive kernel: web terminal (ttyd+tmux) + Claude Code + S3 workspace persistence
 │   ├── agent-sdk-kernel/     # Headless kernel: Claude Agent SDK behind the AgentCore /invocations contract
-│   └── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
+│   ├── mcp-tools-kernel/     # Demo MCP server (protocol=MCP): mock internal tools on AgentCore Runtime
+│   └── sandbox-kernel/       # One-shot code sandbox: claim-gated control service for untrusted jobs
 ├── backend/                  # FastAPI control plane: sessions, terminal URLs, kernel catalog, MCP/skill registry, workflow engine
 ├── frontend/                 # React portal: Workbench, Publish, Debug, Scheduler, MCP & Skills, Gateway, Channels, Memory, Observability, Eval, Workflow, Governance
 ├── services/                 # llm-edge (key holder for the `litellm` backend), the optional Keycloak IdP and team APIs, and mcp-hub-demo (the companion customer-owned MCP hub: SSO, HMAC and IAM-entry inbound auth)
@@ -339,6 +380,7 @@ walks through each page):
 | **Channels** | Token webhooks, and the private IAM service entry (decision 2). A `conversation_id` keeps a warm session and a separate memory history per conversation. |
 | **Memory** | AgentCore Memory stores; bound invocations retrieve long-term records and replay the last 10 turns, so conversations survive microVM recycling. |
 | **Observability · Eval · Governance** | Invocation ledger and per-run traces; LLM-judged task suites against any target; quotas, kill switches, model backends and the audit log. |
+| **Sandbox** | One-shot code sandboxes on AgentCore Runtime (decision 7): a service API for applications, a page to run and watch them, and MCP tools for the Workbench. |
 | **Workflow** *(experimental)* | Workflow-dialect pipelines (decision 5) with a live trace view and an Insights page. |
 
 ## Prerequisites

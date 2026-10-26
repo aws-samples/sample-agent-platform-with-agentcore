@@ -243,8 +243,13 @@ resource "aws_cloudfront_distribution" "portal" {
     }
   }
 
+  aliases = var.custom_domain == null ? [] : [var.custom_domain.name]
+
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.custom_domain == null
+    acm_certificate_arn            = try(var.custom_domain.certificate_arn, null)
+    ssl_support_method             = var.custom_domain == null ? null : "sni-only"
+    minimum_protocol_version       = var.custom_domain == null ? "TLSv1" : "TLSv1.2_2021"
   }
 }
 
@@ -316,4 +321,9 @@ data "aws_iam_policy_document" "frontend_bucket" {
 resource "aws_s3_bucket_policy" "frontend" {
   bucket = aws_s3_bucket.frontend.id
   policy = data.aws_iam_policy_document.frontend_bucket.json
+}
+
+locals {
+  # The hostname users reach the portal on; the custom domain when set.
+  public_host = try(var.custom_domain.name, aws_cloudfront_distribution.portal.domain_name)
 }

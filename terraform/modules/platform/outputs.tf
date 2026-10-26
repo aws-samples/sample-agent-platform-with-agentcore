@@ -37,6 +37,13 @@ output "llm_edge_repo" {
   }
 }
 
+output "sandbox_kernel_repo" {
+  value = {
+    url = aws_ecr_repository.sandbox_kernel.repository_url
+    arn = aws_ecr_repository.sandbox_kernel.arn
+  }
+}
+
 output "log_bucket" {
   value = {
     name = aws_s3_bucket.logs.bucket

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     retention_usage_days: int = 90  # daily quota counters (PK=USAGE)
     retention_service_invocation_days: int = 7  # async service-entry results (PK=SVCINV)
     retention_terminated_session_days: int = 30  # sessions after they are terminated
+    retention_live_session_days: int = 7  # live-session ledger rows once stopped / lost (PK=LIVE_SESSION)
     retention_audit_days: int = 0  # audit trail (PK=AUDIT)
     retention_pipeline_run_days: int = 0  # pipeline runs (PK=PIPELINERUN)
 
@@ -41,6 +42,50 @@ class Settings(BaseSettings):
     # MCP URL of the sample-tools gateway, registered in the ecosystem as the
     # entry the samples attach ("" = the feature is not deployed)
     sample_tools_gateway_url: str = ""
+
+    # One-shot code sandboxes (app/services/sandbox_service.py). Each image
+    # version runs on its own runtime (a runtime holds one image, so versions
+    # that serve side by side are separate runtimes), addressed through
+    # sandbox_default_qualifier. JSON {"<version>": "<runtime ARN>"} of the
+    # Standard Runtimes (AgentCore platform V1); sandbox_fast_versions, the
+    # same shape, of the Fast Runtimes (platform V2) of the versions that
+    # have one. sandbox_runtime_arn alone is a one-version deployment
+    # ("default"). Neither set = the feature is not deployed (APIs answer 503).
+    sandbox_versions: dict[str, str] = {}
+    sandbox_fast_versions: dict[str, str] = {}
+    sandbox_runtime_arn: str = ""
+    sandbox_default_version: str = ""
+    sandbox_default_qualifier: str = "DEFAULT"
+    # must match the runtime's lifecycleConfiguration (the reaper presumes a
+    # sandbox reclaimed after this much inactivity)
+    sandbox_idle_timeout_s: int = 300
+    sandbox_max_lifetime_s: int = 2400
+    # address-space cap for every job a sandbox runs (0 = none); the platform
+    # microVM is 2 vCPU / 8 GB, the job must fail before the control service
+    sandbox_job_memory_mib: int = 3072
+    # longest synchronous exec, in seconds: below the 29 s of the private
+    # service-entry API Gateway (and the portal CloudFront's 60 s); longer
+    # commands run as background jobs
+    sandbox_sync_exec_max_s: int = 25
+    # open sandboxes one workbench session may hold (0 = unlimited)
+    sandbox_max_per_owner_session: int = 5
+    # Concurrency of one backend process. Every sandbox operation holds a
+    # connection to bedrock-agentcore (and the ledger one to DynamoDB) for as
+    # long as the kernel answers; botocore's default pool is 10 connections,
+    # so the 11th concurrent create waited (2026-10-24 staging: 12 concurrent
+    # creates p50 3.2 s, 10/s p50 5.5 s, against 650 ms alone). The sync routes
+    # run on the anyio thread pool, 40 tokens by default: raise both together
+    # or the queue only moves. A job poll counts as an operation.
+    aws_max_pool_connections: int = 64
+    threadpool_tokens: int = 64
+    # Where a workbench container reaches the sandbox tools (POST
+    # /api/v1/sandbox-mcp on this backend, through the portal's public
+    # entry). Separate from portal_api_url on purpose: setting that on the
+    # backend would switch pipeline schedules to delegation (schedule_service).
+    sandbox_mcp_url: str = ""
+    # IAM principals (caller ARNs relayed by the service entry) allowed to use
+    # the sandbox service API, comma-separated role ARNs; empty = none
+    sandbox_service_callers: str = ""
 
     # S3 bucket where kernels persist per-session workspaces
     workspace_bucket: str = ""

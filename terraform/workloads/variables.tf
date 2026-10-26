@@ -69,6 +69,12 @@ variable "llm_edge_image_tag" {
   default = ""
 }
 
+variable "sandbox_image_tag" {
+  description = "Tag of the platform's sandbox-kernel image (the CI image build writes it); the default for a sandbox version that names neither tag nor uri."
+  type        = string
+  default     = ""
+}
+
 # ----------------------------- model backend -------------------------------
 
 variable "use_bedrock" {
@@ -192,4 +198,62 @@ variable "sample_platform_version" {
   description = "Platform version of the sample agent runtimes (one runtime per sample, same image as the headless kernel)."
   type        = string
   default     = "V1"
+}
+
+# ------------------------------- Sandboxes ----------------------------------
+# Deployed only when the foundation publishes features.sandbox.
+
+variable "sandbox_images" {
+  description = "Sandbox image versions to serve (named v<N>). Each sets tag (in the platform's sandbox-kernel repository), uri (another repository the foundation's sandbox_network.extra_image_repository_arns allows), or neither (= sandbox_image_tag). Every version gets a Standard Runtime (AgentCore platform V1); fast = true adds a Fast Runtime (platform V2: each sandbox restored from one snapshot of the started image, so the image must draw per-sandbox values per request, never at start-up). The caller picks per sandbox. Each new runtime is applied once by an administrator (C15)."
+  type = map(object({
+    tag  = optional(string, "")
+    uri  = optional(string, "")
+    fast = optional(bool, false)
+    # replaced by fast (a version now has a Standard Runtime and optionally a
+    # Fast one): kept only so an old setting fails here instead of being dropped
+    platform_version = optional(string)
+  }))
+  default = { v1 = {} }
+  validation {
+    condition     = alltrue([for img in values(var.sandbox_images) : img.platform_version == null])
+    error_message = "sandbox_images: platform_version is gone. Every version has a Standard Runtime (V1); set fast = true for a Fast Runtime (V2) besides it."
+  }
+}
+
+variable "sandbox_default_version" {
+  description = "Version a sandbox gets when the caller names none; must be a key of sandbox_images."
+  type        = string
+  default     = "v1"
+  validation {
+    condition     = contains(keys(var.sandbox_images), var.sandbox_default_version)
+    error_message = "sandbox_default_version must be one of sandbox_images."
+  }
+}
+
+variable "sandbox_idle_timeout_s" {
+  description = "AgentCore idle timeout of a sandbox microVM; the backend's reaper presumes a sandbox reclaimed after it."
+  type        = number
+  default     = 300
+}
+
+variable "sandbox_max_lifetime_s" {
+  description = "Longest a sandbox microVM lives (a run's ceiling plus margin)."
+  type        = number
+  default     = 2400
+}
+
+variable "sandbox_service_callers" {
+  description = "IAM role ARNs allowed to call the sandbox service API through the IAM service entry (the customer application's host roles)."
+  type        = list(string)
+  default     = []
+}
+
+variable "sandbox_service_caller_role_names" {
+  description = "Roles of this account allowed to call the sandbox service API, by name: added to sandbox_service_callers as role ARNs of the deployment account. For callers named in a published overlay (no account id there)."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for n in var.sandbox_service_caller_role_names : can(regex("^[A-Za-z0-9+=,.@_-]{1,64}$", n))])
+    error_message = "a role name, not an ARN or a path (letters, digits and +=,.@_- only)."
+  }
 }

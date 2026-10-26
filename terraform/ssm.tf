@@ -27,6 +27,7 @@ locals {
       agentcore_gateway_backend = var.enable_agentcore_gateway_backend && var.enable_portal && var.enable_runtime
       agent_observability       = var.agent_observability
       sample_tools              = var.enable_sample_tools && var.enable_runtime
+      sandbox                   = var.enable_sandbox && var.enable_runtime
     }
 
     network = {
@@ -102,6 +103,16 @@ locals {
     }) : null
 
     llm_edge = var.enable_llm_edge && var.enable_runtime ? module.llm_edge[0].workload_facts : null
+
+    # one-shot code sandboxes (null when off): the workloads root creates the
+    # sandbox runtime in these subnets, under this security group and role,
+    # from this repository
+    sandbox = var.enable_sandbox && var.enable_runtime ? {
+      subnet_ids        = module.sandbox[0].subnet_ids
+      security_group_id = module.sandbox[0].security_group_id
+      role_arn          = module.sandbox[0].role_arn
+      repository_url    = module.sandbox[0].repository_url
+    } : null
 
     # the optional customer-owned MCP hub demo and its IAM entry (null when the
     # demo is off). The backend's mcp-hub iam mode needs caller_role_arn; the

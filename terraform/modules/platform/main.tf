@@ -94,6 +94,27 @@ resource "aws_dynamodb_table" "platform" {
     type = "S"
   }
 
+  # Sparse index of the open live sessions, for the sandbox reaper. A row
+  # carries open_kind (its kind) from create until it reaches stopped / lost,
+  # when the application REMOVEs it and DynamoDB drops the row from the index;
+  # the reaper then reads only what is open (a few hundred at peak) instead of
+  # the LIVE_SESSION partition with its week of stopped rows awaiting TTL
+  # (3,242 rows over three pages on staging, 2026-10-25, before the customer's
+  # 25 sandboxes a second). The names are a contract with the application's
+  # backend/app/services/live_session_service.py (OPEN_INDEX, OPEN_ATTR).
+  # Adding an index is an in-place update; DynamoDB backfills it online.
+  attribute {
+    name = "open_kind"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "open-sandboxes"
+    hash_key        = "open_kind"
+    range_key       = "SK"
+    projection_type = "ALL"
+  }
+
   # The table is the whole control plane (sessions, registry, channels,
   # schedules, ledger, audit trail); PITR is the only rewind for a bad
   # migration or an accidental overwrite.
@@ -144,6 +165,21 @@ resource "aws_ecr_repository" "team_auth" {
 # should be able to pull the image of the service that holds the gateway key.
 resource "aws_ecr_repository" "llm_edge" {
   name         = "agent-platform${var.name_suffix}/llm-edge"
+  force_delete = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+# The one-shot code sandboxes' image. Its own resource, outside
+# kernel_repo_names for the same reason as llm_edge: kernel execution roles
+# pull every repo in that set, and a session container has no business pulling
+# the sandbox image. Unconditional, like every image repository here: the image
+# build pushes each component to both environments, whether or not the
+# environment runs the feature (the sandbox module only reads it).
+resource "aws_ecr_repository" "sandbox_kernel" {
+  name         = "agent-platform${var.name_suffix}/sandbox-kernel"
   force_delete = true
 
   image_scanning_configuration {

@@ -42,6 +42,8 @@ export default function GatewayPage() {
   const [toolsLoading, setToolsLoading] = useState(false)
   const [error, setError] = useState('')
   const [toolsError, setToolsError] = useState('')
+  // set when the gateway cannot be listed with a portal token at all (AWS_IAM inbound)
+  const [unlistable, setUnlistable] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -65,10 +67,14 @@ export default function GatewayPage() {
     if (!selected) return
     setToolsLoading(true)
     setToolsError('')
+    setUnlistable('')
     setTools([])
     api
       .listGatewayTools(selected)
-      .then((r) => setTools(r.tools))
+      .then((r) => {
+        setTools(r.tools)
+        if (!r.listable) setUnlistable(r.reason || 'not listable with your token')
+      })
       .catch((e) => setToolsError(String(e)))
       .finally(() => setToolsLoading(false))
   }, [selected])
@@ -213,6 +219,11 @@ export default function GatewayPage() {
                   <CheckCircle2 size={12} /> reachable
                 </span>
               )}
+              {!toolsLoading && !toolsError && unlistable && (
+                <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                  IAM only
+                </span>
+              )}
               {!toolsLoading && toolsError && (
                 <span className="inline-flex items-center gap-1 rounded bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
                   <XCircle size={12} /> not reachable
@@ -242,6 +253,10 @@ export default function GatewayPage() {
               , so this is the catalog an agent would see when invoked by you. Run the tools from
               Debug or any agent that has this gateway attached.
             </p>
+
+            {unlistable && !toolsError && (
+              <p className="rounded-lg bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">{unlistable}</p>
+            )}
 
             {toolsError && (
               <pre className="overflow-auto rounded-lg bg-red-50 p-3 text-[11px] leading-relaxed text-red-700">

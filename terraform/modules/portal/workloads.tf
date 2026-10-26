@@ -106,8 +106,23 @@ data "aws_iam_policy_document" "backend" {
       "bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStream",
       "bedrock-agentcore:GetAgentRuntime",
       "bedrock-agentcore:GetAgentRuntimeEndpoint",
+      # ends a microVM now instead of waiting for idle reclaim: Workbench
+      # stop / delete, and every one-shot sandbox (app/services/sandbox_service.py)
+      "bedrock-agentcore:StopRuntimeSession",
     ]
     resources = ["arn:aws:bedrock-agentcore:${local.region}:${local.account}:runtime/*"]
+  }
+
+  # Observability live tab: AgentCore's account-wide ActiveSessionCount gauge,
+  # set next to the platform's own session ledger. Read-only metric data;
+  # GetMetricData takes no resource for classic metrics and does NOT support
+  # cloudwatch:namespace (Service Authorization Reference: only
+  # aws:ResourceTag and cloudwatch:HasAccessGrant), so a namespace condition
+  # would silently deny it.
+  statement {
+    sid       = "AgentCoreActiveSessions"
+    actions   = ["cloudwatch:GetMetricData"]
+    resources = ["*"]
   }
 
   # Memory page: manages stores (control plane) and browses events/records.
@@ -170,9 +185,19 @@ data "aws_iam_policy_document" "backend" {
       "scheduler:UpdateSchedule",
       "scheduler:DeleteSchedule",
       "scheduler:GetSchedule",
-      "scheduler:ListSchedules",
     ]
     resources = ["arn:aws:scheduler:${local.region}:${local.account}:schedule/${aws_scheduler_schedule_group.portal.name}/*"]
+  }
+
+  # The startup reconcile lists the group to find missing mirrors and orphans.
+  # ListSchedules has no resource type (Service Authorization Reference): a
+  # schedule ARN never matches it, so it was AccessDenied in every environment
+  # and the reconcile died silently. Names and states only; no condition key
+  # narrows it.
+  statement {
+    sid       = "SchedulerList"
+    actions   = ["scheduler:ListSchedules"]
+    resources = ["*"]
   }
 
   statement {

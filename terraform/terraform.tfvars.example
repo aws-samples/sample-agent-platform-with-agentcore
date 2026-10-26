@@ -84,3 +84,28 @@ enable_team_demo = false
 # WAF in front of the portal / team-auth CloudFront distributions (default on).
 # A short-lived test deployment can turn it off to skip the web ACL charges.
 # enable_edge_waf = false
+
+# --- One-shot code sandboxes (modules/sandbox; workloads modules/sandbox) ----
+# Own subnets with no default route, own S3 gateway endpoint and security
+# group, an execution role that can only pull its image and write its logs.
+# The sandbox reaches AWS only through VPC interface endpoints that must
+# already exist in the VPC (ECR api/dkr and CloudWatch Logs); their security
+# groups are looked up unless endpoint_security_group_ids names them. Staging
+# shares the VPC: give it other subnets (envs/).
+# enable_sandbox = true
+# sandbox_network = {
+#   subnets = [
+#     { cidr = "10.0.64.0/22", az = "ap-northeast-1a" },
+#     { cidr = "10.0.68.0/22", az = "ap-northeast-1c" },
+#   ]
+#   # what sandboxed code may call besides AWS: the host's callback service,
+#   # by security group (security_group_id = "<the host's group id>") or by a
+#   # private CIDR
+#   callback_targets = [
+#     { description = "host callback API", port = 443, cidr = "10.0.40.0/24" },
+#   ]
+#   # state snapshots through presigned URLs, if the jobs keep state
+#   state_object_arns = ["arn:aws:s3:::my-sandbox-state/sandbox-state/*"]
+#   # a customer-maintained image the sandbox runtime may pull
+#   extra_image_repository_arns = []
+# }

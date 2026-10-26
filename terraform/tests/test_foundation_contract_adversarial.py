@@ -14,7 +14,9 @@ project and reads only what this root publishes). Static; no credentials.
      mapping is the application project's scripts/foundation_facts.py (the
      consumer says what it needs). CI has that checkout at QA_ENGINE_DIR; a
      local run without it falls back to the frozen copy of the names below,
-     which must be refreshed when the mapping changes.
+     which must be refreshed when the mapping changes. The table's TTL
+     attribute (3b) and its open-sessions index (3c: name, keys, projection
+     ALL) are the ones the application's services write and query.
   4. The charts this root installs resolve, scripts/set_inference_target.py
      resolves from its module, and `terraform validate` passes in terraform/
      and ci/infra.
@@ -161,6 +163,32 @@ def main() -> int:
         wanted, source = "ttl", "the frozen name (no application checkout)"
     assert ttl.group(1) == wanted, f"table TTL attribute {ttl.group(1)!r} != application's {wanted!r} ({source})"
     ok(f"the table's TTL attribute matches {source}")
+
+    # 3c. the open-sessions index is the one the application queries
+    gsi = re.search(r'global_secondary_index\s*\{(.*?)\}', table, re.S)
+    assert gsi, "the platform table has no global_secondary_index (the sandbox reaper queries open-sandboxes)"
+    g = dict(re.findall(r'(\w+)\s*=\s*"([^"]*)"', gsi.group(1)))
+    attrs = dict(re.findall(r'attribute\s*\{\s*name\s*=\s*"(\w+)"\s*type\s*=\s*"(\w)"', table))
+    assert g.get("hash_key") and g.get("range_key") == "SK", f"open index keys: {g}"
+    assert attrs.get(g["hash_key"]) == "S", f"index hash key {g['hash_key']!r} must be declared as a string attribute: {attrs}"
+    assert g.get("projection_type") == "ALL", "the reaper reads runtime_arn, qualifier and the timestamps from the index: projection ALL"
+    app_ledger = os.path.join(os.environ.get("QA_ENGINE_DIR", ""), "backend", "app", "services", "live_session_service.py")
+    # The foundation ships the index before the application queries it, so an
+    # engine checkout from before that change (no OPEN_INDEX yet) is normal:
+    # nothing reads the index, and only the frozen names are held. Once the
+    # application names the index, the table must match it exactly.
+    wanted, source = ("open-sandboxes", "open_kind"), "the frozen names (no application checkout)"
+    if os.path.isfile(app_ledger):
+        text = open(app_ledger, encoding="utf-8").read()
+        want_index = re.search(r'^OPEN_INDEX\s*=\s*"([^"]+)"', text, re.M)
+        want_attr = re.search(r'^OPEN_ATTR\s*=\s*"([^"]+)"', text, re.M)
+        assert bool(want_index) == bool(want_attr), f"{app_ledger} defines one of OPEN_INDEX / OPEN_ATTR without the other"
+        if want_index:
+            wanted, source = (want_index.group(1), want_attr.group(1)), app_ledger
+        else:
+            source = f"the frozen names ({app_ledger} does not query the index yet)"
+    assert (g.get("name"), g["hash_key"]) == wanted, f"open index {g.get('name')!r} on {g['hash_key']!r} != application's {wanted} ({source})"
+    ok(f"the open-sessions index matches {source}")
 
     # 4. paths resolve; validate
     for f in tf_files(FOUNDATION):

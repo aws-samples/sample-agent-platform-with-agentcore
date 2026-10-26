@@ -112,6 +112,25 @@ variable "mcp_hub_caller_role_arn" {
   default     = ""
 }
 
+variable "sandbox" {
+  description = "One-shot code sandboxes: Standard Runtime ARN by image version ({} = feature off), Fast Runtime ARN by version for those that have one, the default version, the lifecycle the runtimes run with, and the IAM callers allowed on the service API."
+  type = object({
+    versions        = map(string)
+    fast_versions   = optional(map(string), {})
+    default_version = string
+    idle_timeout_s  = number
+    max_lifetime_s  = number
+    service_callers = list(string)
+  })
+  default = {
+    versions        = {}
+    default_version = ""
+    idle_timeout_s  = 300
+    max_lifetime_s  = 2400
+    service_callers = []
+  }
+}
+
 variable "name_suffix" {
   type    = string
   default = ""

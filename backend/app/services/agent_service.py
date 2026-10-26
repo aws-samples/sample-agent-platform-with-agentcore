@@ -130,6 +130,14 @@ class AgentService:
                         if mcp_by_name[n].get("headers")
                         else {}
                     ),
+                    # an mcp-hub entry's auth scheme decides the agent's hub
+                    # identity at publish and its credentials at invoke;
+                    # dropped here, every hub agent fell back to HMAC
+                    **(
+                        {"auth": mcp_by_name[n].get("auth") or "hmac"}
+                        if mcp_by_name[n]["kind"] == "mcp-hub"
+                        else {}
+                    ),
                 }
                 for n in mcp_names
             ],

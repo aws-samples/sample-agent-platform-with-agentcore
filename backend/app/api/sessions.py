@@ -16,6 +16,9 @@ from app.models.schemas import (
 from app.services import invocation_service
 from app.services.audit_service import audit_service
 from app.services.ecosystem_service import ecosystem_service
+from app.services.live_session_service import live_session_service
+from app.services.sandbox_mcp_service import sandbox_mcp_tokens
+from app.services.sandbox_service import sandbox_service
 from app.services.model_config_service import model_config_service
 from app.services.session_service import session_service
 from app.services.llm_credentials_service import llm_credentials_service
@@ -224,7 +227,28 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
                 ),
             }
 
+    # Sandbox tools: the MCP server is this backend (POST /mcp/sandbox); the
+    # kernel gets a token bound to this workbench session, never any right on
+    # the sandbox runtime itself. Re-issued on every connect.
+    sandbox_servers = [s for s in config.get("mcp_servers", []) if s.get("kind") == "sandbox"]
+    if sandbox_servers:
+        if not settings.sandbox_mcp_url:
+            raise HTTPException(status_code=503, detail="sandbox tools are not reachable here: PLATFORM_SANDBOX_MCP_URL is not set")
+        token = sandbox_mcp_tokens.issue(user, session_id, item["runtime_session_id"])
+        for s in sandbox_servers:
+            s["url"] = settings.sandbox_mcp_url
+            s["token"] = token
+            s["session"] = item["runtime_session_id"]
+
     platform_version = item.get("platform_version", "")
+    live_session_service.touch(
+        item["runtime_session_id"],
+        kind="workbench",
+        owner=user,
+        target=f"interactive:{platform_version or settings.default_platform_version}",
+        source="workbench",
+        attrs={"session_id": session_id, "name": item.get("name", "")},
+    )
     status = session_service.warmup(
         item["runtime_session_id"], config or None, platform_version
     )
@@ -235,10 +259,39 @@ def connect(session_id: str, user: str = Depends(get_current_user)):
     return ConnectResponse(wss_url=wss_url, expires_in=300, runtime_status=status)
 
 
+def _end_compute(item: dict) -> str:
+    """Stop the session's microVM (see session_service.end_compute) and close
+    its live-session row. The workspace is flushed first only when the ledger
+    says the session was invoked within its idle window: past that, the
+    microVM has most likely been reclaimed and a flush would boot an empty
+    one. Returns the compute outcome for the response."""
+    rsid = item["runtime_session_id"]
+    row = live_session_service.get(rsid)
+    recently_used = bool(row) and row.get("presumed_state") in ("running", "idle")
+    outcome = session_service.end_compute(
+        rsid, item.get("platform_version", ""), flush=recently_used
+    )
+    if outcome == "error":
+        live_session_service.set_status(rsid, "stop_failed")
+    else:
+        live_session_service.set_status(rsid, "stopped", attrs={"stop_outcome": outcome})
+    return outcome
+
+
+def _end_sandboxes(user: str, runtime_session_id: str) -> None:
+    """A workbench session's end ends what it started: revoke its sandbox-tool
+    token and stop every sandbox it opened (they would otherwise run, billed,
+    until the reaper presumed them idle)."""
+    sandbox_mcp_tokens.revoke(runtime_session_id)
+    if sandbox_service.enabled:
+        sandbox_service.stop_for_owner_session(user, runtime_session_id)
+
+
 @router.post("/{session_id}/stop", response_model=SessionResponse)
 def stop_session(session_id: str, user: str = Depends(get_current_user)):
-    """Mark dormant. AgentCore reclaims the idle microVM; the S3 workspace
-    stays and is restored on the next connect."""
+    """Mark dormant and end the microVM now (it used to wait for AgentCore's
+    idle reclaim, billed the whole time). The S3 workspace stays and is
+    restored on the next connect."""
     item = session_service.get_session(user, session_id)
     if not item:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -246,9 +299,13 @@ def stop_session(session_id: str, user: str = Depends(get_current_user)):
     # The next connect mints a fresh grant, so drop this one now: a token
     # scraped out of the container stops working when the session does rather
     # than lingering until its hour is up. Same for the workspace refresh
-    # token, which otherwise had no end of life at all.
+    # token, which otherwise had no end of life at all. Revoked before the
+    # stop so the grace period in which an ended microVM still runs (tens of
+    # seconds, observed) holds no live credential.
     llm_credentials_service.revoke(item["runtime_session_id"])
     workspace_credentials_service.revoke(user, session_id, item["runtime_session_id"])
+    _end_sandboxes(user, item["runtime_session_id"])
+    _end_compute(item)
     item["status"] = "dormant"
     return _to_response(item)
 
@@ -261,6 +318,9 @@ def delete_session(session_id: str, user: str = Depends(get_current_user)):
     session_service.set_status(user, session_id, "terminated")
     llm_credentials_service.revoke(item["runtime_session_id"])
     workspace_credentials_service.revoke(user, session_id, item["runtime_session_id"])
+    _end_sandboxes(user, item["runtime_session_id"])
+    if item.get("status") != "dormant":
+        _end_compute(item)
     audit_service.record(user, "session.delete", f"session:{item.get('name', session_id)}")
     return {"ok": True}
 
