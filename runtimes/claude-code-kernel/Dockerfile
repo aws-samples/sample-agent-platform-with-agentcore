@@ -57,6 +57,15 @@ COPY scripts/mcphub_hmac.py /opt/platform/mcphub_hmac.py
 # the backend serves; keeps the per-session token out of .mcp.json
 COPY scripts/sandbox_mcp_proxy.py /opt/platform/sandbox_mcp_proxy.py
 
+# Fast Runtime page pinning (scripts/pin_pages.py). It runs only when the
+# runtime sets KERNEL_PIN_PAGES=1, which Terraform does for the V2 runtime; a
+# Standard Runtime ignores it. KERNEL_PIN_PATHS: what a session touches before
+# its first prompt (the claude binary, node, the Python that runs aws s3 and
+# the MCP proxies, the shared libraries under them, git, the terminal stack),
+# about 1 GiB of file-backed, reclaimable pages in an 8 GiB microVM.
+COPY scripts/pin_pages.py /opt/platform/pin_pages.py
+ENV KERNEL_PIN_PATHS="/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/bin/node /usr/local/lib/python3.13 /usr/lib/aarch64-linux-gnu /usr/bin/git /usr/lib/git-core /usr/bin/tmux /usr/local/bin/ttyd /usr/bin/bash"
+
 COPY contract-server/ /opt/contract-server/
 WORKDIR /opt/contract-server
 RUN npm install --production

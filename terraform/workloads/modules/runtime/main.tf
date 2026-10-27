@@ -70,10 +70,14 @@ resource "aws_bedrockagentcore_agent_runtime" "interactive" {
     server_protocol = "HTTP"
   }
 
+  # KERNEL_PIN_PAGES on V2 only: a restored snapshot reads unmapped image
+  # files at a few MB/s, so the kernel pins its hot files before /ping (see
+  # runtimes/claude-code-kernel/scripts/pin_pages.py). V1 boots per session
+  # with a warm page cache and has nothing to gain from it.
   environment_variables = merge(local.common_env, {
     WORKSPACE_S3_BUCKET = var.workspace_bucket_name
     WORKSPACE_S3_PREFIX = "workspaces"
-  })
+  }, each.key == "V2" ? { KERNEL_PIN_PAGES = "1" } : {})
 }
 
 # ------------------------- headless kernel ---------------------------------
