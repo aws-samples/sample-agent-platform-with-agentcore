@@ -15,6 +15,13 @@ const HINT: Record<PlatformVersion, string> = {
   V2: 'Fast Runtime (AgentCore platform V2): restores each session from a snapshot, ~2 s cold start regardless of image size, higher unit price, idle memory reclaimed.',
 }
 
+// A terminal session is long-lived and keeps Claude Code resident, so Fast's
+// idle-memory reclaim saves little, and its snapshot restore was measured
+// slower to the first prompt than a Standard boot (staging: about 6.5 s
+// against 3.6 s). Shown under the picker for interactive kernels only.
+const INTERACTIVE_ADVICE =
+  'Recommended for terminals: Standard. A terminal session stays open for hours, so Fast saves little memory, costs more per hour and reaches the Claude Code prompt a few seconds later.'
+
 /** Version picker for a kernel. Renders nothing on single-runtime
  * deployments. ``value`` '' means "deployment default". */
 export function PlatformVersionSelect({
@@ -54,6 +61,11 @@ export function PlatformVersionSelect({
         ))}
       </select>
       <p className="mt-1 text-xs text-slate-400">{HINT[shown]}</p>
+      {kernel?.kind === 'interactive' && (
+        <p className={`mt-1 text-xs ${shown === 'V2' ? 'text-amber-700' : 'text-slate-500'}`}>
+          {INTERACTIVE_ADVICE}
+        </p>
+      )}
     </>
   )
 }

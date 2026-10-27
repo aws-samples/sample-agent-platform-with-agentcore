@@ -288,7 +288,33 @@ AUTOSTART
 
 # ---------------------------------------------------------------------------
 # 5. Contract server + S3 restore + background sync
+#
+# Fast Runtime (KERNEL_PIN_PAGES=1, set by Terraform on the V2 runtime): pin
+# the hot files before the contract server starts. The snapshot is taken once
+# /ping is healthy, and only pages a live process has mapped survive it; see
+# /opt/platform/pin_pages.py. Pinning never blocks the kernel: if it is not
+# ready within KERNEL_PIN_WAIT_S the start goes on, just with cold files.
 # ---------------------------------------------------------------------------
+if [ "$KERNEL_PIN_PAGES" = "1" ]; then
+  PIN_READY=/tmp/.pin-ready
+  # a ready file from an earlier start (contract-server restart) is not this
+  # pinner's: only a fresh one may end the wait
+  rm -f "$PIN_READY"
+  PIN_T0=$(date +%s)
+  # shellcheck disable=SC2086  # KERNEL_PIN_PATHS is a space-separated list
+  python3 /opt/platform/pin_pages.py "$PIN_READY" $KERNEL_PIN_PATHS > /proc/1/fd/1 2>&1 &
+  PIN_PID=$!
+  while [ ! -f "$PIN_READY" ] && kill -0 "$PIN_PID" 2>/dev/null \
+    && [ $(( $(date +%s) - PIN_T0 )) -lt "${KERNEL_PIN_WAIT_S:-120}" ]; do
+    sleep 0.2
+  done
+  if [ -f "$PIN_READY" ]; then
+    log_startup "pinned hot files in $(( $(date +%s) - PIN_T0 )) s: $(cat "$PIN_READY")"
+  else
+    log_startup "WARNING: page pinning not ready after $(( $(date +%s) - PIN_T0 )) s; starting without it"
+  fi
+fi
+
 node /opt/contract-server/main.js &
 NODE_PID=$!
 
