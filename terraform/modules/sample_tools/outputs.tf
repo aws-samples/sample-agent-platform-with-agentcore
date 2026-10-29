@@ -2,23 +2,28 @@
 # targets and Cedar policies, and for the backend, which registers the
 # gateway as an MCP server for the sample runtimes.
 output "gateway_id" {
-  value = aws_bedrockagentcore_gateway.this.gateway_id
+  description = "ID of the Sample Agents MCP tool gateway (IAM-authorized)."
+  value       = aws_bedrockagentcore_gateway.this.gateway_id
 }
 
 output "gateway_arn" {
-  value = aws_bedrockagentcore_gateway.this.gateway_arn
+  description = "ARN of the Sample Agents tool gateway."
+  value       = aws_bedrockagentcore_gateway.this.gateway_arn
 }
 
 output "gateway_url" {
-  value = aws_bedrockagentcore_gateway.this.gateway_url
+  description = "MCP URL of the Sample Agents tool gateway; the backend registers it as an MCP server for the sample runtimes."
+  value       = aws_bedrockagentcore_gateway.this.gateway_url
 }
 
 output "policy_engine_id" {
-  value = aws_bedrockagentcore_policy_engine.this.policy_engine_id
+  description = "ID of the Cedar policy engine attached to the gateway; the workloads root adds its policies to it."
+  value       = aws_bedrockagentcore_policy_engine.this.policy_engine_id
 }
 
 output "policy_engine_arn" {
-  value = aws_bedrockagentcore_policy_engine.this.policy_engine_arn
+  description = "ARN of the gateway's Cedar policy engine."
+  value       = aws_bedrockagentcore_policy_engine.this.policy_engine_arn
 }
 
 output "lambda_role_arn" {

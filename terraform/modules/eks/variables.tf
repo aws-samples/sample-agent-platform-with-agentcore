@@ -1,5 +1,6 @@
 variable "vpc_id" {
-  type = string
+  description = "VPC the cluster runs in, passed to the AWS Load Balancer Controller."
+  type        = string
 }
 
 variable "private_subnet_ids" {
@@ -8,7 +9,8 @@ variable "private_subnet_ids" {
 }
 
 variable "kubernetes_version" {
-  type = string
+  description = "Kubernetes minor version for the cluster; the vpc-cni, coredns and kube-proxy add-on versions are resolved against it."
+  type        = string
 }
 
 variable "node_instance_type" {
@@ -22,12 +24,20 @@ variable "node_count" {
 }
 
 variable "node_max_count" {
-  type = number
+  description = "Upper bound the node group may scale to; node_count is both the desired size and the minimum."
+  type        = number
 }
 
 variable "public_access_cidrs" {
   description = "CIDRs allowed to reach the public Kubernetes API endpoint (Terraform, kubectl, helm run from outside the VPC)."
   type        = list(string)
+
+  # Checked here, where it applies: the module is only called when this state
+  # creates the cluster. An empty list would make EKS fall back to 0.0.0.0/0.
+  validation {
+    condition     = length(var.public_access_cidrs) > 0
+    error_message = "Set eks_public_access_cidrs to the operators' and CI's egress addresses (e.g. [\"203.0.113.10/32\"]): this state creates the EKS cluster, and an empty list leaves its public API endpoint open to 0.0.0.0/0."
+  }
 }
 
 variable "admin_principal_arns" {
@@ -37,14 +47,17 @@ variable "admin_principal_arns" {
 }
 
 variable "lbc_chart_version" {
-  type = string
+  description = "aws-load-balancer-controller Helm chart version. Its TargetGroupBinding registers pods into the target groups Terraform creates."
+  type        = string
 }
 
 variable "fluent_bit_chart_version" {
-  type = string
+  description = "aws-for-fluent-bit Helm chart version; it ships container logs to CloudWatch under log_group_prefix."
+  type        = string
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to the cluster, node group, IAM role and log group names; empty for production."
+  type        = string
+  default     = ""
 }

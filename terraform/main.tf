@@ -22,6 +22,17 @@
 #   - image builds/pushes, Keycloak seeding, schedule-runner Lambda code.
 
 locals {
+  # Tags on every resource the aws provider creates. The five keys are the
+  # account's required set; var.tags is merged last, so a deployment can
+  # override any of them (a customer's own scheme) or add more.
+  common_tags = merge({
+    Project     = "agent-platform${var.name_suffix}"
+    Environment = var.environment
+    Owner       = "unset"
+    ManagedBy   = "terraform"
+    Lifecycle   = "persistent"
+  }, var.tags)
+
   # AgentCore runtime names only allow [a-zA-Z0-9_]
   runtime_suffix = replace(var.name_suffix, "-", "_")
 
@@ -57,7 +68,8 @@ module "network" {
 module "platform" {
   source = "./modules/platform"
 
-  name_suffix = var.name_suffix
+  protect_stateful = var.protect_stateful
+  name_suffix      = var.name_suffix
 }
 
 # WAF in front of the portal and team-auth distributions (both environments);

@@ -1,11 +1,3 @@
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
-
-locals {
-  account = data.aws_caller_identity.current.account_id
-  region  = data.aws_region.current.region
-}
-
 # ------------------------------ workload role ------------------------------
 # The whole point of this module: this role, reachable only from a pod that
 # no tenant can enter, is the only place in the model data path that can read

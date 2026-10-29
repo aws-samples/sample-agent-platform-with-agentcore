@@ -7,6 +7,7 @@ variable "kernel_repos" {
 }
 
 variable "workspace_bucket" {
+  description = "Workspace bucket from the platform module. The kernel roles get skills/ reads and the async artifact prefixes; the workspace-access role gets workspaces/."
   type = object({
     name = string
     arn  = string
@@ -26,8 +27,9 @@ variable "agent_observability" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to role and delivery-destination names; empty for production."
+  type        = string
+  default     = ""
 }
 
 variable "sample_runtimes" {

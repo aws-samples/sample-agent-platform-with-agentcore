@@ -42,6 +42,7 @@ variable "vpc_cidr" {
 # use_bedrock / anthropic_* stay here for the team-demo runtime (SDK image);
 # the kernels in terraform/workloads carry their own copies.
 
+# tflint-ignore: terraform_unused_declarations # kept so an old tfvars line fails loudly (see description)
 variable "llm_gateway_url" {
   description = <<-EOT
     Retired. A gateway URL is no longer given to kernel containers: gateway
@@ -61,34 +62,39 @@ variable "llm_gateway_url" {
 }
 
 variable "use_bedrock" {
-  description = "\"1\" routes kernels to Bedrock (CLAUDE_CODE_USE_BEDROCK)."
-  type        = string
-  default     = "1"
+  description = "Route the team-demo runtime to Bedrock (CLAUDE_CODE_USE_BEDROCK=1). A bool; the old string values \"1\" / \"0\" still parse as true / false."
+  type        = bool
+  default     = true
 }
 
 variable "anthropic_model" {
-  type    = string
-  default = ""
+  description = "ANTHROPIC_MODEL for the team-demo runtime, as a global cross-Region inference profile ID (global.<model>). Without the agentcore_gateway backend it is also granted to the sample runtime roles. Empty = not set."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_small_fast_model" {
-  type    = string
-  default = ""
+  description = "ANTHROPIC_SMALL_FAST_MODEL for the team-demo runtime, as a global.<model> inference profile ID. Without the agentcore_gateway backend it is also granted to the sample runtime roles. Empty = not set."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_default_opus_model" {
-  type    = string
-  default = ""
+  description = "Default Opus model, as a global.<model> inference profile ID. Here it only adds the model to the sample runtime roles' Bedrock grant (without the agentcore_gateway backend); the team-demo runtime does not export it. Empty = none."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_default_sonnet_model" {
-  type    = string
-  default = ""
+  description = "Default Sonnet model, as a global.<model> inference profile ID. Here it only adds the model to the sample runtime roles' Bedrock grant (without the agentcore_gateway backend); the team-demo runtime does not export it. Empty = none."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_default_haiku_model" {
-  type    = string
-  default = ""
+  description = "Default Haiku model, as a global.<model> inference profile ID. Here it only adds the model to the sample runtime roles' Bedrock grant (without the agentcore_gateway backend); the team-demo runtime does not export it. Empty = none."
+  type        = string
+  default     = ""
 }
 
 # ------------------------------ image tags ---------------------------------
@@ -109,8 +115,9 @@ variable "agent_observability" {
 }
 
 variable "team_auth_image_tag" {
-  type    = string
-  default = ""
+  description = "Tag for the team-auth images: the team APIs, and Keycloak unless keycloak_image_tag is set. Empty = image_tag."
+  type        = string
+  default     = ""
 }
 
 # Keycloak and the team APIs are built from separate Dockerfiles but shared one
@@ -118,13 +125,15 @@ variable "team_auth_image_tag" {
 # services pulling a tag that was never pushed — they then failed to start in a
 # loop. Override this to move Keycloak on its own.
 variable "keycloak_image_tag" {
-  type    = string
-  default = ""
+  description = "Tag for the Keycloak image alone. Empty = team_auth_image_tag, then image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "team_demo_image_tag" {
-  type    = string
-  default = ""
+  description = "Tag of the agent-sdk-kernel image the team-demo runtime runs. Empty = image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "team_demo_build" {
@@ -152,13 +161,15 @@ variable "oidc_realm" {
 }
 
 variable "oidc_client_id" {
-  type    = string
-  default = "portal-web"
+  description = "OIDC client the portal signs in with in enterprise-SSO mode (oidc_issuer set). Published in the foundation facts for the workloads root's backend (PLATFORM_OIDC_CLIENT_ID)."
+  type        = string
+  default     = "portal-web"
 }
 
 variable "oidc_audience" {
-  type    = string
-  default = "agent-platform"
+  description = "Audience the backend requires in enterprise-SSO tokens. Published in the foundation facts for the workloads root's backend (PLATFORM_OIDC_AUDIENCE)."
+  type        = string
+  default     = "agent-platform"
 }
 
 variable "service_api_throttle" {
@@ -343,9 +354,26 @@ variable "eks_node_max_count" {
 }
 
 variable "eks_public_access_cidrs" {
-  description = "CIDRs allowed to reach the cluster's public Kubernetes API endpoint (Terraform, kubectl and helm run from outside the VPC). The API is IAM-authenticated regardless; narrow this to the operators' egress addresses in production."
+  description = "CIDRs allowed to reach the cluster's public Kubernetes API endpoint (Terraform, kubectl and helm run from outside the VPC): the operators' and CI's egress addresses. Required whenever this state creates the cluster (modules/eks checks it); each entry /16 or narrower (IPv6 /32), never 0.0.0.0/0. Unused when joining a cluster (existing_eks_cluster_name)."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
+
+  validation {
+    condition     = alltrue([for c in var.eks_public_access_cidrs : can(cidrhost(c, 0))])
+    error_message = "eks_public_access_cidrs entries must be CIDR blocks, e.g. 203.0.113.10/32."
+  }
+  validation {
+    # an open endpoint was the old sample default; the API being IAM-authenticated
+    # does not make it right to expose the control plane to the internet. A
+    # prefix floor, not a "/0" test: 0.0.0.0/1 + 128.0.0.0/1 is the internet too
+    # (Security Agent on !51). /16 (IPv4) and /32 (IPv6) are wider than any
+    # operator or CI egress range.
+    condition = alltrue([for c in var.eks_public_access_cidrs : try(
+      tonumber(split("/", c)[1]) >= (strcontains(c, ":") ? 32 : 16),
+      true, # malformed: the CIDR validation above reports it
+    )])
+    error_message = "eks_public_access_cidrs entries must be at least /16 (IPv4) or /32 (IPv6): no /0, and no set of wide ranges that adds up to the internet. List the operators' and CI's egress addresses."
+  }
 }
 
 variable "eks_admin_principal_arns" {
@@ -400,6 +428,23 @@ variable "name_suffix" {
     condition     = can(regex("^[a-z0-9-]*$", var.name_suffix))
     error_message = "name_suffix must be lowercase alphanumerics/hyphens (it is embedded in bucket and repo names)."
   }
+}
+
+variable "tags" {
+  description = "Tags merged over the defaults on every resource (provider default_tags). The defaults are Project (agent-platform + name_suffix), Environment (var.environment), Owner (\"unset\": set it), ManagedBy (terraform) and Lifecycle (persistent); any key here overrides its default, so a deployment can carry its own tag scheme. Values must be non-empty."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k, v in var.tags : length(trimspace(v)) > 0 && length(v) <= 256 && length(k) <= 128])
+    error_message = "tags: every value must be non-empty, keys at most 128 characters and values at most 256 (AWS tag limits)."
+  }
+}
+
+variable "protect_stateful" {
+  description = "Deletion protection on the control-plane DynamoDB table, and no force-delete of the ECR repos or the access-log bucket while they hold data. To tear an environment down, apply once with false, then destroy. The workspace bucket is never force-destroyed either way."
+  type        = bool
+  default     = true
 }
 
 variable "platform_version_python" {
@@ -502,6 +547,7 @@ variable "sample_tools_policy_mode" {
 # both stable. certificate_arn: ACM in us-east-1. The DNS CNAME to the
 # distribution is created outside Terraform (see the custom_domain_targets output).
 variable "portal_custom_domain" {
+  description = "Custom domain name and its us-east-1 ACM certificate ARN for the portal distribution. null = the default *.cloudfront.net domain; the DNS CNAME is created outside Terraform (see custom_domain_targets)."
   type = object({
     name            = string
     certificate_arn = string
@@ -510,6 +556,7 @@ variable "portal_custom_domain" {
 }
 
 variable "team_auth_custom_domain" {
+  description = "Custom domain name and its us-east-1 ACM certificate ARN for the Keycloak (team_auth) distribution, which keeps the OIDC issuer stable across rebuilds. null = the default *.cloudfront.net domain; the DNS CNAME is created outside Terraform (see custom_domain_targets)."
   type = object({
     name            = string
     certificate_arn = string
@@ -521,8 +568,9 @@ variable "team_auth_custom_domain" {
 # db_snapshot_identifier); create-time only. Used to move the IdP between
 # accounts with its realms and client secrets intact.
 variable "keycloak_db_snapshot_identifier" {
-  type    = string
-  default = null
+  description = "RDS snapshot to create the Keycloak database from, used to move the IdP between accounts with its realms and client secrets intact; read at create time only. null = a new empty database."
+  type        = string
+  default     = null
 }
 
 variable "keycloak_db_kms_key_arn" {

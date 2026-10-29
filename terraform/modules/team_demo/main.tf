@@ -19,7 +19,7 @@ locals {
       # (AgentCore resolves the tag at version creation)
       KERNEL_BUILD = var.team_demo_build
     },
-    var.model_env.use_bedrock == "1" ? { CLAUDE_CODE_USE_BEDROCK = "1" } : {},
+    var.model_env.use_bedrock ? { CLAUDE_CODE_USE_BEDROCK = "1" } : {},
     var.model_env.anthropic_model != "" ? { ANTHROPIC_MODEL = var.model_env.anthropic_model } : {},
     var.model_env.anthropic_small_fast_model != "" ? { ANTHROPIC_SMALL_FAST_MODEL = var.model_env.anthropic_small_fast_model } : {},
   )

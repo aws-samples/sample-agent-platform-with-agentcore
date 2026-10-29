@@ -8,50 +8,60 @@ output "nat_eip_address" {
 }
 
 output "vpc_id" {
-  value = module.network.vpc_id
+  description = "VPC the platform runs in, created here or reused (existing_vpc_id). Read by deploy-cli/tests/verify.sh in the application repository."
+  value       = module.network.vpc_id
 }
 
 output "runtime_subnet_ids" {
-  value = module.network.private_subnet_ids
+  description = "Private (NAT-egress) subnets for the AgentCore runtime ENIs."
+  value       = module.network.private_subnet_ids
 }
 
 output "runtime_security_group_id" {
-  value = module.network.runtime_sg_id
+  description = "Egress-only security group for the AgentCore runtime ENIs; no ingress rules, since runtimes are reached through the AgentCore data plane."
+  value       = module.network.runtime_sg_id
 }
 
 # ------------------------------- platform ----------------------------------
 
 output "workspace_bucket_name" {
-  value = module.platform.workspace_bucket.name
+  description = "S3 bucket holding the per-session workspaces (files and Claude Code state). Read by deploy-cli/tests/verify.sh."
+  value       = module.platform.workspace_bucket.name
 }
 
 output "table_name" {
-  value = module.platform.platform_table.name
+  description = "Control-plane DynamoDB table. Read by deploy-cli/tests/verify.sh."
+  value       = module.platform.platform_table.name
 }
 
 output "ecr_uris" {
-  value = { for k, v in module.platform.kernel_repos : k => v.url }
+  description = "ECR repository URL by repo name (claude-code-kernel, agent-sdk-kernel, mcp-tools-kernel, backend), for pushing images."
+  value       = { for k, v in module.platform.kernel_repos : k => v.url }
 }
 
 output "llm_gateway_secret_name" {
-  value = module.platform.llm_gateway_secret.name
+  description = "Secrets Manager secret for the LLM gateway API key, created holding a REPLACE_ME placeholder; put the real key in it before using the litellm backend (llm-edge reads it)."
+  value       = module.platform.llm_gateway_secret.name
 }
 
 # ------------------------------- runtime -----------------------------------
 # The runtime ARNs are outputs of terraform/workloads; this root owns the roles.
 
 output "workspace_access_role_arn" {
-  value = try(module.runtime[0].workspace_access_role_arn, null)
+  description = "Role the backend assumes per session, narrowed by a session policy to that session's workspaces/ prefix. Null when enable_runtime is false."
+  value       = try(module.runtime[0].workspace_access_role_arn, null)
 }
 
 # --------------------------------- eks -------------------------------------
 
 output "eks_cluster_name" {
-  value = local.cluster_name != "" ? local.cluster_name : null
+  description = "Cluster the platform containers run on, whether created here or joined (existing_eks_cluster_name). Null when no enabled module needs one. Read by deploy-cli/tests/verify.sh."
+  value       = local.cluster_name != "" ? local.cluster_name : null
 }
 
 output "eks_cluster_endpoint" {
-  value = local.cluster_endpoint != "" ? local.cluster_endpoint : null
+  description = "Kubernetes API endpoint of that cluster. Null when there is none."
+  value       = local.cluster_endpoint != "" ? local.cluster_endpoint : null
 }
 
 output "eks_oidc_provider_arn" {
@@ -67,27 +77,33 @@ output "kubeconfig_command" {
 # -------------------------------- portal -----------------------------------
 
 output "portal_url" {
-  value = try(module.portal[0].portal_url, null)
+  description = "Portal URL (https://, the CloudFront domain). Null unless enable_portal and enable_runtime are on. Read by deploy-cli/tests/verify.sh and scripts/seed_team_idp.py."
+  value       = try(module.portal[0].portal_url, null)
 }
 
 output "distribution_id" {
-  value = try(module.portal[0].distribution_id, null)
+  description = "CloudFront distribution in front of the portal, invalidated after each frontend publish. Null without the portal. ci/infra reads it through terraform_remote_state."
+  value       = try(module.portal[0].distribution_id, null)
 }
 
 output "frontend_bucket_name" {
-  value = try(module.portal[0].frontend_bucket_name, null)
+  description = "S3 bucket serving the portal's static frontend build. Null without the portal."
+  value       = try(module.portal[0].frontend_bucket_name, null)
 }
 
 output "alb_dns_name" {
-  value = try(module.portal[0].alb_dns_name, null)
+  description = "DNS name of the portal's public ALB, the CloudFront origin; users go through portal_url. Null without the portal. Read by deploy-cli/tests/verify.sh."
+  value       = try(module.portal[0].alb_dns_name, null)
 }
 
 output "user_pool_id" {
-  value = try(module.portal[0].user_pool_id, null)
+  description = "Cognito user pool for portal sign-in, used by the user setup steps in docs/deployment.md. Null without the portal. ci/infra reads it through terraform_remote_state."
+  value       = try(module.portal[0].user_pool_id, null)
 }
 
 output "user_pool_client_id" {
-  value = try(module.portal[0].user_pool_client_id, null)
+  description = "Cognito app client the portal frontend signs in with. Null without the portal. Read by deploy-cli/tests/verify.sh."
+  value       = try(module.portal[0].user_pool_client_id, null)
 }
 
 output "schedule_runner_function" {
@@ -96,19 +112,23 @@ output "schedule_runner_function" {
 }
 
 output "schedule_dlq_url" {
-  value = try(module.portal[0].schedule_dlq_url, null)
+  description = "SQS dead-letter queue for EventBridge Scheduler deliveries to the schedule-runner Lambda that failed (14-day retention). Null without the portal."
+  value       = try(module.portal[0].schedule_dlq_url, null)
 }
 
 output "portal_admin_secret_name" {
-  value = try(module.portal[0].portal_admin_secret_name, null)
+  description = "Name of the portal-admin secret the operator creates by hand (docs/deployment.md); the schedule-runner Lambda signs in with it to delegate pipeline runs. Suffix-aware, so read it from here; null without the portal."
+  value       = try(module.portal[0].portal_admin_secret_name, null)
 }
 
 output "service_entry_api_url" {
-  value = try(module.portal[0].service_entry_api_url, null)
+  description = "Invoke URL of the private, SigV4-authenticated service-entry API (server-to-server entry to agent channels), reachable only through an allowed interface VPC endpoint. Null without the portal."
+  value       = try(module.portal[0].service_entry_api_url, null)
 }
 
 output "service_entry_api_id" {
-  value = try(module.portal[0].service_entry_api_id, null)
+  description = "REST API ID of the service-entry API. Null without the portal. Read by deploy-cli/tests/verify.sh; ci/infra reads it through terraform_remote_state."
+  value       = try(module.portal[0].service_entry_api_id, null)
 }
 
 # --------------------------- environment facts ------------------------------
@@ -120,55 +140,67 @@ output "service_entry_api_id" {
 # production names (scripts/qa_env.py, deploy-cli/tests/verify.sh).
 
 output "name_suffix" {
-  value = var.name_suffix
+  description = "This environment's name suffix (empty in production). deploy-cli/tests/verify.sh requires it, so the checks never fall back to production names."
+  value       = var.name_suffix
 }
 
 output "backend_namespace" {
-  value = try(module.portal[0].namespace, null)
+  description = "Kubernetes namespace the backend runs in (portal plus name_suffix). Null without the portal. Required by deploy-cli/tests/verify.sh."
+  value       = try(module.portal[0].namespace, null)
 }
 
 output "oidc_issuer" {
-  value = local.oidc_issuer
+  description = "Enterprise-SSO issuer the portal's tokens must come from, with oidc_realm applied. Empty = Cognito-only."
+  value       = local.oidc_issuer
 }
 
 output "service_entry_vpce_id" {
-  value = try(aws_vpc_endpoint.service_entry[0].id, data.aws_vpc_endpoint.owner_service_entry[0].id, null)
+  description = "Interface VPC endpoint the private service-entry API is reached through: this environment's own (created with the MCP hub demo) or, when joining a cluster, the owner's. Null when neither exists."
+  value       = try(aws_vpc_endpoint.service_entry[0].id, data.aws_vpc_endpoint.owner_service_entry[0].id, null)
 }
 
 # ------------------------------- team auth ---------------------------------
 
 output "team_auth_url" {
-  value = try(module.team_auth[0].base_url, null)
+  description = "Base URL (CloudFront) of the team-auth demo, serving Keycloak and the team APIs. Null without enable_team_auth. Read by scripts/seed_team_idp.py."
+  value       = try(module.team_auth[0].base_url, null)
 }
 
 output "keycloak_issuer" {
-  value = try(module.team_auth[0].issuer_url, null)
+  description = "OIDC issuer of the demo Keycloak's agent-platform realm (team_auth_url/realms/agent-platform). Null without enable_team_auth."
+  value       = try(module.team_auth[0].issuer_url, null)
 }
 
 output "keycloak_discovery_url" {
-  value = try(module.team_auth[0].discovery_url, null)
+  description = "OIDC discovery URL of that realm, which the team-demo runtime's JWT authorizer validates against. Null without enable_team_auth."
+  value       = try(module.team_auth[0].discovery_url, null)
 }
 
 output "keycloak_admin_secret_arn" {
-  value = try(module.team_auth[0].admin_secret_arn, null)
+  description = "Secrets Manager secret holding the demo Keycloak's bootstrap admin credentials. Null without enable_team_auth."
+  value       = try(module.team_auth[0].admin_secret_arn, null)
 }
 
 output "team_c_api_key_secret_arn" {
-  value = try(module.team_auth[0].team_c_key_secret_arn, null)
+  description = "Secrets Manager secret holding the static API key of the team-c demo API (no SSO support), which the gateway injects as X-Api-Key. Null without enable_team_auth."
+  value       = try(module.team_auth[0].team_c_key_secret_arn, null)
 }
 
 output "team_auth_alb_dns_name" {
-  value = try(module.team_auth[0].alb_dns_name, null)
+  description = "DNS name of the team-auth public ALB, the CloudFront origin behind team_auth_url. Null without enable_team_auth."
+  value       = try(module.team_auth[0].alb_dns_name, null)
 }
 
 output "team_api_mcp_urls" {
-  value = try(module.team_auth[0].team_api_mcp_urls, null)
+  description = "MCP endpoint URL per demo team API (team-a, team-b, team-c), under team_auth_url. Null without enable_team_auth."
+  value       = try(module.team_auth[0].team_api_mcp_urls, null)
 }
 
 # ------------------------------- team demo ---------------------------------
 
 output "team_demo_runtime_arn" {
-  value = try(module.team_demo[0].runtime_arn, null)
+  description = "JWT-inbound team-demo AgentCore runtime, invoked with the end user's Keycloak token. Null unless enable_team_demo, enable_team_auth and enable_runtime are all on."
+  value       = try(module.team_demo[0].runtime_arn, null)
 }
 
 # ------------------------------ mcp hub demo --------------------------------
@@ -184,7 +216,8 @@ output "mcp_hub_resource_url" {
 }
 
 output "mcp_hub_instance_id" {
-  value = try(module.mcp_hub_demo[0].hub_instance_id, null)
+  description = "EC2 instance running the self-hosted MCP hub, for SSM sessions. Null without the MCP hub demo."
+  value       = try(module.mcp_hub_demo[0].hub_instance_id, null)
 }
 
 output "mcp_hub_entry_url" {
@@ -198,7 +231,8 @@ output "mcp_hub_caller_role_arn" {
 }
 
 output "demo_app_instance_id" {
-  value = try(module.mcp_hub_demo[0].app_instance_id, null)
+  description = "EC2 instance playing the calling application in the MCP hub demo; scripts/seed_mcp_hub_demo.py points operators at it for an SSM session. Null without the demo."
+  value       = try(module.mcp_hub_demo[0].app_instance_id, null)
 }
 
 output "demo_app_role_arn" {
@@ -207,7 +241,8 @@ output "demo_app_role_arn" {
 }
 
 output "demo_app_client_secret_name" {
-  value = try(module.mcp_hub_demo[0].app_client_secret_name, null)
+  description = "Secrets Manager name the seed script writes the demo app's IdP client credentials to. Null without the MCP hub demo."
+  value       = try(module.mcp_hub_demo[0].app_client_secret_name, null)
 }
 
 output "agentcore_gateway_inference_base_url" {
@@ -217,6 +252,7 @@ output "agentcore_gateway_inference_base_url" {
 
 # The CNAME targets for the custom domains (point each name at its value).
 output "custom_domain_targets" {
+  description = "CNAME target for each custom domain, as {name, target} per distribution (portal, team_auth): point the name at the target. null for a distribution with no custom domain or whose module is off."
   value = {
     # a module that is off (staging runs no team_auth) has no target, whatever the inherited tfvars say
     portal    = var.portal_custom_domain == null || length(module.portal) == 0 ? null : { name = var.portal_custom_domain.name, target = module.portal[0].distribution_domain }

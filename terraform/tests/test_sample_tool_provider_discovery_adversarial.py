@@ -224,10 +224,12 @@ def main() -> int:
     ok("operator script: names <prefix><tool> exactly, create-or-update by name, key from file/stdin only, refuses bad tool ids, envs, empty or multi-word keys")
 
     # 6. provider requirement
-    assert re.search(r'external\s*=\s*\{\s*source\s*=\s*"hashicorp/external"\s*version\s*=\s*">= 2\.3\.0"', versions), \
+    # the floor is what this check owns; the upper bound is tests.provider-lock's
+    assert re.search(r'external\s*=\s*\{\s*source\s*=\s*"hashicorp/external"\s*version\s*=\s*">= 2\.3\.0(,[^"]*)?"', versions), \
         "root must require hashicorp/external with a floor"
     mod_versions = read(MODULE, "versions.tf")
-    assert 'external = {' in mod_versions and 'source = "hashicorp/external"' in mod_versions, "the module declares its own requirement, so a caller cannot forget it"
+    # whitespace-tolerant: terraform fmt aligns the `=` once a version line sits next to source
+    assert re.search(r'external\s*=\s*\{\s*source\s*=\s*"hashicorp/external"', mod_versions), "the module declares its own requirement, so a caller cannot forget it"
     ok("hashicorp/external required by the root (>= 2.3.0) and the module")
 
     # 7. validate

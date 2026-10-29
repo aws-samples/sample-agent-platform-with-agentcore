@@ -54,6 +54,7 @@ variable "script_python" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to the gateway and role names; empty for production. The runtime module's deny on gateway/agent-platform-inference* relies on that name prefix."
+  type        = string
+  default     = ""
 }

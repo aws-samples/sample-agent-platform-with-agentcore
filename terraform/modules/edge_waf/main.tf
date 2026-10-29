@@ -6,8 +6,6 @@
 #
 # CLOUDFRONT scope lives in us-east-1 regardless of where the stack deploys.
 
-data "aws_caller_identity" "current" {}
-
 locals {
   name = "agent-platform-edge${var.name_suffix}"
 

@@ -2,6 +2,10 @@ terraform {
   # 1.9+: cross-variable references in variable validation blocks
   required_version = ">= 1.9.0"
 
+  # Ranges stop at the next major; the exact versions are pinned by the
+  # committed .terraform.lock.hcl (CI inits with -lockfile=readonly). To move
+  # a provider: terraform init -upgrade, then
+  #   terraform providers lock -platform=linux_amd64 -platform=darwin_arm64
   required_providers {
     aws = {
       source = "hashicorp/aws"
@@ -11,11 +15,7 @@ terraform {
     }
     random = {
       source  = "hashicorp/random"
-      version = ">= 3.6.0"
-    }
-    archive = {
-      source  = "hashicorp/archive"
-      version = ">= 2.4.0"
+      version = ">= 3.6.0, < 4.0.0"
     }
     # Cluster controllers and the platform workloads are Helm releases.
     helm = {
@@ -25,19 +25,24 @@ terraform {
     # OIDC issuer thumbprint for the IRSA identity provider.
     tls = {
       source  = "hashicorp/tls"
-      version = ">= 4.0.0"
+      version = ">= 4.0.0, < 5.0.0"
     }
     # modules/sample_tools finds the sample tools' credential providers by
     # name at plan time (scripts/discover_sample_tool_providers.py).
     external = {
       source  = "hashicorp/external"
-      version = ">= 2.3.0"
+      version = ">= 2.3.0, < 3.0.0"
     }
   }
 }
 
 provider "aws" {
   region = var.aws_region
+
+  # every taggable resource of the foundation (locals.common_tags, main.tf)
+  default_tags {
+    tags = local.common_tags
+  }
 }
 
 # Authenticates with a fresh EKS token on every call, so a long apply does not

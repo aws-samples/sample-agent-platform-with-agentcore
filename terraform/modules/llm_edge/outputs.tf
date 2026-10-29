@@ -4,11 +4,13 @@ output "edge_url" {
 }
 
 output "role_arn" {
-  value = aws_iam_role.edge.arn
+  description = "IRSA role of the llm-edge pods (ServiceAccount edge): reads the gateway secret and session token items. Also published in workload_facts."
+  value       = aws_iam_role.edge.arn
 }
 
 output "alb_sg_id" {
-  value = aws_security_group.alb.id
+  description = "Security group of the internal ALB; it admits only runtime_sg_id on the listener port."
+  value       = aws_security_group.alb.id
 }
 
 # ---- what the workloads layer needs to run the edge here (no secrets) ----

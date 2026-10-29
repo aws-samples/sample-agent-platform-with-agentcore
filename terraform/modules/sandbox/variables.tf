@@ -1,5 +1,6 @@
 variable "vpc_id" {
-  type = string
+  description = "VPC the sandbox subnets, route table, S3 gateway endpoint and security group are created in."
+  type        = string
 }
 
 variable "subnets" {
@@ -76,6 +77,7 @@ variable "extra_image_repository_arns" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to the sandbox resource and IAM role names, and matched in the runtime log-group pattern; empty for production."
+  type        = string
+  default     = ""
 }

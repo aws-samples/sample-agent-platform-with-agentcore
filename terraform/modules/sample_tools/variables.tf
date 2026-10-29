@@ -21,8 +21,9 @@ variable "policy_mode" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to the gateway, role and policy engine names (hyphens become underscores for the engine) and folded into the credential-provider name prefix; empty for production."
+  type        = string
+  default     = ""
 }
 
 variable "script_python" {
