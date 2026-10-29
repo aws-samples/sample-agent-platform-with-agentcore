@@ -1,9 +1,11 @@
 variable "vpc_id" {
-  type = string
+  description = "VPC of the hub and demo-app instances, the entry NLB and their security groups."
+  type        = string
 }
 
 variable "private_subnet_ids" {
-  type = list(string)
+  description = "Private subnets: the entry NLB spans all of them, and the hub and demo-app instances go in the first."
+  type        = list(string)
 }
 
 variable "runtime_sg_id" {
@@ -12,6 +14,7 @@ variable "runtime_sg_id" {
 }
 
 variable "workspace_bucket" {
+  description = "Workspace bucket from the platform module; the hub instance downloads its source zip from the mcp-hub/ prefix."
   type = object({
     name = string
     arn  = string
@@ -51,18 +54,21 @@ variable "service_api_execution_arn" {
 }
 
 variable "hub_instance_type" {
-  type    = string
-  default = "t4g.small"
+  description = "EC2 instance type of the MCP hub host. Must be arm64 (Graviton): the AMI is AL2023 arm64."
+  type        = string
+  default     = "t4g.small"
 }
 
 variable "app_instance_type" {
-  type    = string
-  default = "t4g.micro"
+  description = "EC2 instance type of the demo calling-application host. Must be arm64 (Graviton): the AMI is AL2023 arm64."
+  type        = string
+  default     = "t4g.micro"
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to instance, role, secret and API names; empty for production."
+  type        = string
+  default     = ""
 }
 
 variable "vpc_cidr_block" {

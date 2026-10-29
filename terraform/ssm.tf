@@ -139,10 +139,6 @@ resource "aws_ssm_parameter" "foundation_facts" {
   # when it crosses the 4 KB standard limit
   tier  = "Intelligent-Tiering"
   value = jsonencode(local.foundation_facts)
-
-  tags = {
-    Project = "agent-platform${var.name_suffix}"
-  }
 }
 
 output "foundation_facts_parameter" {

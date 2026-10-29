@@ -1,9 +1,11 @@
 variable "vpc_id" {
-  type = string
+  description = "VPC of the internal ALB, its target group and the edge's security groups."
+  type        = string
 }
 
 variable "private_subnet_ids" {
-  type = list(string)
+  description = "Private subnets the internal ALB is placed in."
+  type        = list(string)
 }
 
 variable "runtime_sg_id" {
@@ -28,6 +30,7 @@ variable "platform_table" {
 }
 
 variable "log_bucket" {
+  description = "Access-log bucket from the platform module; the internal ALB writes to it under llm-edge-alb/."
   type = object({
     name = string
     arn  = string
@@ -60,6 +63,7 @@ variable "eks" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to resource names and the Kubernetes namespace (llm-edge<suffix>); empty for production."
+  type        = string
+  default     = ""
 }

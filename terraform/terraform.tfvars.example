@@ -23,7 +23,7 @@ existing_nat_eip            = "" # informational, surfaced as an output
 # the address and key belong to the llm-edge service, not to kernel containers.
 # (llm_gateway_url is retired and rejected if set.)
 enable_llm_edge                = false
-use_bedrock                    = "1"
+use_bedrock                    = true
 anthropic_model                = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 anthropic_small_fast_model     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 anthropic_default_opus_model   = "global.anthropic.claude-opus-5"
@@ -55,9 +55,9 @@ service_api_allowed_vpces = [] # e.g. ["vpce-0123456789abcdef0"]
 
 # --- EKS --------------------------------------------------------------------
 # The containers run on a dedicated EKS cluster in the platform VPC (Graviton
-# managed node group, IRSA). Narrow the API endpoint to your operators' egress
-# addresses; the sample default is open because the API is IAM-authenticated.
-# eks_public_access_cidrs  = ["203.0.113.10/32"]
+# managed node group, IRSA). Required when this state creates the cluster: the
+# public API endpoint admits only these addresses (operators, CI); each /16 or narrower.
+eks_public_access_cidrs = ["203.0.113.10/32"]
 # eks_admin_principal_arns = ["arn:aws:iam::123456789012:role/PlatformOperators"]
 # eks_node_instance_type   = "m7g.large"
 # eks_node_count           = 3
@@ -109,3 +109,11 @@ enable_team_demo = false
 #   # a customer-maintained image the sandbox runtime may pull
 #   extra_image_repository_arns = []
 # }
+
+# Tags on every resource (provider default_tags). Defaults: Project
+# (agent-platform + name_suffix), Environment, Owner = "unset", ManagedBy =
+# terraform, Lifecycle = persistent. Any key here overrides its default, so an
+# organisation's own tag scheme goes here.
+tags = {
+  Owner = "platform-team"
+}

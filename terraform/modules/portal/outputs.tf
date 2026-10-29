@@ -1,25 +1,31 @@
 output "portal_url" {
-  value = "https://${local.public_host}"
+  description = "Public portal URL (https://), on the custom domain when one is set, otherwise the distribution's *.cloudfront.net domain."
+  value       = "https://${local.public_host}"
 }
 
 output "distribution_id" {
-  value = aws_cloudfront_distribution.portal.id
+  description = "ID of the CloudFront distribution in front of the portal, invalidated after each frontend publish."
+  value       = aws_cloudfront_distribution.portal.id
 }
 
 output "frontend_bucket_name" {
-  value = aws_s3_bucket.frontend.bucket
+  description = "Name of the S3 bucket serving the portal's static frontend build (the distribution's S3 origin)."
+  value       = aws_s3_bucket.frontend.bucket
 }
 
 output "alb_dns_name" {
-  value = aws_lb.portal.dns_name
+  description = "DNS name of the public portal ALB, the distribution's API origin."
+  value       = aws_lb.portal.dns_name
 }
 
 output "user_pool_id" {
-  value = aws_cognito_user_pool.portal.id
+  description = "ID of the Cognito user pool for portal sign-in (self-signup disabled; operators create users)."
+  value       = aws_cognito_user_pool.portal.id
 }
 
 output "user_pool_client_id" {
-  value = aws_cognito_user_pool_client.portal.id
+  description = "ID of the Cognito app client the portal frontend signs in with."
+  value       = aws_cognito_user_pool_client.portal.id
 }
 
 output "schedule_runner_function" {
@@ -28,29 +34,35 @@ output "schedule_runner_function" {
 }
 
 output "schedule_dlq_url" {
-  value = aws_sqs_queue.schedule_dlq.url
+  description = "URL of the SQS dead-letter queue for EventBridge Scheduler deliveries to the schedule-runner Lambda that failed (14-day retention)."
+  value       = aws_sqs_queue.schedule_dlq.url
 }
 
 # The operator creates this secret by hand (see docs/deployment.md); the name
 # is suffix-dependent, so read it from here rather than typing it.
 output "portal_admin_secret_name" {
-  value = local.portal_admin_secret
+  description = "Name of the portal-admin Secrets Manager secret the operator creates by hand; suffix-dependent, so read it from here."
+  value       = local.portal_admin_secret
 }
 
 output "service_entry_api_url" {
-  value = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
+  description = "Regional invoke URL of the private service-entry API's svc stage; reachable only through an associated interface VPC endpoint."
+  value       = "https://${aws_api_gateway_rest_api.service_entry.id}.execute-api.${local.region}.amazonaws.com/svc/"
 }
 
 output "service_entry_api_id" {
-  value = aws_api_gateway_rest_api.service_entry.id
+  description = "REST API ID of the private service-entry API; root main.tf builds the endpoint-specific invoke URL for mcp_hub_demo from it."
+  value       = aws_api_gateway_rest_api.service_entry.id
 }
 
 output "service_entry_api_execution_arn" {
-  value = aws_api_gateway_rest_api.service_entry.execution_arn
+  description = "Execution ARN of the private service-entry API; mcp_hub_demo scopes its execute-api:Invoke grant to it."
+  value       = aws_api_gateway_rest_api.service_entry.execution_arn
 }
 
 output "namespace" {
-  value = local.namespace
+  description = "Kubernetes namespace the backend and entry workloads run in (portal plus name_suffix)."
+  value       = local.namespace
 }
 
 # ---- what the workloads layer needs to run the backend here (no secrets) ----

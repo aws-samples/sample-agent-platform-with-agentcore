@@ -1,5 +1,6 @@
 output "hub_instance_id" {
-  value = aws_instance.hub.id
+  description = "EC2 instance ID of the MCP hub host; published in the foundation facts for the seed and e2e scripts."
+  value       = aws_instance.hub.id
 }
 
 output "hub_endpoint" {
@@ -13,7 +14,8 @@ output "hub_resource_url" {
 }
 
 output "app_instance_id" {
-  value = aws_instance.app.id
+  description = "EC2 instance ID of the demo calling-application host; published in the foundation facts for the seed and e2e scripts."
+  value       = aws_instance.app.id
 }
 
 output "app_role_arn" {
@@ -39,7 +41,8 @@ output "hub_entry_url" {
 }
 
 output "hub_entry_api_id" {
-  value = aws_api_gateway_rest_api.entry.id
+  description = "ID of the private REST API in front of the hub (the IAM entry); hub_entry_url is built from it."
+  value       = aws_api_gateway_rest_api.entry.id
 }
 
 output "hub_caller_role_arn" {

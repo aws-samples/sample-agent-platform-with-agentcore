@@ -122,6 +122,9 @@ resource "aws_dynamodb_table" "platform" {
     enabled = true
   }
 
+  # PITR does not survive a DeleteTable; this refuses one instead
+  deletion_protection_enabled = var.protect_stateful
+
   # Items that carry a `ttl` (epoch seconds) are deleted by DynamoDB some time
   # after it, at no cost: the ledger, quota counters, credential rows,
   # service-entry results, terminated sessions. Items without it are kept.
@@ -135,13 +138,14 @@ resource "aws_dynamodb_table" "platform" {
 }
 
 # ------------------------------ ECR repos ----------------------------------
-# force_delete mirrors CDK's empty_on_delete (repo is emptied on destroy).
+# A destroy deletes a repo only when it is empty, unless protect_stateful is
+# off: the commit-tagged images are what a rollback redeploys.
 
 resource "aws_ecr_repository" "kernel" {
   for_each = toset(local.kernel_repo_names)
 
   name         = "agent-platform${var.name_suffix}/${each.key}"
-  force_delete = true
+  force_delete = !var.protect_stateful
 
   # kernel images run agent code under an IAM role — scan what gets that trust
   image_scanning_configuration {
@@ -153,7 +157,7 @@ resource "aws_ecr_repository" "team_auth" {
   for_each = toset(local.team_auth_repo_names)
 
   name         = "agent-platform${var.name_suffix}/${each.key}"
-  force_delete = true
+  force_delete = !var.protect_stateful
 
   image_scanning_configuration {
     scan_on_push = true
@@ -165,7 +169,7 @@ resource "aws_ecr_repository" "team_auth" {
 # should be able to pull the image of the service that holds the gateway key.
 resource "aws_ecr_repository" "llm_edge" {
   name         = "agent-platform${var.name_suffix}/llm-edge"
-  force_delete = true
+  force_delete = !var.protect_stateful
 
   image_scanning_configuration {
     scan_on_push = true
@@ -180,7 +184,7 @@ resource "aws_ecr_repository" "llm_edge" {
 # environment runs the feature (the sandbox module only reads it).
 resource "aws_ecr_repository" "sandbox_kernel" {
   name         = "agent-platform${var.name_suffix}/sandbox-kernel"
-  force_delete = true
+  force_delete = !var.protect_stateful
 
   image_scanning_configuration {
     scan_on_push = true
@@ -195,8 +199,9 @@ resource "aws_ecr_repository" "sandbox_kernel" {
 # reached a handler, which is what an incident review needs.
 
 resource "aws_s3_bucket" "logs" {
-  bucket        = "agent-platform-logs-${local.account}-${local.region}${var.name_suffix}"
-  force_destroy = true
+  bucket = "agent-platform-logs-${local.account}-${local.region}${var.name_suffix}"
+  # the evidence an incident review reads; emptied on destroy only on request
+  force_destroy = !var.protect_stateful
 }
 
 resource "aws_s3_bucket_public_access_block" "logs" {

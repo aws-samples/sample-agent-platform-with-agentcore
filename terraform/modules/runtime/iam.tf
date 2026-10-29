@@ -83,11 +83,23 @@ data "aws_iam_policy_document" "kernel_base" {
 # grants just the configured models (below). A wildcard here would be a model
 # credential wider than anything on a sample's path, readable from inside its
 # microVM.
+#
+# Any model, since the control plane picks it per invocation, but only the
+# resource types a model call reaches: this account's inference profiles here
+# (system-defined global./us./eu./apac., and application ones), and foundation
+# models in any Region and region-less (a global profile routes to
+# arn:aws:bedrock:::foundation-model/<id>). Not other accounts' profiles,
+# provisioned throughput, custom or imported models.
 data "aws_iam_policy_document" "bedrock_direct" {
   statement {
-    sid       = "BedrockInvoke"
-    actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-    resources = ["*"] # cross-region inference profiles span regions
+    sid     = "BedrockInvoke"
+    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = [
+      "arn:aws:bedrock:${local.region}:${local.account}:inference-profile/*",
+      "arn:aws:bedrock:${local.region}:${local.account}:application-inference-profile/*",
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:::foundation-model/*",
+    ]
   }
 }
 

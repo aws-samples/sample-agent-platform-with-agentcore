@@ -12,10 +12,8 @@
 # Keycloak's discovery URL to be live before they can be created.
 
 data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
 
 locals {
-  region     = data.aws_region.current.region
   realm      = "agent-platform"
   teams      = ["team-a", "team-b", "team-c"]
   log_prefix = var.eks.log_group_prefix
