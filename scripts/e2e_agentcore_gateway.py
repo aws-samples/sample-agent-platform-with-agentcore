@@ -27,8 +27,11 @@ Asserts:
               same credential is refused on a second gateway.
   [failfast]  the shim refuses a model this session was not routed to (an
               optimisation, not a boundary — see mint_agentcore's docstring).
-  [revoke]    llm_credentials_service.revoke() stops this session's
-              credentials while a second live session keeps working.
+  [revoke]    every credential STS issues lives at most 15 minutes, which is
+              the revocation bound: after llm_credentials_service.revoke()
+              this session can no longer renew while a second session still
+              can, and nothing is written to the caller role (revocation used
+              to be an inline Deny there).
 
 Usage:  python3 scripts/e2e_agentcore_gateway.py [--region us-east-1] [--keep]
 
@@ -761,7 +764,7 @@ def main() -> int:
                 )
                 verdict = "ok" if code == 200 else "fail"
                 print(f"    {verdict:>4}  {m:20} HTTP {code}  {body[:90]}")
-            svc.revoke_agentcore(sid_mm)
+            svc.revoke(sid_mm)
 
         step("[failfast] shim refuses a model this session was not routed to")
         code, body = shim_call(local_token, {"model": "claude-opus-4-7", "max_tokens": 8,
@@ -778,27 +781,23 @@ def main() -> int:
             f"HTTP {code_no} {body_no[:80]}",
         )
 
-        step("[revoke] revoking one session leaves another untouched")
+        step("[revoke] 15-minute credentials, revoked by refusing renewal")
+        lifetime = grant["expires_at"] - time.time()
+        check("credential lives at most 15 minutes", lifetime <= 900 + 5, f"{lifetime:.0f}s")
         sid_b = f"ses-{secrets.token_hex(20)}"
         grant_b = svc.mint_agentcore(sid_b, "bob", spec, team="team-beta")
         check("second session minted", bool(grant_b))
+        # neither session has renewed yet, so neither is throttled
         svc.revoke(sid_a)
-        print("  revoke(sid_a) issued; polling for effect")
-        t0 = time.time()
-        revoked_at = None
-        while time.time() - t0 < 120:
-            code, _ = raw_gateway_call(grant, fx.base_url(0), args.model)
-            if code != 200:
-                revoked_at = time.time() - t0
-                break
-            time.sleep(3)
-        check(
-            "session A's credential stopped working",
-            revoked_at is not None,
-            f"after {revoked_at:.1f}s" if revoked_at else "still valid after 120s",
-        )
-        code_b, _ = raw_gateway_call(grant_b, fx.base_url(0), args.model)
-        check("session B unaffected", code_b == 200, f"HTTP {code_b}")
+        check("revoked session cannot renew",
+              svc.renew_agentcore(sid_a, grant["renew"]["token"]) is None)
+        renewed_b = svc.renew_agentcore(sid_b, grant_b["renew"]["token"]) if grant_b else None
+        check("other session still renews", bool(renewed_b))
+        if renewed_b:
+            code_b, _ = raw_gateway_call(renewed_b, fx.base_url(0), args.model)
+            check("renewed credential works on the gateway", code_b == 200, f"HTTP {code_b}")
+        left = fx.iam.list_role_policies(RoleName=fx.caller_role).get("PolicyNames", [])
+        check("nothing written to the caller role", left == ["e2e"], f"{left}")
         svc.revoke(sid_b)
     finally:
         for d in (

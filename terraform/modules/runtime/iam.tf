@@ -456,7 +456,8 @@ resource "aws_iam_role_policy" "mcp_tools" {
 # Base + agent_common like the interactive kernel, but not bedrock_direct
 # (sample_bedrock instead: the configured models without the inference gateway,
 # nothing with it) and not sdk_extras: a sample agent writes no async artifacts
-# and holds no remote-MCP or memory grants. Its one tool gateway is covered by agent_common's
+# and holds no remote-MCP grants. Memory, when the sample has it, is its own
+# store only (sample_memory.tf). Its one tool gateway is covered by agent_common's
 # InvokeGateways, with the inference-gateway Deny applying as to every kernel.
 
 resource "aws_iam_role" "sample" {

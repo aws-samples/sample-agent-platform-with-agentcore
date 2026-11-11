@@ -18,9 +18,11 @@ claim nonce, any credential, a presigned URL) is ever part of a result.
 """
 
 import base64
+import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 
@@ -33,6 +35,27 @@ from app.services.sandbox_service import SandboxError, normalize_runtime, sandbo
 logger = logging.getLogger(__name__)
 
 TOKEN_PK = "SANDBOX_MCP_TOKEN"
+CALL_TOKEN_TTL_S = 900
+# files the agent hands out of a sandbox (sandbox_export_file): copied to the
+# workspace bucket under exports/<runtime session>/<owner session>/
+EXPORT_PREFIX = "exports"
+EXPORT_MAX_BYTES = 20 * 1024 * 1024
+EXPORT_TYPES = {".pptx", ".docx", ".xlsx", ".pdf", ".csv", ".txt", ".md", ".png", ".jpg", ".jpeg", ".zip"}
+
+
+def _segment(value: str) -> str:
+    """One S3 key segment: [A-Za-z0-9-] as is, anything else as a digest."""
+    return value if re.fullmatch(r"[A-Za-z0-9-]{1,128}", value or "") else "x-" + hashlib.sha256(str(value).encode()).hexdigest()[:32]
+
+
+def export_name(path: str) -> str:
+    """The exported file's name: the path's last segment, [A-Za-z0-9._-],
+    with an allowed extension; raises SandboxError otherwise."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", str(path).rsplit("/", 1)[-1])[:100].lstrip(".")
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if not name or ext not in EXPORT_TYPES:
+        raise SandboxError("bad_request", f"only {', '.join(sorted(EXPORT_TYPES))} files can be exported", status=400)
+    return name
 PROTOCOL_VERSION = "2025-06-18"
 OUTPUT_LIMIT = 16_000
 UNTRUSTED_NOTE = (
@@ -79,7 +102,12 @@ class SandboxMcpTokens:
         """The token's owner (user, session_id, runtime_session_id) when the
         token matches and the workbench session is still active, else None
         (one answer for unknown / mismatched / ended)."""
-        if not runtime_session_id or not token:
+        if not token:
+            return None
+        call = self._verify_call(runtime_session_id, token)
+        if call is not None:
+            return call
+        if not runtime_session_id:
             return None
         item = self.table.get_item(Key={"PK": TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}).get("Item")
         if not item or not hmac.compare_digest(str(item.get("token", "")), token):
@@ -90,6 +118,47 @@ class SandboxMcpTokens:
         if not session or session.get("status") != "active":
             return None
         return {"user": item["user"], "session_id": item["session_id"], "runtime_session_id": runtime_session_id}
+
+
+    # ------------------------------------------- tokens of one agent call
+    # A published agent with the sandbox tools attached gets a token for one
+    # invocation (invocation_service): looked up by its digest, so concurrent
+    # calls on one runtime session never overwrite each other's; it expires
+    # with the call, and the sandboxes it opened belong to the call
+    # (owner_session = "call-<id>") and are stopped when the call ends.
+
+    def issue_for_call(self, user: str, runtime_session_id: str, ttl_s: int = CALL_TOKEN_TTL_S) -> tuple[str, str]:
+        """(token, owner_session) for one invocation."""
+        token = secrets.token_urlsafe(32)
+        call_id = secrets.token_hex(8)
+        now = int(time.time())
+        self.table.put_item(Item=retention.with_ttl({
+            "PK": TOKEN_PK,
+            "SK": f"CALL#{hashlib.sha256(token.encode()).hexdigest()}",
+            "user": str(user),
+            "runtime_session_id": runtime_session_id,
+            "owner_session": f"call-{call_id}",
+            "issued_at": now,
+            "expires_at": now + int(ttl_s),
+        }, retention.ttl_after_days(1)))
+        return token, f"call-{call_id}"
+
+    def revoke_call(self, token: str) -> None:
+        if token:
+            self.table.delete_item(Key={"PK": TOKEN_PK, "SK": f"CALL#{hashlib.sha256(token.encode()).hexdigest()}"})
+
+    def _verify_call(self, runtime_session_id: str, token: str) -> dict | None:
+        if not (20 <= len(token) <= 100):
+            return None
+        item = self.table.get_item(
+            Key={"PK": TOKEN_PK, "SK": f"CALL#{hashlib.sha256(token.encode()).hexdigest()}"}).get("Item")
+        if not item or int(item.get("expires_at", 0)) <= time.time():
+            return None
+        if runtime_session_id != item.get("runtime_session_id"):
+            return None  # the session header is required and must match
+        rsid = str(item.get("runtime_session_id", ""))
+        return {"user": item["user"], "session_id": "", "runtime_session_id": str(item["owner_session"]),
+                "export_prefix": f"{EXPORT_PREFIX}/{_segment(rsid)}/{item['owner_session']}/"}
 
 
 sandbox_mcp_tokens = SandboxMcpTokens()
@@ -201,6 +270,14 @@ TOOLS = [
         "inputSchema": _schema({"run_ref": {"type": "string"}}, ["run_ref"]),
     },
     {
+        "name": "sandbox_export_file",
+        "description": "Hand a file the sandbox produced (pptx, docx, xlsx, pdf, csv, txt, md, png, jpg, zip; at most "
+                       "20 MB) out of the sandbox, for the channel to deliver. Returns export_key; the sandbox can be "
+                       "stopped afterwards.",
+        "inputSchema": _schema({**_ID, "path": {"type": "string", "description": "relative to /workspace"}},
+                               ["sandbox_id", "path"]),
+    },
+    {
         "name": "sandbox_stop",
         "description": "Stop the sandbox: cancel its job and end the microVM. The id cannot be used again.",
         "inputSchema": _schema(_ID, ["sandbox_id"]),
@@ -294,6 +371,28 @@ def call_tool(name: str, args: dict, caller: dict) -> dict:
         if text is None:
             return {"content": [_text({**meta, "inline": False})]}
         return {"content": [_text(meta), _text(UNTRUSTED_NOTE + text)]}
+    if name == "sandbox_export_file":
+        path = str(args["path"])
+        file_name = export_name(path)
+        # the size first, from the directory listing: the file is not moved
+        # into the backend when it is over the limit
+        parent, _, base = path.strip("/").rpartition("/")
+        listing = sandbox_service.list_dir(sid, owner, parent)
+        entry = next((e for e in (listing.get("entries") or []) if e.get("name") == base and not e.get("is_dir")), None)
+        if entry is None:
+            raise SandboxError("not_found", "no such file", status=404)
+        if int(entry.get("size") or 0) > EXPORT_MAX_BYTES:
+            raise SandboxError("file_too_large", f"exports are at most {EXPORT_MAX_BYTES} bytes", status=413)
+        r = sandbox_service.read_file(sid, owner, path)
+        data = base64.b64decode(r.get("content_b64", ""))
+        if not data or len(data) > EXPORT_MAX_BYTES:
+            raise SandboxError("file_too_large", f"exports are at most {EXPORT_MAX_BYTES} bytes", status=413)
+        digest = hashlib.sha256(data).hexdigest()
+        prefix = caller.get("export_prefix") or f"{EXPORT_PREFIX}/{_segment(owner_session)}/"
+        key = f"{prefix}{digest[:12]}-{file_name}"
+        boto3.client("s3", region_name=settings.aws_region).put_object(
+            Bucket=settings.workspace_bucket, Key=key, Body=data, ContentType="application/octet-stream")
+        return {"content": [_text({"export_key": key, "name": file_name, "size": len(data), "sha256": digest})]}
     if name == "sandbox_list_dir":
         return {"content": [_text(sandbox_service.list_dir(sid, owner, str(args.get("path", ""))))]}
     raise SandboxError("unknown_tool", f"unknown tool {name}")

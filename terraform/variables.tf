@@ -108,6 +108,12 @@ variable "image_tag" {
   default     = "latest"
 }
 
+variable "bedrock_invocation_logging" {
+  description = "Deliver Amazon Bedrock model invocation logs (request and response bodies of every model call in this account and region) to the logs bucket under bedrock/, the model-side record the kernels' event trails are reconciled against. One setting per account and region: enable it from a single root (not from both production and a staging suffix in the same account)."
+  type        = bool
+  default     = false
+}
+
 variable "agent_observability" {
   description = "Opt in to AgentCore Observability for the headless kernel: grants the telemetry IAM statements and creates the X-Ray delivery destination. Set the same value in terraform/workloads (which creates the delivery sources and runs the observability image variant)."
   type        = bool
@@ -134,6 +140,12 @@ variable "team_demo_image_tag" {
   description = "Tag of the agent-sdk-kernel image the team-demo runtime runs. Empty = image_tag."
   type        = string
   default     = ""
+}
+
+variable "team_demo_gateway_hosts" {
+  description = "Gateway hostnames the team-demo runtime may attach as MCP servers (modules/team_demo gateway_hosts): the host of mcp_url in SSM /agent-platform/team-gateway. Empty = the demo runs without its team tools."
+  type        = list(string)
+  default     = []
 }
 
 variable "team_demo_build" {
@@ -523,9 +535,57 @@ variable "sandbox_network" {
 }
 
 variable "sample_runtimes" {
-  description = "Sample agents that get their own runtime and execution role, by sample id. Keys must match the workloads root's sample list."
-  type        = map(object({}))
+  description = "Sample agents that get their own runtime and execution role, by sample id. Keys must match the workloads root's sample list. memory = true also creates the sample's own AgentCore Memory store, reachable by its role only (published as runtime.sample_memories in the facts)."
+  type        = map(object({ memory = optional(bool, false) }))
   default     = {}
+}
+
+variable "enable_lark_ingress" {
+  description = "Lark (Feishu) ingress of the lark-teammate sample: a public HTTPS endpoint for Lark's event subscription, the lark-webhook function's role and log group, and an empty secret for the Lark app's credentials. Needs enable_portal, enable_sample_tools and sample_runtimes.lark-teammate. Off by default: it is the one public endpoint the sample adds."
+  type        = bool
+  default     = false
+}
+
+variable "enable_lark_ambient" {
+  description = "Ambient memory of the lark-teammate ingress: an hourly job that distills durable facts from what each group says into the group's memory, and a weekly job that tidies it (the lark-memory function). Needs enable_lark_ingress and sample_runtimes.lark-teammate.memory."
+  type        = bool
+  default     = false
+}
+
+variable "enable_lark_reminders" {
+  description = "Reminders and scheduled tasks of the lark-teammate ingress: people set them in a group by asking the teammate, and the lark-webhook function fires them (a table of the sample's own and a once-a-minute schedule). Not platform schedules. Needs enable_lark_ingress."
+  type        = bool
+  default     = false
+}
+
+variable "enable_lark_memory_notes" {
+  description = "Memory notes of the lark-teammate ingress: people ask the teammate to remember, list or forget (in two steps) things for their group, and the lark-webhook function writes and deletes records of the sample's own memory store. Needs enable_lark_ingress and sample_runtimes.lark-teammate.memory."
+  type        = bool
+  default     = false
+}
+
+variable "enable_lark_tools" {
+  description = "Lark tools of the lark-teammate ingress: a second public route, ANY /lark/mcp, through which the agent calls documents, reminders and memory notes as tools, with a token the ingress issues per turn and revokes after it. Needs enable_lark_ingress."
+  type        = bool
+  default     = false
+}
+
+variable "enable_lark_sandbox" {
+  description = "Files of the lark-teammate ingress: with enable_lark_tools, each turn's agent may use the platform's code sandbox (a token for that call only) to make slides, documents, spreadsheets or PDFs and send them to the group. Needs the sandbox deployed."
+  type        = bool
+  default     = false
+}
+
+variable "lark_utc_offset_hours" {
+  description = "Wall clock of the Lark groups, as hours from UTC (8 for China). Reminder times are read and shown in it."
+  type        = number
+  default     = 8
+}
+
+variable "lark_open_base" {
+  description = "Lark Open API base of the lark-teammate ingress: https://open.feishu.cn (Feishu) or https://open.larksuite.com (Lark)."
+  type        = string
+  default     = "https://open.feishu.cn"
 }
 
 variable "sample_tools_credential_provider_arns" {

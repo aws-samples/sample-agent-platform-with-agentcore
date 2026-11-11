@@ -3,14 +3,17 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { ArrowLeft, CheckCircle2, CircleDashed, Copy, ExternalLink, Loader2, Play, XCircle } from 'lucide-react'
 import { Modal, SectionTitle } from '@/components/common/ui'
 import { getUser } from '@/services/auth'
-import { api, type InvokeResult, type SampleDetail } from '@/services/api'
+import { api, type InvokeResult, type PlaybookList, type SampleDetail } from '@/services/api'
 
 // One sample: what it does, how it is put together, try it, clone it.
 // The README is the sample's own (samples/agents/<id>/README.md), rendered
 // as light markdown here; the long design rationale lives in the repository
 // (design_doc) and is linked, not embedded.
 
-type Tab = 'about' | 'agent' | 'evals'
+type Tab = 'about' | 'agent' | 'evals' | 'playbooks'
+
+// the sample whose groups can propose playbooks (app/integrations/lark/skills.py)
+const PLAYBOOK_SAMPLE = 'lark-teammate'
 
 /** Minimal markdown: headings, paragraphs, code fences, lists, tables, links,
  *  inline code and bold. Enough for the sample READMEs, no dependency. */
@@ -113,6 +116,88 @@ function Markdown({ text }: { text: string }) {
   return <div>{out}</div>
 }
 
+/** Playbooks proposed from Lark groups: an administrator approves one before
+ *  any group's agent uses it; approved ones can be retired. */
+function Playbooks({ sampleId }: { sampleId: string }) {
+  const [data, setData] = useState<PlaybookList | null>(null)
+  const [error, setError] = useState('')
+  // a failed approve / reject / retire is shown above the lists; the tab stays usable
+  const [actionError, setActionError] = useState('')
+  const [busy, setBusy] = useState('')
+
+  const load = () => {
+    setError('')
+    api.listPlaybooks(sampleId).then(setData).catch((e: Error) =>
+      setError(/403/.test(e.message) ? 'Only administrators can review playbooks.' : e.message))
+  }
+  useEffect(load, [sampleId])
+
+  const act = async (key: string, run: () => Promise<unknown>) => {
+    setBusy(key)
+    setActionError('')
+    try {
+      await run()
+      load()
+    } catch (e) {
+      setActionError((e as Error).message)
+      load()
+    } finally {
+      setBusy('')
+    }
+  }
+
+  if (error) return <p className="text-sm text-slate-600">{error}</p>
+  if (!data) return <Loader2 className="animate-spin text-slate-400" size={18} />
+  const when = (t?: number) => (t ? new Date(t * 1000).toLocaleString() : '')
+  return (
+    <div className="space-y-6 text-sm">
+      {actionError && <p className="rounded bg-rose-50 p-2 text-rose-700">{actionError}</p>}
+      <p className="text-slate-600">
+        A playbook is a set of steps one group teaches the teammate. Every group's agent follows an approved
+        playbook, so it is used only after an administrator has read and approved it.
+      </p>
+      <section>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Waiting for review ({data.pending.length})</p>
+        {data.pending.length === 0 && <p className="text-slate-500">Nothing to review.</p>}
+        {data.pending.map((p) => (
+          <div key={p.proposal_id} className="mb-3 rounded-lg border border-slate-200 p-4">
+            <p className="font-mono text-[12px] text-slate-800">{p.name}</p>
+            <p className="text-slate-700">{p.description}</p>
+            <pre className="mt-2 whitespace-pre-wrap rounded bg-slate-50 p-3 text-[12px] text-slate-800">{p.body}</pre>
+            <p className="mt-2 text-xs text-slate-500">Proposed from group {p.chat_id} by {p.proposed_by}, {when(p.proposed_at)}</p>
+            <div className="mt-3 flex gap-2">
+              <button className="btn-primary" disabled={!!busy}
+                onClick={() => act(`a:${p.proposal_id}`, () => api.approvePlaybook(sampleId, p.proposal_id!))}>
+                {busy === `a:${p.proposal_id}` ? <Loader2 className="animate-spin" size={14} /> : <CheckCircle2 size={14} />} Approve
+              </button>
+              <button className="btn-secondary" disabled={!!busy}
+                onClick={() => act(`r:${p.proposal_id}`, () => api.rejectPlaybook(sampleId, p.proposal_id!))}>
+                <XCircle size={14} /> Reject
+              </button>
+            </div>
+          </div>
+        ))}
+      </section>
+      <section>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Approved ({data.approved.length})</p>
+        {data.approved.length === 0 && <p className="text-slate-500">No approved playbooks yet.</p>}
+        {data.approved.map((p) => (
+          <div key={p.name} className="mb-3 rounded-lg border border-slate-200 p-4">
+            <p className="font-mono text-[12px] text-slate-800">{p.name}</p>
+            <p className="text-slate-700">{p.description}</p>
+            <pre className="mt-2 whitespace-pre-wrap rounded bg-slate-50 p-3 text-[12px] text-slate-800">{p.body}</pre>
+            <p className="mt-2 text-xs text-slate-500">Approved by {p.approved_by}, {when(p.approved_at)}</p>
+            <button className="btn-secondary mt-3" disabled={!!busy}
+              onClick={() => act(`x:${p.name}`, () => api.retirePlaybook(sampleId, p.name))}>
+              <XCircle size={14} /> Retire
+            </button>
+          </div>
+        ))}
+      </section>
+    </div>
+  )
+}
+
 export default function SampleDetailPage() {
   const { sampleId = '' } = useParams()
   const navigate = useNavigate()
@@ -198,13 +283,13 @@ export default function SampleDetailPage() {
       <div className="grid gap-5 lg:grid-cols-[1fr_380px]">
         <div className="card p-6">
           <div className="mb-4 flex gap-1 border-b border-slate-200">
-            {(['about', 'agent', 'evals'] as Tab[]).map((t) => (
+            {((sample.id === PLAYBOOK_SAMPLE ? ['about', 'agent', 'evals', 'playbooks'] : ['about', 'agent', 'evals']) as Tab[]).map((t) => (
               <button
                 key={t}
                 className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${tab === t ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
                 onClick={() => setTab(t)}
               >
-                {t === 'about' ? 'About' : t === 'agent' ? 'Agent definition' : `Evals (${sample.eval_cases.length})`}
+                {t === 'about' ? 'About' : t === 'agent' ? 'Agent definition' : t === 'playbooks' ? 'Playbooks' : `Evals (${sample.eval_cases.length})`}
               </button>
             ))}
           </div>
@@ -250,6 +335,7 @@ export default function SampleDetailPage() {
               </div>
             </div>
           )}
+          {tab === 'playbooks' && <Playbooks sampleId={sample.id} />}
           {tab === 'evals' && (
             <table className="w-full text-left text-[13px]">
               <thead>

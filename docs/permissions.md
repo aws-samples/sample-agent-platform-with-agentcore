@@ -60,7 +60,7 @@ create their own roles in `terraform/modules/team_auth` and
 | 6 | **`agent-platform-schedule-runner`** | `portal` module (CDK: `PortalStack/ScheduleRunner`) | `lambda.amazonaws.com` | Fires scheduled invocations at each occurrence. Packages the same service layer as the backend. |
 | 7 | **`agent-platform-scheduler`** | `portal` module (CDK: `PortalStack/SchedulerRole`) | `scheduler.amazonaws.com` (conditioned on `aws:SourceAccount`) | The role EventBridge Scheduler assumes to invoke the runner Lambda and send to the DLQ. Holds no data-plane permissions. |
 | 8 | **`agent-platform-llm-edge`** — *litellm gateway mode only* | `llm_edge` module | The cluster's OIDC provider via **IRSA** — only the `edge` service account in the `llm-edge` namespace | The gateway broker. Holds exactly two grants: `secretsmanager:GetSecretValue` on the gateway key (the **only** principal that has it) and `dynamodb:GetItem` on the platform table for per-session token lookup — no `Query`, no `Scan`, nothing else. |
-| 9 | **AgentCore Gateway caller role** — *`agentcore_gateway` mode only* | `agentcore_gateway_backend` (`enable_agentcore_gateway_backend`) | The backend's **IRSA web-identity token** (backend and entry ServiceAccounts) via `AssumeRoleWithWebIdentity`, so a grant is a first hop and can outlast the one-hour role-chaining cap (async runs get 9 h; `MaxSessionDuration` is 12 h). The backend role may also `AssumeRole` + `TagSession` it for runs outside a pod. | The identity a *session* borrows. Holds one grant: `bedrock-agentcore:InvokeGateway` on the inference gateway. Each grant is named after the runtime session id and carries a session policy narrowing it to that gateway, so the credentials a container holds are strictly weaker than the role. Revocation is an inline Deny on this role matching `aws:userid` (or `aws:PrincipalTag/session_id` for tagged sessions), which is why the backend also holds `iam:GetRole`/`PutRolePolicy`/`DeleteRolePolicy` on it. |
+| 9 | **AgentCore Gateway caller role** — *`agentcore_gateway` mode only* | `agentcore_gateway_backend` (`enable_agentcore_gateway_backend`) | The backend's **IRSA web-identity token** (backend and entry ServiceAccounts) via `AssumeRoleWithWebIdentity`. The backend role may also `AssumeRole` + `TagSession` it for runs outside a pod. `MaxSessionDuration` is 1 h; every grant is 15 minutes. | The identity a *session* borrows. Holds one grant: `bedrock-agentcore:InvokeGateway` on the inference gateway. Each 15-minute credential is named after the runtime session id and carries a session policy narrowing it to that gateway, so the credentials a container holds are strictly weaker than the role. Revocation is non-renewal (the backend refuses to re-mint once the session's grant row is deleted), so the backend holds no IAM write permission on this role. |
 
 The single most important property for a security review: **the browser and
 end users never hold AWS credentials.** All AWS access is server-side under
@@ -240,7 +240,9 @@ Trust: `lambda.amazonaws.com`.
 | *(S3 `grant_read_write`)* | as backend | `agent-platform-workspaces-*` | **(Phase 5)** Pipeline schedules read staged feeds and write the shortlist. |
 | `AgentCoreInvoke` | `bedrock-agentcore:InvokeAgentRuntime` | `runtime/*` in this account/region | Invoke the target kernel/agent. |
 | `PipelineTraces` | `xray:PutTraceSegments`, `PutTelemetryRecords` | `*` | Trace the fired run (see [§4](#4-wildcard-resource-statements)). |
-| `PortalAdminSecret` | `secretsmanager:GetSecretValue` | `agent-platform<suffix>/portal-admin*` only — the same name the Lambda's `PLATFORM_PORTAL_ADMIN_SECRET` env carries | **(Phase 5)** Pipeline (workflow-script) schedules need Node, which only the backend container has. The Lambda delegates those to the backend API, authenticating as the portal admin. Non-pipeline schedules do not use this, and the backend task role deliberately has no such grant — it runs pipelines in-process and never needs the credential. |
+| `PipelineServiceEntry` | `execute-api:Invoke` | the service entry's `svc/POST/service/v1/pipelines/*/runs`, `svc/GET/service/v1/pipeline-runs/*` and `svc/POST/service/v1/schedules/*/fire` only | Pipeline (workflow-script) schedules need Node, which only the backend container has, and agent schedules need the backend's model routing. The Lambda hands both to the backend through the private IAM service entry, signed with this role; the backend admits it by `PLATFORM_PIPELINE_SERVICE_CALLERS` and runs them as the schedule's owner (the fire route takes no user at all). No password, user token or model credential is involved. |
+| `VpcNetworkInterfaces` | `ec2:CreateNetworkInterface`, `DescribeNetworkInterfaces`, `DescribeSubnets`, `DeleteNetworkInterface`, `AssignPrivateIpAddresses`, `UnassignPrivateIpAddresses` | `*` (EC2 offers no resource scoping for these) | The private service entry is reachable only from inside the VPC, so the Lambda runs in the platform VPC's private subnets: the network interface actions of `AWSLambdaVPCAccessExecutionRole`. |
+| `PortalAdminSecret` | `secretsmanager:GetSecretValue` | `agent-platform<suffix>/portal-admin*` only - the same name the Lambda's `PLATFORM_PORTAL_ADMIN_SECRET` env carries | The CLI and CDK deployments' delegation path (the Terraform deployment's runner role has no such grant: it uses the service entry only): the Lambda signs in to the portal as the portal admin. Non-pipeline schedules do not use this, and the backend task role deliberately has no such grant - it runs pipelines in-process and never needs the credential. |
 
 The Lambda also holds the CloudWatch Logs grant for its own log group
 (`/aws/lambda/agent-platform-schedule-runner`), added implicitly by the CDK
@@ -343,10 +345,9 @@ Two separate concerns, easy to conflate in a review:
      caller to **one channel's** submit path (the SOP the platform renders
      contains exactly that policy). The platform holds no IAM write
      permission over callers or roles in general — the workload's ops team
-     applies the grant. The one IAM write the backend has is
-     `RevokeAgentCoreGatewaySessions`: `iam:PutRolePolicy`/`DeleteRolePolicy`
-     on the single inference caller role, used to deny a revoked session's
-     `aws:userid` (agentcore_gateway mode only).
+     applies the grant. The backend holds no IAM write
+     permission at all: AgentCore gateway sessions are revoked by refusing to
+     renew their 15-minute credentials, not by writing a Deny.
   3. The gateway integration injects two headers: the verified
      `$context.identity.userArn` and a **shared entry secret** (Secrets
      Manager `agent-platform<suffix>/service-entry`). Terraform resolves the

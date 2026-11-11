@@ -183,6 +183,8 @@ def lint_agent(sample_id: str, tool_ids: set) -> None:
     for k in ("title", "summary", "patterns", "industries", "runtime", "requires_tools", "try_prompt", "mcp_server"):
         if not s.get(k):
             fail(f"agents/{sample_id}: sample.yaml lacks {k}")
+    if "memory" in s and not isinstance(s.get("memory"), bool):
+        fail(f"agents/{sample_id}: sample.yaml memory must be true or false")
     if s.get("runtime") and s.get("runtime") != sample_id:
         fail(f"agents/{sample_id}: runtime {s.get('runtime')!r} should be the sample's own ({sample_id})")
     for req in s.get("requires_tools") or []:

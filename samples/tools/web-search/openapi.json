@@ -1,0 +1,100 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Web search (Exa)",
+    "version": "1.0.0",
+    "description": "One operation of the Exa search API, exposed to the sample agents as an MCP tool by the sample-tools gateway. The API key is not in this document: the gateway's outbound authorization sends it as the x-api-key header. Only the request fields the agent needs are declared, each bounded, so the tool surface is the minimum the sample requires."
+  },
+  "servers": [
+    {
+      "url": "https://api.exa.ai"
+    }
+  ],
+  "paths": {
+    "/search": {
+      "post": {
+        "operationId": "searchWeb",
+        "summary": "Search the web and return page text",
+        "description": "Searches the web for one query and returns up to 10 results, each with its title, URL, publication date when known, and an excerpt of the page text. Cite the URL of every result you use.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400,
+                    "description": "What to search for, in natural language."
+                  },
+                  "numResults": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "How many results to return (default 5)."
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": ["auto", "fast", "keyword"],
+                    "description": "Search mode. auto unless you need exact keyword matching."
+                  },
+                  "contents": {
+                    "type": "object",
+                    "description": "What to return for each result.",
+                    "properties": {
+                      "text": {
+                        "type": "object",
+                        "properties": {
+                          "maxCharacters": {
+                            "type": "integer",
+                            "minimum": 200,
+                            "maximum": 4000,
+                            "description": "Upper bound on the page text per result."
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "requestId": { "type": "string" },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "title": { "type": "string" },
+                          "url": { "type": "string" },
+                          "publishedDate": { "type": "string" },
+                          "author": { "type": "string" },
+                          "text": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Malformed request" },
+          "401": { "description": "Key rejected" },
+          "429": { "description": "Rate limit of the key's plan reached" }
+        }
+      }
+    }
+  }
+}

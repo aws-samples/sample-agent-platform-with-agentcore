@@ -24,6 +24,12 @@ Two upstream shapes are supported, decided by the grant the platform delivers:
 - ``agentcore_gateway``: STS credentials tagged with the session id, which this
   shim SigV4-signs each request with. Claude Code cannot sign, which is exactly
   why the signing has to happen here rather than in the CLI subprocess.
+
+An AgentCore credential lives 15 minutes, and the platform revokes a session by
+refusing to renew it. So before signing, a credential close to expiry is
+renewed through the grant's ``renew`` block. A refused renewal is final: the
+shim keeps the credential it has, which the gateway stops accepting when it
+expires. Nothing here can extend a grant: the backend decides the lifetime.
 """
 
 from __future__ import annotations
@@ -32,9 +38,13 @@ import http.client
 import http.server
 import json
 import logging
+import math
 import secrets
 import threading
+import time
 import urllib.parse
+import urllib.error
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +79,138 @@ _DROP_RESPONSE_HEADERS = {
     "content-encoding",
     "content-length",
 }
+
+# Renew a credential once it has this long left. The backend allows one
+# renewal per session a minute (llm_credentials_service
+# AGENTCORE_RENEW_MIN_INTERVAL_S) and answers 429 inside that, so five minutes
+# leaves room for several retries.
+RENEW_BEFORE_S = 5 * 60
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """A renewal is never redirected: the body carries the renewal token."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # urllib then raises the 3xx as an HTTPError
+
+
+_NO_REDIRECTS = urllib.request.build_opener(_RefuseRedirects)
+
+# No credential the backend issues lives longer than this (the caller role's
+# session ceiling); an answer claiming more is not a credential.
+MAX_CREDENTIAL_S = 3600
+
+# One renewal per grant at a time, however many requests arrive together.
+_renew_locks: dict[int, threading.Lock] = {}
+
+
+def _credential_shaped(fresh) -> bool:
+    """A renewal answer is used only if it is exactly a credential: a dict
+    whose key id, secret and session token are non-empty strings and whose
+    expiry is a finite epoch second within MAX_CREDENTIAL_S from now.
+    Anything else keeps the old credential."""
+    if not isinstance(fresh, dict):
+        return False
+    if not all(isinstance(fresh.get(k), str) and fresh.get(k) for k in ("access_key_id", "secret_access_key", "session_token")):
+        return False
+    exp = fresh.get("expires_at")
+    # an epoch second in the next hour (STS issues 15 minutes): not a bool,
+    # not NaN or infinity (1e309 decodes to inf), not the past
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+        return False
+    return time.time() < exp <= time.time() + MAX_CREDENTIAL_S
+
+
+def _renew_if_due(grant: dict) -> None:
+    """Renew ``grant`` if due. Never raises: whatever the backend answers, the
+    request in hand is signed with the best credential the shim has."""
+    try:
+        _renew_if_due_unguarded(grant)
+    except Exception as e:  # noqa: BLE001 - a hostile or broken answer must not fail the model call
+        logger.warning("llm-shim: renewal failed: %s", e)
+
+
+def _renew_if_due_unguarded(grant: dict) -> None:
+    """Swap fresh STS credentials into ``grant`` in place when it is due.
+
+    The grant dict is shared by every request of one invocation, so updating
+    it in place is what makes the next request sign with the new credential.
+    Fails quietly: a refused or failed renewal leaves the old credential,
+    which is still valid until it expires and is then refused upstream.
+    """
+    renew = grant.get("renew") or {}
+    url = str(renew.get("url") or "")
+    if not url or not renew.get("token") or not grant.get("access_key_id"):
+        return
+    def settled() -> bool:
+        r = grant.get("renew") or {}
+        return (
+            int(grant.get("expires_at") or 0) - time.time() > RENEW_BEFORE_S
+            or bool(r.get("refused"))
+            or float(r.get("retry_at") or 0) > time.time()
+        )
+
+    if settled():
+        return
+    with _lock:
+        lock = _renew_locks.setdefault(id(grant), threading.Lock())
+    with lock:
+        # Another request may have renewed, been refused or been throttled
+        # while this one waited: one backend call per outcome, not per request.
+        if settled():
+            return
+        renew = grant.get("renew") or {}
+        body = json.dumps({
+            "runtime_session_id": str(grant.get("session_id") or ""),
+            "token": str(renew["token"]),
+        }).encode()
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with _NO_REDIRECTS.open(req, timeout=15) as resp:
+                answer = json.loads(resp.read() or b"{}")
+                fresh = answer.get("llm_credentials") if isinstance(answer, dict) else None
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                # revoked, or the grant's own lifetime is over: stop asking
+                renew["refused"] = True
+                logger.info("llm-shim: renewal refused, credential runs to expiry")
+            elif e.code == 429:
+                # another invocation of this session renewed a moment ago;
+                # the grant is alive, try again after the backend's interval
+                try:
+                    wait = float(e.headers.get("Retry-After") or 30)
+                except (TypeError, ValueError):
+                    wait = 30.0
+                renew["retry_at"] = time.time() + min(max(wait, 1.0), 60.0)
+            else:
+                logger.warning("llm-shim: renewal failed: HTTP %s", e.code)
+            return
+        except Exception as e:  # noqa: BLE001 - transport failures retry next request
+            logger.warning("llm-shim: renewal failed: %s", e)
+            return
+        if not _credential_shaped(fresh):
+            logger.warning("llm-shim: renewal returned no usable credential")
+            return
+        # Only the credential moves. Endpoint, region and the model allowlist
+        # stay what the invocation was routed to.
+        # Swapped under _lock, which signing snapshots under, so no request
+        # signs with one credential's key id and another's secret.
+        with _lock:
+            for k in ("access_key_id", "secret_access_key", "session_token", "expires_at"):
+                grant[k] = fresh.get(k)
+            # the token and ceiling only, each only if well formed: an empty or
+            # non-string token would end every later renewal
+            r = fresh.get("renew") if isinstance(fresh.get("renew"), dict) else {}
+            update = {}
+            if isinstance(r.get("token"), str) and r["token"]:
+                update["token"] = r["token"]
+            g_exp = r.get("grant_expires_at")
+            if isinstance(g_exp, (int, float)) and not isinstance(g_exp, bool) and math.isfinite(g_exp):
+                update["grant_expires_at"] = g_exp
+            grant["renew"] = {**grant["renew"], **update, "refused": False}
+
 
 # On the SigV4 path a client-supplied x-amz-* header would either be folded
 # into the signature or contradict it, so the client never gets to set one.
@@ -128,7 +270,9 @@ def release(local_token: str) -> None:
     if not local_token:
         return
     with _lock:
-        _grants.pop(local_token, None)
+        grant = _grants.pop(local_token, None)
+        if grant is not None:
+            _renew_locks.pop(id(grant), None)
 
 
 def _grant_for(local_token: str) -> dict | None:
@@ -196,8 +340,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         403, f"model {requested!r} is not permitted for this session"
                     )
                     return
+            _renew_if_due(grant)
+            with _lock:
+                signing = dict(grant)
             headers = _sign_sigv4(
-                grant,
+                signing,
                 self.command,
                 str(grant["endpoint"]).rstrip("/") + self.path,
                 body,

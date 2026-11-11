@@ -21,6 +21,16 @@ output "sample_role_arns" {
   value       = { for k, r in aws_iam_role.sample : k => r.arn }
 }
 
+output "sample_memory_ids" {
+  description = "AgentCore Memory store id per sample agent with memory = true, by sample id."
+  value       = { for k, m in aws_bedrockagentcore_memory.sample : k => m.id }
+}
+
+output "sample_memory_arns" {
+  description = "AgentCore Memory store ARN per sample agent with memory = true, by sample id."
+  value       = { for k, m in aws_bedrockagentcore_memory.sample : k => m.arn }
+}
+
 output "workspace_access_role_arn" {
   description = "Role the backend assumes per session, with a session policy that narrows it to that session's workspaces/ prefix. The portal module grants the backend AssumeRole on it."
   value       = aws_iam_role.workspace_access.arn

@@ -253,6 +253,22 @@ Both paths coexist per registry entry; `seed_mcp_hub_demo.py --auth iam|hmac`
 registers either, and `e2e_mcp_hub.py` asserts from the hub's log which path
 actually served the run (`HUB-AUTH-PATH`).
 
+### Without the platform: an EKS pod calling the hub pod
+
+The same entry works for any workload with an IAM role, not only for
+sessions the platform backend mints. [`services/mcp-hub-demo/deploy/eks-iam-entry`](../services/mcp-hub-demo/deploy/eks-iam-entry/)
+is a minimal, standalone deployment of that: an application pod on one EKS
+cluster calls the hub, a pod on another cluster in another VPC, through a
+private API Gateway with `AWS_IAM`, authenticating with its own IRSA role.
+Two hub settings make it keyless end to end: `trust: network` replaces the
+shared entry secret with network isolation (only the API's VPC Link can reach
+the hub: the NLB in front of it has no inbound rule, so a neighbour in the
+hub's VPC cannot send a forged header through it),
+and `callers` maps a role, rather than a session name, to the actor, because
+IRSA sessions are named by the SDK. `require_user_token: false` allows
+application-only calls. Its `verify.sh` asserts the positive path and the
+refusals from inside the pods.
+
 ## Deploying the demo
 
 ```bash

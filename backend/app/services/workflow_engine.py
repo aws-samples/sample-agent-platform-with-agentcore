@@ -15,8 +15,8 @@ over stdio NDJSON and is served here:
   filesystem the Claude Code version would use).
 - ``phase(title)``          → live phase updates + a phase span in the trace.
 
-Fan-out concurrency is capped engine-side (``MAX_FANOUT``): the script may
-fire any number of agent() calls, excess ones queue.
+Fan-out concurrency is capped engine-side (``settings.workflow_max_fanout``,
+per run): the script may fire any number of agent() calls, excess ones queue.
 
 Trust boundary. A script is arbitrary JavaScript registered by a platform
 administrator, and it runs on the backend pod — the process that holds the
@@ -57,7 +57,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 RUNNER = Path(__file__).resolve().parent.parent / "workflow" / "runner.mjs"
-MAX_FANOUT = 8
 # generous ceiling: a chained pipeline may wait on async feed agents
 # (15–30 min each) before its own fan-out phases
 RUN_TIMEOUT_S = 75 * 60
@@ -295,7 +294,7 @@ class WorkflowEngine:
         killer = threading.Timer(budget_s, on_timeout)
         killer.start()
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_FANOUT) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=settings.workflow_max_fanout) as pool:
                 for line in proc.stdout:
                     try:
                         msg = json.loads(line)

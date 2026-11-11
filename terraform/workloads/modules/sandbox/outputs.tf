@@ -9,6 +9,7 @@ output "fast_runtime_arns" {
 }
 
 output "runtime_ids" {
+  description = "agent_runtime_id by runtime name for the Standard and Fast sandbox runtimes."
   value = merge(
     { for v, r in aws_bedrockagentcore_agent_runtime.sandbox : r.agent_runtime_name => r.agent_runtime_id },
     { for v, r in aws_bedrockagentcore_agent_runtime.sandbox_fast : r.agent_runtime_name => r.agent_runtime_id },

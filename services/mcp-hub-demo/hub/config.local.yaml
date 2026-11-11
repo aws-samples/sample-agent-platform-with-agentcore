@@ -36,3 +36,13 @@ actors:
 #   secret_env: HUB_ENTRY_SECRET
 #   caller_role: agent-platform-mcp-hub-caller
 #   allowed_actors: []        # empty = any session of that role
+#
+# Keyless variant (see entry_identity.py and deploy/eks-iam-entry): no shared
+# secret - the listener must then be reachable only through the gateway's
+# NLB - and roles, not session names, as actors (IRSA names its own sessions).
+# entry_identity:
+#   trust: network
+#   require_user_token: false   # allow application-only calls (hub__whoami only)
+#   callers:
+#     - role_arn: arn:aws:iam::<account>:role/my-frontend
+#       actor: frontend-app

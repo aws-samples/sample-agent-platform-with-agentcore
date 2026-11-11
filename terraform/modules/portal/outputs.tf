@@ -20,12 +20,12 @@ output "alb_dns_name" {
 
 output "user_pool_id" {
   description = "ID of the Cognito user pool for portal sign-in (self-signup disabled; operators create users)."
-  value       = aws_cognito_user_pool.portal.id
+  value       = one(aws_cognito_user_pool.portal[*].id)
 }
 
 output "user_pool_client_id" {
   description = "ID of the Cognito app client the portal frontend signs in with."
-  value       = aws_cognito_user_pool_client.portal.id
+  value       = one(aws_cognito_user_pool_client.portal[*].id)
 }
 
 output "schedule_runner_function" {
@@ -36,13 +36,6 @@ output "schedule_runner_function" {
 output "schedule_dlq_url" {
   description = "URL of the SQS dead-letter queue for EventBridge Scheduler deliveries to the schedule-runner Lambda that failed (14-day retention)."
   value       = aws_sqs_queue.schedule_dlq.url
-}
-
-# The operator creates this secret by hand (see docs/deployment.md); the name
-# is suffix-dependent, so read it from here rather than typing it.
-output "portal_admin_secret_name" {
-  description = "Name of the portal-admin Secrets Manager secret the operator creates by hand; suffix-dependent, so read it from here."
-  value       = local.portal_admin_secret
 }
 
 output "service_entry_api_url" {
@@ -75,8 +68,9 @@ output "workload_facts" {
     backend_target_group_arn  = aws_lb_target_group.backend.arn
     entry_target_group_arn    = aws_lb_target_group.service_entry.arn
     cloudfront_domain         = local.public_host # the custom domain when set; the CORS origin and API URL the workloads derive from it
-    cognito_pool_id           = aws_cognito_user_pool.portal.id
-    cognito_client_id         = aws_cognito_user_pool_client.portal.id
+    # "" with an OIDC issuer: the workloads then give the backend no pool
+    cognito_pool_id           = try(aws_cognito_user_pool.portal[0].id, "")
+    cognito_client_id         = try(aws_cognito_user_pool_client.portal[0].id, "")
     scheduler_group           = aws_scheduler_schedule_group.portal.name
     scheduler_role_arn        = aws_iam_role.scheduler.arn
     schedule_runner_role_arn  = aws_iam_role.schedule_runner.arn
@@ -85,7 +79,6 @@ output "workload_facts" {
     schedule_dlq_arn          = aws_sqs_queue.schedule_dlq.arn
     service_entry_secret_name = aws_secretsmanager_secret.service_entry.name
     service_entry_api_id      = aws_api_gateway_rest_api.service_entry.id
-    portal_admin_secret_name  = local.portal_admin_secret
   }
 }
 

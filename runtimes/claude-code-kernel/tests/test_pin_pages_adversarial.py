@@ -367,6 +367,30 @@ def test_terraform_sets_the_switch_on_the_v2_interactive_runtime_only(tmp_path):
 
 # ------------------------------------------------------------- the gate itself
 
+def _published_tree(root: Path) -> bool:
+    """The published sample carries neither the QA engine nor its catalog.
+    Only both missing counts: a checkout that lost one of them fails instead
+    of skipping the gate tests."""
+    return not (root / "qa-agent").is_dir() and not (root / ".qa").is_dir()
+
+
+_needs_gate = pytest.mark.skipif(_published_tree(REPO), reason="published tree: no qa-agent/ or .qa/ (the gate is the internal CI's)")
+
+
+def test_the_gate_tests_skip_only_in_the_published_tree(tmp_path):
+    for qa_agent, qa in ((False, False), (True, False), (False, True), (True, True)):
+        root = tmp_path / f"{qa_agent}-{qa}"
+        root.mkdir()
+        if qa_agent:
+            (root / "qa-agent").mkdir()
+        if qa:
+            (root / ".qa").mkdir()
+        assert _published_tree(root) == (not qa_agent and not qa), (qa_agent, qa)
+    # this checkout: where the engine is present, the gate tests run
+    if (REPO / "qa-agent").is_dir():
+        assert not _published_tree(REPO)
+
+
 def _qa_engine():
     sys.path.insert(0, str(REPO / "qa-agent"))
     from qa_agent.core import load_catalog, run_regression_gate, select  # noqa: PLC0415
@@ -378,6 +402,7 @@ def _gate_check():
     return next(c for c in load_catalog(REPO / ".qa" / "catalog.toml") if c.id == "claude-code-kernel.pytest")
 
 
+@_needs_gate
 def test_the_gate_runs_on_every_pr_whatever_changed():
     _, _, select = _qa_engine()
     check = _gate_check()
@@ -387,6 +412,7 @@ def test_the_gate_runs_on_every_pr_whatever_changed():
         assert [c.id for c, _ in chosen] == [check.id], files
 
 
+@_needs_gate
 def test_the_gate_refuses_a_weakened_copy_or_a_missing_baseline(tmp_path):
     """The real catalog entry, run by the real engine on a copy of the kernel:
     the suite as it is passes; fewer tests, a skipped suite or no baseline fail."""
@@ -507,6 +533,7 @@ def test_residency_check_catches_a_pinner_that_only_maps(tmp_path):
 
 # ------------------------------------------------------- high-risk classification
 
+@_needs_gate
 def test_the_kernel_scripts_need_an_attacking_test_to_change(tmp_path):
     """The real gate.high-risk with the real paths file: a change to either
     script with no test or an assertion-free one is refused, one with a

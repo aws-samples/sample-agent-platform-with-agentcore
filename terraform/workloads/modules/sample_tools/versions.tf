@@ -1,0 +1,16 @@
+# Floors only: the root (terraform/workloads/versions.tf) sets the ranges and
+# the lock file the exact versions.
+terraform {
+  required_version = ">= 1.9.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.50.0"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = ">= 2.4.0"
+    }
+  }
+}

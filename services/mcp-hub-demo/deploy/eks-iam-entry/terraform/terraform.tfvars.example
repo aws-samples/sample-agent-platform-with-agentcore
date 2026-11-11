@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+region = "ap-northeast-1"
+name   = "mcp-iam-entry"
+
+# Your operator egress, so kubectl can reach the two clusters' public API
+# endpoints. /32s only; 0.0.0.0/0 is refused by validation.
+eks_public_access_cidrs = ["203.0.113.10/32"]

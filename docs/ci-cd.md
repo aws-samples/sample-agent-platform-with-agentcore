@@ -173,14 +173,20 @@ the change carries and answers in a fixed JSON shape: does each test *attack*
 an invariant through a hostile path (the other tenant's id, a replayed
 request, the control that must refuse being asked to allow) or *decorate* the
 implementation (assert its own wiring, pass with the fix reverted); which
-changed high-risk boundary has no attacking test; and what the catalog should
-learn from the change (a trigger a new code path needs, a path that belongs
-on the high-risk list, a `min_passed` that no longer matches). Its verdict can
-only add findings: nothing it says turns another check's result green. The
-diff is data to it, and the adapter executes only the tool calls the model
-makes, through allowlists (one tool here: read a tracked file). Advisory until
-the record shows which finding kinds hold up; findings reach the merge request
-as code-quality annotations.
+changed high-risk boundary has no attacking test (judged on the changed lines,
+listed paths only, and not blocking: `gate:high-risk` already requires the
+test); which concrete defect a changed file carries (line, a literal quote,
+the triggering condition), counted only when the adapter finds the quote at
+that line; and what the catalog should learn from the change (a trigger a new
+code path needs, a path that belongs on the high-risk list, a `min_passed`
+that no longer matches). Its verdict can only add findings: nothing it says
+turns another check's result green. The diff is data to it, and the adapter
+executes only the tool calls the model makes, through allowlists (one tool
+here: read a tracked file). Advisory until the record shows which finding
+kinds hold up: every finding carries a label id, a reviewer labels it in a
+merge request note (`judge <id> accept|reject <why>`) or names it in the
+commit that fixes it, and `scripts/judge_pr_ledger.py` counts both per kind. Findings reach the
+merge request as code-quality annotations.
 
 The **staging plan** runs in CodeBuild on the allowlist role. Its report is
 attached to the merge request. There is no production plan here.
@@ -216,6 +222,13 @@ report success until the distribution serves that commit's marker. The deploy
 role may write those objects and request that one distribution's invalidation,
 nothing about the bucket or the distribution itself; the two names come from
 the facts document. A plan with no changes still ships the site.
+
+The schedule-runner Lambda's code follows the same rule: Terraform creates
+the function with a placeholder and ignores its code, so after the site the
+apply build packages this commit's backend (`scripts/deploy-schedule-lambda.sh`,
+dependencies from the hash-locked `ci/lock/schedule-runner.txt`) and updates
+the function the facts name. Until 2026-10-31 that was a manual step, and both
+environments ran a runner older than the configuration Terraform gave it.
 
 The acceptance checks then run from the facts document: the layer-1
 resource inventory (`deploy-cli/tests/verify.sh`), the platform end-to-end

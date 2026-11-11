@@ -7,9 +7,11 @@ legacy ECS variant.
 
 ## Two layers, two roots
 
-Since 2026-10 the configuration is two Terraform roots with separate states.
-This project holds the foundation; the workloads root (`terraform/workloads/`)
-lives in the application project, `sample-agent-platform-with-agentcore`:
+Since 2026-10 the configuration is two Terraform roots with separate states:
+the foundation in `terraform/` and the workloads root in `terraform/workloads/`.
+The two are owned by different teams and maintained in separate projects (the
+workloads root with the application code); the published sample carries both
+in one checkout, and a deployment applies both (see [Deploy order](#deploy-order)):
 
 | Root | Owns | Changes when | Applied by |
 |---|---|---|---|
@@ -117,7 +119,19 @@ scoping a deployment role's IAM or porting to an in-house IaC standard.
 
 ## Deploy order
 
-Same staged reality as CDK (runtimes validate image access at create time):
+Same staged reality as CDK (runtimes validate image access at create time).
+The foundation creates no runtime and no Deployment: until the workloads root
+is applied there is no AgentCore runtime, no backend pod and no working portal.
+
+Before the first apply, in each region you deploy to:
+
+* the API Gateway **account-level** CloudWatch role must be set (the private
+  service-entry stage writes access logs; see
+  [Hardening](#hardening-beyond-the-cdk-stacks)). Check with
+  `aws apigateway get-account --query cloudwatchRoleArn`;
+* the Python that `platform_version_python` names (default `python3`, in both
+  roots) needs boto3/botocore >= 1.43.98, the first that knows the AgentCore
+  platform version (`pip install -r backend/requirements.txt` provides it).
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars   # then edit
@@ -126,12 +140,20 @@ terraform init
 # phase 1 — repos/bucket/table only
 terraform apply -var enable_runtime=false -var enable_portal=false
 
-# phase 2 — push images
+# phase 2 — push images (PLATFORM_NAME_SUFFIX=<name_suffix> when you set one)
 ../scripts/build-and-push.sh
 
-# phase 3 — everything else (the EKS cluster alone takes ~15 minutes)
+# phase 3 — the rest of the foundation (the EKS cluster alone takes ~15 minutes);
+# it publishes the facts document the workloads root reads
 terraform apply
-$(terraform output -raw kubeconfig_command)   # then: kubectl -n portal get pods
+
+# phase 4 — the workloads root: runtimes, backend + entry Deployments, runner Lambda
+cd workloads
+cp terraform.tfvars.example terraform.tfvars   # same aws_region / name_suffix as the foundation, image tags
+terraform init
+terraform apply
+cd ..
+$(terraform output -raw kubeconfig_command)   # then: kubectl -n portal<name_suffix> get pods
 
 # optional team-auth demo:
 terraform apply -var enable_team_auth=true          # + push team-auth images first
@@ -139,6 +161,21 @@ python3 ../scripts/seed_team_idp.py                 # after Keycloak is healthy
 terraform apply -var enable_team_auth=true -var enable_team_demo=true
 python3 ../scripts/deploy_team_gateway.py
 ```
+
+Teardown runs in the reverse order: `terraform destroy` in `workloads/` first,
+then here. Three things outlive the destroy plan:
+
+* the workspace bucket is versioned and not `force_destroy`: delete every
+  object version first, or the bucket delete fails with `BucketNotEmpty`;
+* AgentCore keeps the runtimes' VPC network interfaces (`agentic_ai`) for
+  hours after the runtimes are deleted, and until it releases them the
+  private subnets and the runtime security group cannot be deleted. Destroy
+  again once `aws ec2 describe-network-interfaces --filters
+  Name=vpc-id,Values=<vpc>` is empty;
+* what the platform creates at run time is not in any state: AgentCore
+  Memory stores (`platform_default-*`), the runtimes' log groups
+  (`/aws/bedrock-agentcore/runtimes/*`) and the cluster's Fluent Bit log
+  group.
 
 `enable_team_demo` is gated separately because AgentCore validates the
 Keycloak discovery URL when it creates the JWT authorizer — Keycloak must be

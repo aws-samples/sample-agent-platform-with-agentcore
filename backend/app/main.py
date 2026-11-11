@@ -16,6 +16,7 @@ from app.api import (
     gateways,
     governance,
     kernels,
+    llm_credentials,
     memory,
     model_config,
     observability,
@@ -85,6 +86,8 @@ if settings.entry_only:
     # API Gateway integrations carrying the gateway-injected entry secret.
     app.include_router(service_entry.router)
     app.include_router(sandboxes.service)
+    app.include_router(pipelines.service)
+    app.include_router(schedules.service)
 else:
     # outermost: record the caller's bearer token in the request context so
     # identity-forwarding attachments can use it (see app/context.py)
@@ -99,6 +102,7 @@ else:
     )
 
     app.include_router(sessions.router)
+    app.include_router(llm_credentials.router)
     app.include_router(kernels.router)
     app.include_router(ecosystem.router)
     app.include_router(agents.router)
@@ -116,6 +120,8 @@ else:
     app.include_router(sandboxes.portal)
     app.include_router(sandboxes.mcp)
     app.include_router(sandboxes.service)
+    app.include_router(pipelines.service)
+    app.include_router(schedules.service)
     # kept on the management deployment for compatibility (existing callers
     # may still point at it); the dedicated data-plane deployment is the
     # production home for this traffic

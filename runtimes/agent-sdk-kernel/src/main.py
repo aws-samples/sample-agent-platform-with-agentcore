@@ -50,8 +50,29 @@ Payload contract::
         "trace": {                  // optional: caller's trace context (observability)
             "xray": "Root=1-…;Parent=…;Sampled=1",   // copy of the X-Amzn-Trace-Id header
             "attributes": {"pipeline.run_id": "…", "agent.label": "…"}  // span attrs + baggage
-        }
+        },
+        "stream": true,             // optional: respond as an event stream (SSE) instead of
+                                    // one JSON document — see stream_events for the vocabulary
+        "continue": true,           // optional: continue this runtime session's previous
+                                    // conversation (same microVM) instead of starting fresh
+        "images": [                 // optional: images sent with the prompt (at most 4)
+            {"media_type": "image/png", "data": "<base64>"}   // png, jpeg, gif or webp, ≤ 3.75 MB each
+        ]
     }
+
+Streaming: with ``stream`` the entrypoint returns an async generator and the
+AgentCore SDK serves it as ``text/event-stream``, one ``data: {json}`` line per
+event (text deltas, completed text blocks, tool calls and results, then a
+``result`` event carrying the answer and usage). The non-streaming response
+carries the same events (bounded, without deltas) under ``events``.
+
+Multi-turn: every run is a new SDK conversation unless ``continue`` is set and
+this process still holds the SDK session id of the previous run for the same
+runtime session — then the run resumes that conversation, tools and all. The
+map is process state, so a recycled microVM starts fresh; the first event
+(``start.continued``) and the non-streaming ``continued`` field tell the
+caller which happened. Memory replay of recent turns is skipped when the
+conversation is resumed (the SDK transcript already has them).
 
 Async mode: the entrypoint registers an AgentCore async task (the runtime
 stays alive — up to the platform's 8h async ceiling instead of the 15min
@@ -71,6 +92,8 @@ this invocation.
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -80,14 +103,9 @@ import time
 
 import boto3
 import llm_shim
+import stream_events
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    query,
-)
+from claude_agent_sdk import ClaudeAgentOptions, query
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("agent-sdk-kernel")
@@ -272,6 +290,32 @@ def _secret_value(name: str) -> str:
     return _SECRET_CACHE[name]
 
 
+# Allowlisted Secrets Manager name prefixes that ``{{secret:NAME}}`` tokens may
+# resolve. The registry is NOT a trusted source of secret names: a registry
+# entry that references anything outside this allowlist is refused rather than
+# fetched, so the IAM role's broader read scope (e.g. the MCP-hub Actor prefix
+# or the LLM gateway secret) cannot be exfiltrated through a `url`-kind target.
+#
+# The default matches the documented purpose of the placeholder
+# (`agent-platform/remote-mcp-key*`, see docs/permissions.md). An operator
+# override via KERNEL_SECRET_ALLOW_PREFIXES (comma-separated prefixes) is
+# honoured for environments that have provisioned additional dedicated
+# remote-MCP namespaces.
+_DEFAULT_SECRET_ALLOW_PREFIXES = ("agent-platform/remote-mcp-key",)
+
+
+def _secret_allow_prefixes() -> tuple[str, ...]:
+    raw = os.environ.get("KERNEL_SECRET_ALLOW_PREFIXES", "").strip()
+    if not raw:
+        return _DEFAULT_SECRET_ALLOW_PREFIXES
+    prefixes = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return prefixes or _DEFAULT_SECRET_ALLOW_PREFIXES
+
+
+def _secret_name_allowed(name: str) -> bool:
+    return any(name.startswith(p) for p in _secret_allow_prefixes())
+
+
 def resolve_secret_placeholders(target: str) -> str:
     """Replace ``{{secret:NAME}}`` tokens in a URL target with values from
     Secrets Manager (cached per process).
@@ -282,11 +326,23 @@ def resolve_secret_placeholders(target: str) -> str:
     granted the specific secret — ever sees the plaintext. Nothing the platform
     ships needs it; AgentCore-hosted runtimes and gateways authenticate with
     this container's role instead.
+
+    Only names starting with one of the platform-configured prefixes
+    (``KERNEL_SECRET_ALLOW_PREFIXES``, defaulting to
+    ``agent-platform/remote-mcp-key``) are resolved; anything else raises
+    ``PermissionError`` so a hostile registry entry cannot pivot the kernel's
+    IAM scope into an arbitrary-secret read primitive. Callers in
+    ``build_mcp_config`` catch the failure and skip the entry.
     """
     import re
 
     def _lookup(match: re.Match) -> str:
-        return _secret_value(match.group(1))
+        name = match.group(1)
+        if not _secret_name_allowed(name):
+            raise PermissionError(
+                f"secret {name!r} is not in the kernel's allowed placeholder prefix set"
+            )
+        return _secret_value(name)
 
     return re.sub(r"\{\{secret:([A-Za-z0-9/_+=.@-]+)\}\}", _lookup, target)
 
@@ -646,38 +702,78 @@ def mount_skills(skills: list[dict]) -> bool:
     return mounted
 
 
-async def _run_agent(prompt: str, options: "ClaudeAgentOptions") -> tuple[str, dict, bool]:
-    text_parts: list[str] = []
-    final = ""
-    usage: dict = {}
-    is_error = False
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_parts.append(block.text)
-        elif isinstance(message, ResultMessage):
-            # nosemgrep: is-function-without-parentheses  (is_error is a bool attribute of ResultMessage, not a method)
-            is_error = bool(message.is_error)
-            final = (message.result or "").strip()
-            usage = {
-                "duration_ms": message.duration_ms,
-                "num_turns": message.num_turns,
-                "total_cost_usd": message.total_cost_usd,
-            }
-    return final or "\n".join(text_parts).strip(), usage, is_error
+# ---------------------------------------------------------------- images
+# A prompt may carry images. The prompt stays a str everywhere else (memory,
+# logs); the SDK call, on every path including the asynchronous one, sends the
+# prompt and its images as one multimodal user message. The backend validates them before they reach the kernel; this is
+# the second check, since the payload is the kernel's input.
+
+MAX_IMAGES = 4
+MAX_IMAGE_BYTES = 3_750_000          # Bedrock's limit for one image
+IMAGE_TYPES = {
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/gif": (b"GIF87a", b"GIF89a"),
+    "image/webp": (b"RIFF",),        # and "WEBP" at offset 8, checked below
+}
 
 
-async def run_agent(prompt: str, options: "ClaudeAgentOptions",
-                    otel: dict | None = None) -> tuple[str, dict, bool]:
-    """One full agent run → (answer, usage, is_error). Shared by the
-    synchronous entrypoint and background async tasks.
+class Prompt(str):
+    """The prompt text, with the images sent along with it."""
 
-    The answer is ResultMessage.result — the agent's *final* reply. Joining
-    every AssistantMessage text block would also capture the running
-    commentary the model emits between tool calls ("let me search…"), which
-    pollutes artifact-shaped outputs (feed markdown); it stays only as a
-    fallback for SDK versions/paths that leave result empty.
+    images: tuple = ()
+
+
+def prompt_with_images(text: str, images) -> "Prompt | str":
+    """Validate ``payload.images``; raises ValueError on anything that is not
+    at most MAX_IMAGES base64 images of an allowed type and size."""
+    if not images:
+        return text
+    if not isinstance(images, list) or len(images) > MAX_IMAGES:
+        raise ValueError(f"at most {MAX_IMAGES} images")
+    checked = []
+    for im in images:
+        if not isinstance(im, dict):
+            raise ValueError("an image must be an object")
+        media_type, data = im.get("media_type"), im.get("data")
+        if media_type not in IMAGE_TYPES or not isinstance(data, str):
+            raise ValueError("images must be png, jpeg, gif or webp, base64-encoded")
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("image data is not base64") from None
+        if not raw or len(raw) > MAX_IMAGE_BYTES:
+            raise ValueError(f"an image must be at most {MAX_IMAGE_BYTES} bytes")
+        if not raw.startswith(IMAGE_TYPES[media_type]) or (media_type == "image/webp" and raw[8:12] != b"WEBP"):
+            raise ValueError("image content does not match its media type")
+        checked.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+    p = Prompt(text)
+    p.images = tuple(checked)
+    return p
+
+
+async def _user_message(prompt: "Prompt"):
+    """The SDK's streaming input: one user message, text then images."""
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": str(prompt)}, *prompt.images]},
+        "parent_tool_use_id": None,
+        "session_id": "",  # as the SDK's own string prompt sends it
+    }
+
+
+async def _iter_agent(prompt: str, options: "ClaudeAgentOptions"):
+    """One agent run as kernel events (see stream_events.message_to_events)."""
+    sdk_prompt = _user_message(prompt) if getattr(prompt, "images", ()) else prompt
+    async for message in query(prompt=sdk_prompt, options=options):
+        for event in stream_events.message_to_events(message):
+            yield event
+
+
+async def run_agent_events(prompt: str, options: "ClaudeAgentOptions",
+                           otel: dict | None = None):
+    """One full agent run as an async stream of events. Shared by the
+    streaming entrypoint and, folded, by the one-shot paths (run_agent).
 
     ``otel`` (from :func:`otel_context`) makes the run execute under the
     caller's trace context inside a ``agent-sdk-kernel.run`` span carrying the
@@ -686,21 +782,183 @@ async def run_agent(prompt: str, options: "ClaudeAgentOptions",
     path — where the handler has already returned — gets the same parent.
     """
     if not otel or _tracer is None:
-        return await _run_agent(prompt, options)
+        async for event in _iter_agent(prompt, options):
+            yield event
+        return
     token = _otel_context.attach(otel["ctx"])
     try:
         with _tracer.start_as_current_span(
             "agent-sdk-kernel.run", attributes=otel["attributes"]
         ) as span:
-            answer, usage, is_error = await _run_agent(prompt, options)
-            for k in ("duration_ms", "num_turns", "total_cost_usd"):
-                if usage.get(k) is not None:
-                    span.set_attribute(f"agent.{k}", usage[k])
-            if is_error:
-                span.set_status(Status(StatusCode.ERROR, "agent run reported is_error"))
-            return answer, usage, is_error
+            async for event in _iter_agent(prompt, options):
+                if event.get("type") == "result":
+                    usage = event.get("usage") or {}
+                    for k in ("duration_ms", "num_turns", "total_cost_usd"):
+                        if usage.get(k) is not None:
+                            span.set_attribute(f"agent.{k}", usage[k])
+                    if not event.get("ok", True):
+                        span.set_status(Status(StatusCode.ERROR, "agent run reported is_error"))
+                yield event
     finally:
         _otel_context.detach(token)
+
+
+async def run_agent_summary(prompt: str, options: "ClaudeAgentOptions",
+                            otel: dict | None = None) -> "stream_events.RunSummary":
+    """One full agent run folded into answer, usage, error flag, bounded
+    event list and the SDK session id (for ``continue``).
+
+    The answer is ResultMessage.result — the agent's *final* reply. Joining
+    every text block would also capture the running commentary the model
+    emits between tool calls ("let me search…"), which pollutes
+    artifact-shaped outputs (feed markdown); it stays only as a fallback for
+    SDK versions/paths that leave result empty.
+    """
+    summary = stream_events.RunSummary()
+    async for event in run_agent_events(prompt, options, otel):
+        summary.add(event)
+    return summary
+
+
+async def run_agent(prompt: str, options: "ClaudeAgentOptions",
+                    otel: dict | None = None) -> tuple[str, dict, bool]:
+    """One full agent run → (answer, usage, is_error). Used by background
+    async tasks; see run_agent_summary."""
+    s = await run_agent_summary(prompt, options, otel)
+    return s.answer, s.usage, s.is_error
+
+
+# ---- JWT inbound: the payload comes from an end user, not the backend ----
+#
+# Every other deployment of this kernel is invoked over SigV4 by the platform
+# backend, which builds the payload: it decides whose memory a run reads, which
+# MCP servers it gets, where an async answer lands. The team-demo runtime has
+# a CUSTOM_JWT authorizer instead, and any portal login token carries the
+# audience it admits, so any signed-in user can invoke it directly with a
+# payload of their own. With the backend's trust in that payload, that user
+# could read and write another user's memory (``memory.actor_id``), point a
+# ``{{secret:}}`` placeholder or an agentcore-* / mcp-hub server at this
+# role's credentials, read S3 through ``skills`` and write it through
+# ``async`` (AWS Continuum C004).
+#
+# KERNEL_INBOUND=jwt (set only on that runtime) makes the payload an
+# allowlist: what the team demo sends, nothing else. Fields are dropped rather
+# than refused, so the demo keeps working if the portal ever adds one.
+_JWT_KEEP = ("prompt", "images", "stream", "max_turns")
+
+
+def _jwt_inbound() -> bool:
+    return os.environ.get("KERNEL_INBOUND", "").strip().lower() == "jwt"
+
+
+def _jwt_gateway_hosts() -> frozenset[str]:
+    raw = os.environ.get("KERNEL_JWT_GATEWAY_HOSTS", "")
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+def _jwt_mcp_allowed(server) -> dict | None:
+    """The server as attached under JWT inbound, or None.
+
+    Only a ``url`` server on an allowlisted gateway host, over https on the
+    default port, with no userinfo, and with at most an Authorization header.
+    Hosts are compared whole (no prefix, suffix or substring match).
+    Placeholders are not resolved: the server gets exactly what the caller
+    sent, which is the caller's own token.
+    """
+    from urllib.parse import urlsplit
+
+    if not isinstance(server, dict) or server.get("kind") != "url":
+        return None
+    name, target = server.get("name"), server.get("target")
+    if not isinstance(name, str) or not name or not isinstance(target, str):
+        return None
+    if "\\" in target or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in target):
+        return None
+    try:
+        u = urlsplit(target)
+        port = u.port
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    if (u.scheme != "https" or u.username is not None or u.password is not None
+            or port not in (None, 443) or host not in _jwt_gateway_hosts()):
+        return None
+    entry = {"type": "http", "url": target}
+    headers = server.get("headers")
+    if isinstance(headers, dict):
+        auth = [v for k, v in headers.items()
+                if isinstance(k, str) and k.lower() == "authorization" and isinstance(v, str)]
+        if len(auth) == 1:
+            entry["headers"] = {"Authorization": auth[0]}
+    return {"name": name, "config": entry}
+
+
+def restrict_jwt_payload(payload) -> tuple[dict, dict]:
+    """(payload with only the allowlisted fields, MCP config) under JWT inbound."""
+    payload = payload if isinstance(payload, dict) else {}
+    dropped = sorted(str(k) for k in payload if k not in _JWT_KEEP and k != "mcp_servers")
+    kept = {k: payload[k] for k in _JWT_KEEP if k in payload}
+    try:
+        turns = int(kept.get("max_turns") or DEFAULT_MAX_TURNS)
+    except (TypeError, ValueError, OverflowError):
+        turns = DEFAULT_MAX_TURNS
+    kept["max_turns"] = max(1, min(turns, DEFAULT_MAX_TURNS))
+    mcp: dict = {}
+    servers = payload.get("mcp_servers") or []
+    refused = 0
+    for s in servers if isinstance(servers, list) else []:
+        a = _jwt_mcp_allowed(s)
+        if a and a["name"] not in mcp:
+            mcp[a["name"]] = a["config"]
+        else:
+            refused += 1
+    if dropped or refused:
+        logger.warning("jwt inbound: dropped payload fields %s, refused %d MCP server(s)",
+                       dropped[:20], refused)
+    return kept, mcp
+
+
+# runtime session id → SDK session id of the last run in this process, so a
+# ``continue`` call resumes the same conversation (see the module docstring)
+_SDK_SESSIONS: dict[str, str] = {}
+_SDK_SESSIONS_MAX = 1000
+
+
+def _remember_sdk_session(runtime_session_id: str, sdk_session_id: str) -> None:
+    if not runtime_session_id or not sdk_session_id:
+        return
+    if len(_SDK_SESSIONS) >= _SDK_SESSIONS_MAX and runtime_session_id not in _SDK_SESSIONS:
+        _SDK_SESSIONS.pop(next(iter(_SDK_SESSIONS)))
+    _SDK_SESSIONS[runtime_session_id] = sdk_session_id
+
+
+async def _stream_run(prompt: str, options: "ClaudeAgentOptions", otel: dict | None,
+                      memory: dict, session_id: str, grant_token: str, continued: bool):
+    """Streaming body of an invocation: events out as they happen, then the
+    same bookkeeping as the one-shot path (memory event, session map)."""
+    yield {"type": "start", "kernel": "agent-sdk-kernel", "continued": continued}
+    summary = stream_events.RunSummary()
+    try:
+        async for event in run_agent_events(prompt, options, otel):
+            summary.add(event)
+            if event.get("type") == "result":
+                # the folded view: answer falls back to the text blocks, usage
+                # gains tool_calls; the SDK session id stays in this process
+                event = {**event, "result": summary.answer, "usage": summary.usage}
+                event.pop("sdk_session_id", None)
+            yield event
+    except Exception as e:  # noqa: BLE001 — reported to the consumer as an event
+        logger.exception("streamed run failed")
+        yield {"type": "error", "error": str(e)[:500]}
+        return
+    finally:
+        llm_shim.release(grant_token)
+    if not summary.is_error:
+        # a failed run is not offered for continuation: resuming it would
+        # carry the broken transcript (and whatever failed) into the next turn
+        _remember_sdk_session(session_id, summary.sdk_session_id)
+    if memory and not summary.is_error:
+        store_memory_event(memory, session_id, prompt, summary.answer)
 
 
 # Strong references so background async tasks aren't garbage-collected
@@ -749,11 +1007,22 @@ async def invoke(payload: dict, context) -> dict:
     # OS on every request so libraries that use it (retry jitter, ids) do not
     # replay one sequence across instances.
     random.seed()
-    prompt = (payload or {}).get("prompt", "").strip()
+    jwt_mcp: dict | None = None
+    if _jwt_inbound():
+        payload, jwt_mcp = restrict_jwt_payload(payload)
+    prompt = (payload or {}).get("prompt", "")
+    prompt = prompt.strip() if isinstance(prompt, str) else ""
     if not prompt:
         return {"ok": False, "error": "payload.prompt is required"}
+    try:
+        prompt = prompt_with_images(prompt, (payload or {}).get("images"))
+    except ValueError as e:
+        return {"ok": False, "error": f"payload.images: {e}"}
 
-    mcp_config = build_mcp_config((payload or {}).get("mcp_servers") or [])
+    if jwt_mcp is not None:
+        mcp_config = jwt_mcp
+    else:
+        mcp_config = build_mcp_config((payload or {}).get("mcp_servers") or [])
     has_skills = mount_skills((payload or {}).get("skills") or [])
     allowed = [f"mcp__{n}" for n in mcp_config]
     extra: dict = {}
@@ -767,6 +1036,13 @@ async def invoke(payload: dict, context) -> dict:
     # (and therefore memory event keying + replay) depends on it.
     session_id = str(getattr(context, "session_id", "") or "")
 
+    # ---- multi-turn: resume this runtime session's previous conversation ----
+    resume_sdk_session = ""
+    if (payload or {}).get("continue") and session_id:
+        resume_sdk_session = _SDK_SESSIONS.get(session_id, "")
+    continued = bool(resume_sdk_session)
+    stream = bool((payload or {}).get("stream"))
+
     memory = (payload or {}).get("memory") or {}
     system_prompt = (payload or {}).get("system") or DEFAULT_SYSTEM_PROMPT
     if memory:
@@ -776,7 +1052,8 @@ async def invoke(payload: dict, context) -> dict:
                 "\n\nRelevant long-term memory about this user (from earlier "
                 "conversations — use it when helpful):\n" + memory_context
             )
-        recent = retrieve_recent_turns(memory, session_id)
+        # a resumed SDK conversation already holds this session's turns
+        recent = "" if continued else retrieve_recent_turns(memory, session_id)
         if recent:
             system_prompt += (
                 "\n\nRecent conversation in this session (replayed after a "
@@ -811,12 +1088,16 @@ async def invoke(payload: dict, context) -> dict:
         allowed_tools=allowed,
         env=model_env,
         model=model_override,
+        resume=resume_sdk_session or None,
+        # partial messages carry the text deltas a streaming consumer renders
+        include_partial_messages=stream,
         **extra,
     )
 
     # Length only: user prompt text must not land in the runtime log group,
     # which everyone with logs:GetLogEvents on the account can read.
-    logger.info("invoke session=%s prompt_chars=%d", session_id or "?", len(prompt or ""))
+    image_count = len(getattr(prompt, "images", ()))
+    logger.info("invoke session=%s stream=%s continued=%s prompt_chars=%d images=%d", session_id or "?", stream, continued, len(prompt or ""), image_count)
 
     try:
         otel = otel_context((payload or {}).get("trace"), session_id)
@@ -842,18 +1123,26 @@ async def invoke(payload: dict, context) -> dict:
         return {"ok": True, "kernel": "agent-sdk-kernel", "accepted": True,
                 "task_id": task_id, "output_key": key}
 
+    # ---- streaming mode: hand the SDK an async generator (served as SSE) ----
+    if stream:
+        return _stream_run(prompt, options, otel, memory, session_id, grant_token, continued)
+
     try:
-        answer, usage, is_error = await run_agent(prompt, options, otel)
+        summary = await run_agent_summary(prompt, options, otel)
     finally:
         llm_shim.release(grant_token)
-    if memory and not is_error:
-        store_memory_event(memory, session_id, prompt, answer)
+    if not summary.is_error:
+        _remember_sdk_session(session_id, summary.sdk_session_id)
+    if memory and not summary.is_error:
+        store_memory_event(memory, session_id, prompt, summary.answer)
 
     return {
-        "ok": not is_error,
+        "ok": not summary.is_error,
         "kernel": "agent-sdk-kernel",
-        "result": answer,
-        "usage": usage,
+        "result": summary.answer,
+        "usage": summary.usage,
+        "continued": continued,
+        "events": summary.response_events(),
     }
 
 

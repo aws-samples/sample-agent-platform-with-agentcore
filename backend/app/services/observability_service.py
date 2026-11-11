@@ -52,11 +52,13 @@ class ObservabilityService:
         duration_ms: int | None = None,
         num_turns: int | None = None,
         total_cost_usd: float | None = None,
+        tool_calls: int | None = None,
         runtime_session_id: str = "",
         error: str = "",
         ref: str = "",
         model: str = "",
         platform_version: str = "",
+        events_key: str = "",
     ) -> None:
         """Append an invocation record. Never raises."""
         try:
@@ -78,11 +80,18 @@ class ObservabilityService:
                 # AgentCore Runtime platform version the call ran on (V1/V2
                 # are priced differently); "" = single-runtime deployment
                 "platform_version": platform_version,
+                # S3 key of the full event trail (invocation_service.EventLog);
+                # "" = none written
+                "events_key": events_key,
             }
             if duration_ms is not None:
                 item["duration_ms"] = int(duration_ms)
             if num_turns is not None:
                 item["num_turns"] = int(num_turns)
+            if tool_calls is not None:
+                # how many tools the run called; the calls themselves are not
+                # stored here (see start_stream in invocation_service)
+                item["tool_calls"] = int(tool_calls)
             if total_cost_usd is not None:
                 item["total_cost_usd"] = _to_decimal(float(total_cost_usd))
             retention.with_ttl(item, retention.ttl_after_days(settings.retention_ledger_days))
@@ -109,11 +118,13 @@ class ObservabilityService:
                     "ok": bool(i.get("ok")),
                     "duration_ms": int(i["duration_ms"]) if "duration_ms" in i else None,
                     "num_turns": int(i["num_turns"]) if "num_turns" in i else None,
+                    "tool_calls": int(i["tool_calls"]) if "tool_calls" in i else None,
                     "total_cost_usd": float(i["total_cost_usd"]) if "total_cost_usd" in i else None,
                     "runtime_session_id": i.get("runtime_session_id", ""),
                     "error": i.get("error", ""),
                     "ref": i.get("ref", ""),
                     "model": i.get("model", ""),
+                    "events_key": i.get("events_key", ""),
                 }
             )
         return out

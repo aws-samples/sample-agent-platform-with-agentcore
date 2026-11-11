@@ -93,6 +93,10 @@ print('' if v is None else (v if isinstance(v,str) else json.dumps(v)))" \
   WORKSPACE_BUCKET="$(tfo workspace_bucket_name)"
   CLIENT_ID="$(tfo user_pool_client_id)"
   SERVICE_API_ID="$(tfo service_entry_api_id)"
+  SERVICE_VPCE_ID="$(tfo service_entry_vpce_id)"
+  # a Terraform deployment: its schedule-runner reaches the backend through
+  # the private service entry only (the runner section below)
+  ID_SOURCE=terraform
   ALB_DNS="$(tfo alb_dns_name)"
   # Fixed names (suffix-aware), then describe for the ARNs the checks need.
   EKS_CLUSTER="$(tfo eks_cluster_name)"
@@ -308,8 +312,14 @@ else bad "alb target group has healthy pod targets" "healthy count '$HEALTHY'"; 
 # The runner packages the same service layer as the backend, so it needs the
 # same names passed in. An empty environment leaves it on config.py's defaults —
 # the *unsuffixed* table above all — which is present-and-correct-looking but
-# reads someone else's data. And the admin-secret name has to match the grant
-# on its role, or every pipeline schedule dies on AccessDenied.
+# reads someone else's data. Two delegation paths, chosen by how the platform
+# was deployed (never by the runner's own environment, which is what is being
+# verified): the Terraform deployment hands schedules to this stack's private
+# service entry, signed with the runner's role - the exact endpoint-specific
+# URL - and must carry no portal sign-in (no portal URL, no admin secret); the
+# CLI deployment signs in to the portal as the portal admin, whose secret name
+# has to match the grant on its role, or every pipeline schedule dies on
+# AccessDenied.
 RUNNER_FN="agent-platform-schedule-runner${SUFFIX}"
 RUNNER_ENV="$(aws lambda get-function-configuration --function-name "$RUNNER_FN" \
   --query 'Environment.Variables' --output json 2>/dev/null)"
@@ -318,13 +328,40 @@ if [ -n "$RUNNER_ENV" ] && [ "$RUNNER_ENV" != "null" ]; then
 import json,sys
 print(json.load(sys.stdin).get('$1',''))"; }
   check "runner table matches the deployment" "$TABLE" "$(renv PLATFORM_DYNAMO_TABLE)"
-  check "runner admin secret is suffix-aware" \
-    "agent-platform${SUFFIX}/portal-admin" "$(renv PLATFORM_PORTAL_ADMIN_SECRET)"
-  # Set here and NOT on the backend: it is what selects the pipeline delegation
-  # path, and the backend runs workflow scripts in-process.
-  check "runner delegates pipelines to the portal API" "$PORTAL" "$(renv PLATFORM_PORTAL_API_URL)"
+  if [ "${ID_SOURCE:-cli}" = terraform ]; then
+    if [ -n "${SERVICE_API_ID:-}" ] && [ -n "${SERVICE_VPCE_ID:-}" ]; then
+      check "runner reaches the backend through this stack's service entry" \
+        "https://${SERVICE_API_ID}-${SERVICE_VPCE_ID}.execute-api.${AWS_REGION}.amazonaws.com/svc/" \
+        "$(renv PLATFORM_PIPELINE_SERVICE_URL)"
+    else
+      bad "runner reaches the backend through this stack's service entry" \
+        "the facts name no service entry (api '${SERVICE_API_ID:-}', endpoint '${SERVICE_VPCE_ID:-}')"
+    fi
+    check "runner carries no portal URL (no portal sign-in)" "" "$(renv PLATFORM_PORTAL_API_URL)"
+    check "runner carries no portal admin secret" "" "$(renv PLATFORM_PORTAL_ADMIN_SECRET)"
+  else
+    check "runner admin secret is suffix-aware" \
+      "agent-platform${SUFFIX}/portal-admin" "$(renv PLATFORM_PORTAL_ADMIN_SECRET)"
+    # Set here and NOT on the backend: it is what selects the pipeline
+    # delegation path, and the backend runs workflow scripts in-process.
+    check "runner delegates pipelines to the portal API" "$PORTAL" "$(renv PLATFORM_PORTAL_API_URL)"
+  fi
 else
   bad "schedule-runner has an environment" "no Environment.Variables on $RUNNER_FN"
+fi
+
+# ---- one identity provider ---------------------------------------------------
+# In OIDC mode a backend that also has a Cognito pool still accepts the pool's
+# ID tokens (backend/app/dependencies.py chains to it), so the pool's admin
+# password would be a way in beside the realm. /api/v1/config is public.
+AUTH_CFG="$(curl -s --max-time 30 "$PORTAL/api/v1/config" 2>/dev/null)"
+AUTH_MODE="$(printf '%s' "$AUTH_CFG" | jget "d['auth_mode']")"
+if [ "$AUTH_MODE" = oidc ]; then
+  check "oidc backend carries no cognito pool" "" "$(printf '%s' "$AUTH_CFG" | jget "d.get('cognito_client_id') or ''")"
+elif [ "$AUTH_MODE" = cognito ]; then
+  ok "backend authenticates against cognito only"
+else
+  bad "backend has an identity provider" "auth_mode '$AUTH_MODE'"
 fi
 
 ##############################################################################

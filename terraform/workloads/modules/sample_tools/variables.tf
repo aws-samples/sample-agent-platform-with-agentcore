@@ -4,7 +4,8 @@ variable "gateway_id" {
 }
 
 variable "gateway_arn" {
-  type = string
+  description = "ARN of the sample-tools AgentCore Gateway the tool Lambdas are registered on (from the foundation)."
+  type        = string
 }
 
 variable "policy_engine_id" {
@@ -39,6 +40,7 @@ variable "tool_ids" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to this module's names (empty in production, -staging in staging)."
+  type        = string
+  default     = ""
 }

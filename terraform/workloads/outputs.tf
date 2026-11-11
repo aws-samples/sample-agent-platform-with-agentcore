@@ -1,33 +1,40 @@
 # ------------------------------- runtime -----------------------------------
 
 output "interactive_runtime_arn" {
-  value = try(module.runtime[0].interactive_runtime_arn, null)
+  description = "ARN of the interactive (Claude Code) kernel runtime of the default platform version; null when the runtimes are off."
+  value       = try(module.runtime[0].interactive_runtime_arn, null)
 }
 
 output "sdk_runtime_arn" {
-  value = try(module.runtime[0].sdk_runtime_arn, null)
+  description = "ARN of the SDK kernel runtime of the default platform version; null when the runtimes are off."
+  value       = try(module.runtime[0].sdk_runtime_arn, null)
 }
 
 output "mcp_tools_runtime_arn" {
-  value = try(module.runtime[0].mcp_tools_runtime_arn, null)
+  description = "ARN of the MCP tools runtime; null when the runtimes are off."
+  value       = try(module.runtime[0].mcp_tools_runtime_arn, null)
 }
 
 output "interactive_runtime_arns" {
-  value = try(module.runtime[0].interactive_runtime_arns, null)
+  description = "Interactive kernel runtime ARNs by platform version ({V1 = arn, V2 = arn}); null when the runtimes are off."
+  value       = try(module.runtime[0].interactive_runtime_arns, null)
 }
 
 output "sdk_runtime_arns" {
-  value = try(module.runtime[0].sdk_runtime_arns, null)
+  description = "SDK kernel runtime ARNs by platform version; null when the runtimes are off."
+  value       = try(module.runtime[0].sdk_runtime_arns, null)
 }
 
 output "runtime_ids" {
-  value = try(module.runtime[0].runtime_ids, null)
+  description = "agent_runtime_id by runtime name for every runtime of the runtime module, for operators and the import tooling; null when the runtimes are off."
+  value       = try(module.runtime[0].runtime_ids, null)
 }
 
 # -------------------------------- portal -----------------------------------
 
 output "schedule_runner_function" {
-  value = try(module.portal[0].schedule_runner_function, null)
+  description = "Name of the schedule-runner Lambda function; null when the portal is off."
+  value       = try(module.portal[0].schedule_runner_function, null)
 }
 
 output "helm_releases" {
@@ -38,11 +45,13 @@ output "helm_releases" {
 # --------------------------- environment facts ------------------------------
 
 output "name_suffix" {
-  value = var.name_suffix
+  description = "Environment suffix this deployment's names carry (empty in production, -staging in staging)."
+  value       = var.name_suffix
 }
 
 output "foundation_parameter" {
-  value = data.aws_ssm_parameter.foundation.name
+  description = "Name of the SSM parameter this root read the foundation's facts from."
+  value       = data.aws_ssm_parameter.foundation.name
 }
 
 # ---------------------------- Sample Agents ---------------------------------

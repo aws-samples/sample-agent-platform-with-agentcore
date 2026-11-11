@@ -204,6 +204,83 @@ function setLlmGrant(grant) {
   );
 }
 
+// An AgentCore gateway credential lives 15 minutes and the platform revokes a
+// session by refusing to renew it, so it is renewed on its own clock, not the
+// workspace credential's hourly one. Same contract as the headless kernel's
+// llm_shim: renew within 5 minutes of expiry through the grant's `renew`
+// block; a 401 is final for *that* grant (revoked, or its ceiling passed) and
+// the credential then runs out; a 429 means another client of the session
+// renewed a moment ago and is retried after Retry-After; anything else retries
+// on the next tick. The outcome is recorded on the grant object, so a late
+// answer for a grant a warmup has since replaced cannot touch the new one, and
+// only the credential is taken from the answer — endpoint, region and the
+// model allowlist stay what warmup routed.
+const LLM_RENEW_BEFORE_MS = 5 * 60_000;
+
+async function renewLlmGrant() {
+  const g = llmGrant;
+  if (!g || !g.access_key_id || !g.renew || !g.renew.url || !g.renew.token) return;
+  if (g.renewRefused) return;
+  if ((g.renewRetryAt || 0) > Date.now()) return;
+  if ((Number(g.expires_at) || 0) * 1000 - Date.now() > LLM_RENEW_BEFORE_MS) return;
+  try {
+    const resp = await fetch(g.renew.url, {
+      method: "POST",
+      // never follow a redirect: fetch would resend the body, renewal token
+      // included, to wherever Location points
+      redirect: "error",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runtime_session_id: g.session_id || runtimeSessionId, token: g.renew.token }),
+    });
+    if (resp.status === 401) {
+      g.renewRefused = true;
+      console.log("[model] renewal refused; credential runs to expiry");
+      return;
+    }
+    if (resp.status === 429) {
+      const wait = Number(resp.headers && resp.headers.get && resp.headers.get("retry-after")) || 30;
+      g.renewRetryAt = Date.now() + Math.min(Math.max(wait, 1), 60) * 1000;
+      return;
+    }
+    if (!resp.ok) {
+      console.log(`[model] renewal failed: HTTP ${resp.status}`);
+      return;
+    }
+    const answer = await resp.json();
+    const fresh = answer && typeof answer === "object" ? answer.llm_credentials : null;
+    // Used only if it is exactly a credential; anything else keeps the old one.
+    const str = (v) => typeof v === "string" && v.length > 0;
+    if (!fresh || typeof fresh !== "object" || Array.isArray(fresh)) return;
+    if (!str(fresh.access_key_id) || !str(fresh.secret_access_key) || !str(fresh.session_token)) return;
+    // an epoch second in the next hour (STS issues 15 minutes)
+    const nowS = Date.now() / 1000;
+    if (typeof fresh.expires_at !== "number" || !Number.isFinite(fresh.expires_at)) return;
+    if (fresh.expires_at <= nowS || fresh.expires_at > nowS + 3600) return;
+    if (llmGrant !== g) return; // a warmup replaced the grant meanwhile
+    // The renewal URL stays the one warmup delivered: an answer may refresh
+    // the token and the ceiling, never redirect the next renewal elsewhere.
+    const r = fresh.renew && typeof fresh.renew === "object" ? fresh.renew : {};
+    llmGrant = {
+      ...g,
+      access_key_id: fresh.access_key_id,
+      secret_access_key: fresh.secret_access_key,
+      session_token: fresh.session_token,
+      expires_at: fresh.expires_at,
+      renew: {
+        ...g.renew,
+        ...(str(r.token) ? { token: r.token } : {}),
+        ...(typeof r.grant_expires_at === "number" ? { grant_expires_at: r.grant_expires_at } : {}),
+      },
+      renewRetryAt: 0,
+    };
+    console.log(`[model] credential renewed (expires ${new Date(fresh.expires_at * 1000).toISOString()})`);
+  } catch (e) {
+    // a broken or hostile answer (non-JSON, wrong shape) keeps the old credential
+    console.log(`[model] renewal error: ${e && e.message}`);
+  }
+}
+setInterval(renewLlmGrant, 60_000);
+
 // Hop-by-hop headers, plus the client's own auth: Claude Code sends the
 // placeholder "unused", which must not reach the edge.
 const SHIM_DROP_HEADERS = new Set([

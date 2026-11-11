@@ -66,6 +66,9 @@ class InvokeRequest(BaseModel):
     memory_last_k_turns: int = Field(default=10, ge=0, le=50)
     # AgentCore Runtime platform version of the headless kernel; "" = default
     platform_version: str = Field(default="", pattern="^(|V1|V2)$")
+    # resume the previous conversation of ``session_id`` on the kernel (the
+    # same microVM keeps the SDK transcript); ignored without a session_id
+    continue_conversation: bool = False
 
 
 class McpServerCreateRequest(BaseModel):
@@ -159,6 +162,8 @@ class AgentInvokeRequest(BaseModel):
     memory_actor_id: str = Field(default="", max_length=80)
     # replay the last K exchanges of this session on cold start (0 disables)
     memory_last_k_turns: int = Field(default=10, ge=0, le=50)
+    # see InvokeRequest.continue_conversation
+    continue_conversation: bool = False
 
 
 class ScheduleCreateRequest(BaseModel):

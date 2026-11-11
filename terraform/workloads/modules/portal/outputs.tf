@@ -1,13 +1,16 @@
 output "schedule_runner_function" {
-  value = aws_lambda_function.schedule_runner.function_name
+  description = "Name of the schedule-runner Lambda function."
+  value       = aws_lambda_function.schedule_runner.function_name
 }
 
 output "schedule_runner_function_arn" {
-  value = aws_lambda_function.schedule_runner.arn
+  description = "ARN of the schedule-runner Lambda function."
+  value       = aws_lambda_function.schedule_runner.arn
 }
 
 output "namespace" {
-  value = local.namespace
+  description = "Kubernetes namespace the backend runs in."
+  value       = local.namespace
 }
 
 output "release_names" {

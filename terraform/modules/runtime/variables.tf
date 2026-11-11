@@ -34,7 +34,7 @@ variable "name_suffix" {
 
 variable "sample_runtimes" {
   description = "Sample agents that get their own runtime and execution role (Sample Agents feature), by sample id (lowercase letters, digits, hyphens). The workloads root creates one runtime per key with the headless kernel image."
-  type        = map(object({}))
+  type        = map(object({ memory = optional(bool, false) }))
   default     = {}
 
   validation {

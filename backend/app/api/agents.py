@@ -1,6 +1,7 @@
 """Published agents: self-service publish + invocation."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.dependencies import Principal, get_current_user
 from app.models.schemas import (
@@ -14,6 +15,7 @@ from app.services.agent_service import agent_service
 from app.services.audit_service import audit_service
 from app.services.governance_service import QuotaExceeded, SourceDisabled
 from app.services.session_service import session_service
+from app.services.sse import sse_response
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
@@ -96,27 +98,33 @@ def delete_agent(agent_id: str, user: Principal = Depends(get_current_user)):
     return {"ok": True}
 
 
+def _call_kwargs(agent_id: str, req: AgentInvokeRequest, user: Principal) -> dict:
+    """The invocation arguments shared by the one-shot and streaming routes."""
+    return dict(
+        user=user,
+        source="api",
+        target=f"agent:{agent_id}",
+        prompt=req.prompt,
+        # namespaced under the caller so a client-supplied session_id
+        # cannot land on another tenant's warm microVM (see
+        # resolve_session_id / resolve_memory_actor)
+        runtime_session_id=invocation_service.resolve_session_id(
+            user, req.session_id
+        ),
+        # a published agent carries its own memory_id, so the actor ID is
+        # all that separates callers' memory lines (see resolve_memory_actor)
+        memory_actor_id=invocation_service.resolve_memory_actor(
+            user, req.memory_actor_id
+        ),
+        memory_last_k_turns=req.memory_last_k_turns,
+        continue_conversation=req.continue_conversation,
+    )
+
+
 @router.post("/{agent_id}/invoke", response_model=InvokeResponse)
 def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: Principal = Depends(get_current_user)):
     try:
-        return invocation_service.invoke(
-            user=user,
-            source="api",
-            target=f"agent:{agent_id}",
-            prompt=req.prompt,
-            # namespaced under the caller so a client-supplied session_id
-            # cannot land on another tenant's warm microVM (see
-            # resolve_session_id / resolve_memory_actor)
-            runtime_session_id=invocation_service.resolve_session_id(
-                user, req.session_id
-            ),
-            # a published agent carries its own memory_id, so the actor ID is
-            # all that separates callers' memory lines (see resolve_memory_actor)
-            memory_actor_id=invocation_service.resolve_memory_actor(
-                user, req.memory_actor_id
-            ),
-            memory_last_k_turns=req.memory_last_k_turns,
-        )
+        return invocation_service.invoke(**_call_kwargs(agent_id, req, user))
     except KeyError:
         raise HTTPException(status_code=404, detail="Agent not found")
     except (QuotaExceeded, SourceDisabled) as e:
@@ -125,3 +133,19 @@ def invoke_agent(agent_id: str, req: AgentInvokeRequest, user: Principal = Depen
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Runtime invocation failed: {e}")
+
+
+@router.post("/{agent_id}/invoke/stream")
+def invoke_agent_stream(agent_id: str, req: AgentInvokeRequest, user: Principal = Depends(get_current_user)) -> StreamingResponse:
+    """Same call as ``/invoke``, answered as a Server-Sent Events stream of
+    kernel events. Unknown agent and governance refusals are HTTP errors;
+    anything after the first byte is an ``error`` event."""
+    try:
+        events = invocation_service.start_stream(**_call_kwargs(agent_id, req, user))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    except (QuotaExceeded, SourceDisabled) as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except invocation_service.IdentityRequired as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return sse_response(events)

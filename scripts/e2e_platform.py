@@ -9,9 +9,10 @@ Environment (required, no defaults; see scripts/qa_env.py):
   PORTAL_URL, QA_TEST_USERS_SECRET, AWS_REGION, QA_ENV
   WORKSPACE_BUCKET    the environment's workspace bucket (agent.yaml is seeded there)
 
-Signs in as the environment's ``admin`` test user through its OIDC realm and
-refuses to run if the portal accepts tokens from a different issuer than the
-one the test users sign in to (the cross-environment guard).
+Signs in as the environment's ``admin`` test user through its OIDC realm or,
+on a Cognito portal, its user pool, and refuses to run if the portal accepts
+tokens from a different issuer (or app client) than the one the test users
+sign in to (the cross-environment guard).
 
 The harness needs AWS credentials for two things only: reading the test
 users from Secrets Manager and seeding agent.yaml into a session workspace
@@ -106,7 +107,7 @@ def sign_in() -> str:
     global _TOKEN
     cfg = qa_env.check_same_environment()
     _TOKEN = qa_env.token_for(USER)
-    print(f"  signed in (OIDC, {cfg['oidc_issuer']})")
+    print(f"  signed in ({cfg['signed_in_via']})")
     return _TOKEN
 
 
@@ -297,24 +298,27 @@ def main() -> int:
     CLEANUP.append(f"/api/v1/schedules/{sched_id}")
     status, res = http("POST", f"/api/v1/schedules/{sched_id}/run-now", token=token, timeout=120)
     report("scheduler.run-now", status == 200 and "SCHED_E2E_OK" in res.get("result", ""), res.get("result", "")[:60])
-    if env == "prod":
-        # timed fire: EventBridge Scheduler fires ~1 min after creation (or the
-        # local dev loop ticks every 30 s) and the run itself takes a while
-        deadline = time.time() + 300
-        ticked = False
-        while time.time() < deadline:
-            _, all_s = http("GET", "/api/v1/schedules", token=token)
-            me = next((s for s in all_s if s["id"] == sched_id), {})
-            if me.get("run_count", 0) >= 2:  # run-now + at least one tick
-                ticked = True
-                break
-            time.sleep(15)  # nosemgrep: arbitrary-sleep  (intentional poll interval in E2E harness)
-        report("scheduler.timed-tick", ticked, f"run_count={me.get('run_count')}")
-    else:
-        # the timed path goes through the schedule-runner Lambda, which Terraform
-        # creates as a placeholder; only production has the real code deployed
-        # (scripts/deploy-schedule-lambda.sh) until that deploy is per-environment
-        report("scheduler.timed-tick", False, f"schedule-runner Lambda is a placeholder in {env}; run-now path verified", warn=True)
+    # timed fire: EventBridge Scheduler fires ~1 min after creation (or the
+    # local dev loop ticks every 30 s) and the run itself takes a while. The
+    # apply builds ship the runner code to both environments
+    # (ci/codebuild/run.sh publish_schedule_runner), so staging is checked too:
+    # a runner left on the placeholder or on old code fails here.
+    # A tick counts only if it succeeded: run_count also grows on a failed
+    # run, and on 2026-10-31 a staging tick that failed (the runner had no
+    # model routing) passed this check by count alone. run_count and
+    # last_status change in one update, so the status read with a count of 2+
+    # is a tick's.
+    deadline = time.time() + 300
+    ticked = False
+    while time.time() < deadline:
+        _, all_s = http("GET", "/api/v1/schedules", token=token)
+        me = next((s for s in all_s if s["id"] == sched_id), {})
+        if me.get("run_count", 0) >= 2:  # run-now + at least one tick
+            ticked = me.get("last_status") == "ok" and "SCHED_E2E_OK" in (me.get("last_result_preview") or "")
+            break
+        time.sleep(15)  # nosemgrep: arbitrary-sleep  (intentional poll interval in E2E harness)
+    report("scheduler.timed-tick", ticked,
+           f"run_count={me.get('run_count')} last_status={me.get('last_status')} preview={(me.get('last_result_preview') or '')[:60]!r}")
     http("POST", f"/api/v1/schedules/{sched_id}/disable", token=token)
 
     # -------------------------------------------------------------- eval run

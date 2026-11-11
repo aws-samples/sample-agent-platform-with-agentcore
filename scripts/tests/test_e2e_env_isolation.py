@@ -16,6 +16,17 @@ build exports. Adversarial checks that they cannot drift back to production.
      --output text the CLI applies --query per page (one line per page), so
      no script may read it as text; and the filter verify.sh uses does not
      let production's READY satisfy the staging runtime's check.
+  5. the cross-environment guard on a Cognito portal (the default deployment):
+     it runs only when the test users' secret names the portal's own app
+     client; another environment's client, an OIDC-shaped secret, an OIDC
+     portal given a Cognito secret, open mode, and a secret carrying both
+     shapes (an OIDC portal with the right issuer plus a foreign Cognito
+     client) or neither all refuse (exit 2); the Cognito sign-in asks that
+     client and no other, and token_for refuses a mixed secret itself
+     (stubbed, no AWS).
+  6. e2e_platform.sign_in with a secret of the wrong environment or the wrong
+     provider shape (including one carrying both shapes) stops at the guard:
+     exit 2, no token request, and no portal call but GET /api/v1/config.
 
 Run: python3 scripts/tests/test_e2e_env_isolation.py
 """
@@ -116,6 +127,106 @@ def main() -> int:
     got = eval(expr, {"__builtins__": {"next": next}}, {"d": listing})  # noqa: S307
     assert got == "absent", f"missing staging runtime returned {got!r} instead of 'absent'"
     ok("verify.sh runtime filter matches the exact environment name (prod READY does not pass staging)")
+
+    # 5. the guard on a Cognito portal (qa_env imported with stubs, no AWS, no network)
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import importlib  # noqa: PLC0415
+    os.environ.update(PORTAL_URL="https://portal.invalid", AWS_REGION="us-east-1",
+                      QA_TEST_USERS_SECRET="test-users", QA_ENV="staging")
+    qa_env = importlib.import_module("qa_env")
+    cognito_cfg = {"auth_mode": "cognito", "cognito_region": "us-east-1", "cognito_client_id": "client-staging",
+                   "oidc_issuer": "", "oidc_client_id": ""}
+    oidc_cfg = {"auth_mode": "oidc", "oidc_issuer": "https://idp.invalid/realms/staging", "oidc_client_id": "portal"}
+
+    def guard(cfg: dict, secret: dict):
+        qa_env.api = lambda *a, **k: (200, dict(cfg))
+        qa_env._users = secret
+        try:
+            return 0, qa_env.check_same_environment()
+        except SystemExit as e:
+            return e.code, None
+
+    rc, cfg = guard(cognito_cfg, {"cognito_client_id": "client-staging", "users": {"admin": "x"}})
+    assert rc == 0 and cfg["signed_in_via"] == "Cognito, app client client-staging", (rc, cfg)
+    for name, cfg, secret in (
+        ("another environment's client", cognito_cfg, {"cognito_client_id": "client-prod", "users": {}}),
+        ("an OIDC-shaped secret on a Cognito portal", cognito_cfg, {"issuer": "https://idp.invalid/realms/staging", "client_id": "portal", "users": {}}),
+        ("a Cognito portal without a client id", {**cognito_cfg, "cognito_client_id": ""}, {"cognito_client_id": "", "users": {}}),
+        ("a Cognito secret on an OIDC portal", oidc_cfg, {"cognito_client_id": "client-staging", "users": {}}),
+        ("open mode", {"auth_mode": "open"}, {"cognito_client_id": "client-staging", "users": {}}),
+        # the bypass a mixed secret opened: the OIDC branch checked only the issuer
+        # while token_for picked Cognito by the extra key
+        ("an OIDC portal, matching issuer plus a foreign cognito_client_id", oidc_cfg,
+         {"issuer": "https://idp.invalid/realms/staging", "client_id": "portal", "cognito_client_id": "client-prod", "users": {}}),
+        ("a Cognito portal, matching client plus OIDC keys", cognito_cfg,
+         {"cognito_client_id": "client-staging", "issuer": "https://idp.invalid/realms/staging", "users": {}}),
+        ("a secret of neither shape", cognito_cfg, {"users": {}}),
+    ):
+        rc, _ = guard(cfg, secret)
+        assert rc == 2, f"{name}: the guard must refuse (exit 2), got {rc}"
+    rc, cfg = guard(oidc_cfg, {"issuer": "https://idp.invalid/realms/staging/", "client_id": "portal", "users": {}})
+    assert rc == 0 and cfg["signed_in_via"] == "OIDC, https://idp.invalid/realms/staging", (rc, cfg)
+    ok("Cognito guard: runs only on the portal's own app client; other client, OIDC secret, missing client, OIDC portal, open mode and mixed or empty secrets refuse")
+
+    asked = []
+
+    class _Idp:
+        def initiate_auth(self, **kw):
+            asked.append(kw)
+            return {"AuthenticationResult": {"IdToken": "id-token"}}
+
+    real_client = qa_env.boto3.client
+    qa_env.boto3.client = lambda service, **kw: _Idp() if service == "cognito-idp" else real_client(service, **kw)
+    try:
+        qa_env._users = {"cognito_client_id": "client-staging", "users": {"alice": {"password": "pw"}}}
+        assert qa_env.token_for("alice") == "id-token"
+    finally:
+        qa_env.boto3.client = real_client
+    assert asked == [{"ClientId": "client-staging", "AuthFlow": "USER_PASSWORD_AUTH",
+                      "AuthParameters": {"USERNAME": "alice", "PASSWORD": "pw"}}], asked
+    # token_for decides the provider the same way the guard does: a mixed secret never signs in
+    qa_env.boto3.client = lambda service, **kw: _Idp() if service == "cognito-idp" else real_client(service, **kw)
+    try:
+        qa_env._users = {"cognito_client_id": "client-prod", "issuer": "https://idp.invalid/realms/staging",
+                         "client_id": "portal", "users": {"alice": "pw"}}
+        asked.clear()
+        try:
+            qa_env.token_for("alice")
+            rc = 0
+        except SystemExit as exc:
+            rc = exc.code
+    finally:
+        qa_env.boto3.client = real_client
+    assert rc == 2 and not asked, (rc, asked)
+    ok("Cognito sign-in asks the secret's app client with the user's password, nothing else")
+
+    # 6. e2e_platform.sign_in stops at the guard: no token request, no other portal call
+    os.environ["WORKSPACE_BUCKET"] = "bucket-staging"
+    e2e = importlib.import_module("e2e_platform")
+    assert e2e.qa_env is qa_env
+    real_token_for = qa_env.token_for
+    for name, cfg, secret in (
+        ("another environment's client", cognito_cfg, {"cognito_client_id": "client-prod", "users": {"admin": "x"}}),
+        ("an OIDC secret on a Cognito portal", cognito_cfg, {"issuer": "https://idp.invalid/realms/staging", "client_id": "portal", "users": {"admin": "x"}}),
+        ("both shapes, another client", cognito_cfg, {"cognito_client_id": "client-prod", "issuer": "https://idp.invalid/realms/staging",
+                                                      "client_id": "portal", "users": {"admin": "x"}}),
+        ("a Cognito secret on an OIDC portal", oidc_cfg, {"cognito_client_id": "client-staging", "users": {"admin": "x"}}),
+        ("an OIDC portal, matching issuer plus a foreign cognito_client_id", oidc_cfg,
+         {"issuer": "https://idp.invalid/realms/staging", "client_id": "portal", "cognito_client_id": "client-prod", "users": {"admin": "x"}}),
+    ):
+        calls, tokens = [], []
+        qa_env.api = lambda token, method, path, *a, _cfg=cfg, **k: (calls.append((method, path)), (200, dict(_cfg)))[1]
+        qa_env.token_for = lambda user: tokens.append(user) or "t"
+        qa_env._users = secret
+        try:
+            e2e.sign_in()
+            rc = 0
+        except SystemExit as exc:
+            rc = exc.code
+        finally:
+            qa_env.token_for = real_token_for
+        assert rc == 2 and not tokens and calls == [("GET", "/api/v1/config")], (name, rc, tokens, calls)
+    ok("e2e_platform.sign_in with another environment's or the wrong provider's secret exits 2 before any token request")
 
     print("e2e env isolation: all assertions passed")
     return 0

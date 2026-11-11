@@ -1,0 +1,15 @@
+# Publish manifest of the lark-teammate sample: the same shape
+# publish-from-session reads from a workspace (backend/app/services/agent_service.py).
+# system_prompt is prompt.md, inlined by the seed script.
+name: lark-teammate
+description: A teammate for Lark group chats that answers in the user's language and backs current facts with sourced web search, through the sample-tools gateway.
+# the one MCP entry: the sample-tools gateway. Which of its tools this agent
+# may call is the gateway's policy decision (by this sample's runtime role),
+# not this list's.
+mcp_server_names:
+  - sample-tools
+skill_names: []
+# a question is one or two searches plus an answer; a research task a few
+# searches in sequence; leave room for a retry on a rate limit
+max_turns: 12
+platform_version: V1

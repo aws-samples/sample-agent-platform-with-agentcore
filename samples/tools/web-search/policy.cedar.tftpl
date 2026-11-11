@@ -1,0 +1,22 @@
+// web-search: which sample runtime may call it, with which inputs.
+//
+// Rendered by terraform/workloads/modules/sample_tools with the gateway ARN
+// and the sample runtimes' assumed-role principals. Default-deny engine: a
+// runtime not permitted here cannot call searchWeb and does not see it.
+//
+// The schema bounds the request, and the gateway decides it again here,
+// before any call leaves: a query is required and short, at most 10 results,
+// page text per result at most 4000 characters. A search costs per call on
+// the key's plan, so the bounds are the cost control as well as the shape.
+%{ for id, principal in principals ~}
+permit(
+  principal == AgentCore::IamEntity::"${principal}",
+  action == AgentCore::Action::"${target}___searchWeb",
+  resource == AgentCore::Gateway::"${gateway_arn}"
+) when {
+  context.input has query &&
+  (!(context.input has numResults) || context.input.numResults <= 10) &&
+  (!(context.input has contents) || !(context.input.contents has text) ||
+   !(context.input.contents.text has maxCharacters) || context.input.contents.text.maxCharacters <= 4000)
+};
+%{ endfor ~}

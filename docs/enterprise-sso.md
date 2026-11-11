@@ -105,9 +105,12 @@ Design decisions:
   its own runtime (`TeamDemoStack`, same headless kernel image).
 - **Portal auth becomes pluggable.** `PLATFORM_OIDC_ISSUER` switches the
   backend to generic-OIDC verification (access token, PKCE flow in the
-  frontend); Cognito mode still works and remains the fallback for
-  platform-internal callers (the schedule-runner Lambda's portal-admin
-  delegation authenticates against Cognito even in OIDC mode).
+  frontend); Cognito mode still works. The schedule-runner Lambda starts
+  pipeline runs through the private IAM service entry, signed with its own
+  role, so it needs neither IdP, and the Terraform deployment gives an OIDC
+  backend no Cognito setting at all (in OIDC mode the backend otherwise also
+  accepts the pool's ID tokens). The CDK deployment's runner still signs in to
+  Cognito as the portal admin, even in OIDC mode.
 
 ## Components
 

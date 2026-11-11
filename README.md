@@ -388,13 +388,22 @@ walks through each page):
 - AWS account with Amazon Bedrock AgentCore available in your target region
 - Docker with `linux/arm64` build support (AgentCore Runtime is ARM64; the
   platform services run on Graviton EKS nodes and share the arm64 build)
-- Node.js ≥ 20, Python ≥ 3.11, Terraform ≥ 1.9, `kubectl` + `helm` to operate
+- Node.js ≥ 20, Python ≥ 3.11 with `pip` and boto3/botocore ≥ 1.43.98
+  (`pip install -r backend/requirements.txt`; Terraform runs it to set the
+  runtimes' platform version), Terraform ≥ 1.9, `kubectl` + `helm` to operate
   the cluster
+- The API Gateway account-level CloudWatch role set in the target region
+  (`aws apigateway get-account --query cloudwatchRoleArn`; see
+  [terraform/README.md](terraform/README.md#deploy-order))
 - One of:
   - An Anthropic-compatible LLM gateway endpoint (e.g. LiteLLM) and an API key, or
   - Amazon Bedrock model access (Claude models via cross-region inference)
 
 ## Quick start
+
+Two Terraform roots, applied in order: the foundation (`terraform/`) and the
+workloads (`terraform/workloads/`: the AgentCore runtimes, the backend
+Deployments, the scheduler Lambda). The portal works only once both are applied.
 
 ```bash
 # 1. Provision network + platform resources
@@ -414,13 +423,22 @@ aws secretsmanager put-secret-value \
   --secret-string '{"api_key":"sk-..."}'
 #    - Bedrock direct: nothing to store.
 
-# 3. Build & push the images (ARM64)
+# 3. Build & push the images (ARM64; PLATFORM_NAME_SUFFIX=<name_suffix> if you set one)
 ../scripts/build-and-push.sh
 
-# 4. (llm-edge only) allow-list the NAT EIP on your LLM gateway. Then create the AgentCore
-#    runtimes (VPC mode, fixed egress IP), the EKS cluster and the portal
+# 4. (llm-edge only) allow-list the NAT EIP on your LLM gateway. Then create the
+#    EKS cluster, the portal's edges and the facts document the workloads read
+terraform apply
+
+# 5. The workloads: AgentCore runtimes (VPC mode, fixed egress IP), backend + entry
+#    Deployments, scheduler Lambda. Same aws_region / name_suffix, the image tag of step 3
+cd workloads
+cp terraform.tfvars.example terraform.tfvars   # then edit
+terraform init
 terraform apply               # or: run backend + frontend locally, see docs/deployment.md
-../scripts/deploy-frontend.sh
+cd ../..
+./scripts/deploy-frontend.sh
+./scripts/deploy-schedule-lambda.sh
 ```
 
 The containers (backend, llm-edge if enabled, and the optional Keycloak + team APIs) run
@@ -432,7 +450,10 @@ Full walkthrough: [docs/deployment.md](docs/deployment.md). Once deployed,
 hand users the [user guide](docs/user-guide.md); verify the deployment with
 `scripts/e2e_platform.py`, which drives the Phase 4 surface (publish,
 scheduler, channels, memory, eval, governance) against the live portal and
-prints a pass/fail line per check.
+prints a pass/fail line per check (test users and environment:
+[docs/deployment.md](docs/deployment.md#verify-the-deployment)). To tear down,
+`terraform destroy` in `terraform/workloads/` first, then in `terraform/`
+(what a destroy leaves behind: [terraform/README.md](terraform/README.md#deploy-order)).
 
 ## Adapting this sample
 

@@ -249,8 +249,121 @@ is shown with its sample size, because one case moves the rate of an 8-case
 dataset by over 12 points. A drop is flagged only when it amounts to at least
 two cases. This is an offline benchmark:
 the general invocation ledger still stores only a 200-character user-prompt
-preview and execution metrics. It has no automatic business label or
-production-conversation quality score.
+preview and execution metrics (now including `tool_calls`). It has no
+automatic business label or production-conversation quality score.
+
+### Event trail
+
+The ledger row is a summary. What the agent did during a call — each text
+block, each tool call with its input, each tool result, the result or error —
+is written when the call ends as one JSON Lines object to the workspace bucket:
+
+```
+invocations/<YYYY-MM-DD>/<runtime_session_id>/<ts>.jsonl
+```
+
+Line 1 is a header (user, target, session, prompt); the rest are the kernel's
+events (`runtimes/agent-sdk-kernel/src/stream_events.py`), without text
+deltas. The ledger row carries the key as `events_key`. Every path through
+`invocation_service` writes it (Debug, published agents, channels, schedules,
+eval), so a conversation's trail is the set of files under its session id.
+The portal does not read these back yet.
+
+### Reconciling the trail against the model
+
+The trail is the kernel's own account of a run. The kernel runs in a microVM
+whose session user is root, so the trail is not trusted on its own; it is
+checked against a record the microVM cannot write. Every model call goes to
+Amazon Bedrock, and Bedrock model invocation logging keeps the full request
+and response of each call. The foundation enables it with
+`bedrock_invocation_logging = true` (one setting per account and Region; the
+records are delivered to the logs bucket under `bedrock/`).
+
+`scripts/reconcile_invocation_trail.py` compares trails with those records.
+
+**Which model calls belong to a run.** A call belongs to the run when it falls
+within a time window around the trail's timestamp and its last user message
+that is not a tool result equals the run's prompt, ignoring the
+`<system-reminder>` blocks the Claude Code CLI adds. The prompt is taken from
+the trail header, which the backend writes. This holds for every call of the
+run, including in a resumed conversation, where earlier turns precede the
+prompt as history. Calls from a single run share one caller identity; calls
+with the same prompt under other identities belong to other runs.
+
+**Rules for one trail**
+
+| Rule | Check |
+|---|---|
+| R0 | The run has at least one model call; every call matched by a tool id is part of the run; on a fresh run (`continue_conversation` false in the header) the model saw nothing before the prompt |
+| R1 | Every tool call in the trail is a `tool_use` block of exactly one model response, with the same name and input; each later call shows the model exactly the answers it gave in the run's earlier calls |
+| R2 | Every `tool_use` block the model emitted, and every tool result it received during the run, appears in the trail |
+| R3 | Every tool result in the trail equals the `tool_result` the model received, followed only by whole `<system-reminder>` blocks; no other text accompanies a tool result |
+| R4 | The text the kernel reported equals the model's text blocks of the run, in order; the trail contains the final answer, and it equals the text of the last model response |
+| R5 | The trail contains `num_turns`, and it equals the number of model calls |
+
+Tool inputs and results are clipped in the trail at 2,000 characters, and
+text blocks at 20,000. A clipped value is accepted only when it is exactly
+the clip of the model's value: its first characters up to the limit, followed
+by the exact count of the remainder. A reminder block may not contain another
+reminder tag, so text between two blocks is never treated as reminder
+content.
+
+**Rules across trails.** When `--trail` names a prefix, every trail under it is
+reconciled, and the model calls of the period are then accounted for:
+
+| Rule | Check |
+|---|---|
+| A1 | No model call is claimed by more than one trail |
+| A2 | Every kernel model call in the period is claimed by a trail |
+
+These rules are needed because the caller identity in the Bedrock record
+(`agent-platform-sdk-role/BedrockAgentCore-<uuid>`) does not identify the
+platform's runtime session, so a single trail cannot establish that the calls
+it matched are its own session's. A2 applies to every kernel model call in the
+loaded records, so `--model-logs` should cover the same period as the trails
+(for example, the same day for both).
+
+Two outputs of the Claude Code CLI that the trail does not report are
+recognised, each only in its exact form:
+
+- the session-title call: one user message that is the run's prompt in the
+  CLI's title template, the CLI's system prompt (its naming instructions are
+  pinned by digest in the script), no tools and a text-only response, from
+  the run's identity, at most once per run;
+- the literal line `Tool loaded.` beside a `ToolSearch` result.
+
+When a CLI release changes the naming instructions, the title call appears as
+an A2 finding until the new digest is added.
+
+**Limitations**
+
+- The content of a `<system-reminder>` block is not verified.
+- In a resumed conversation, the history before the run's prompt is not
+  compared with the earlier trails.
+- Context compaction or other auxiliary CLI calls that were not observed in
+  the reference logs can produce R0 or R5 findings for a legitimate run.
+  Review such findings against the records before concluding that a trail is
+  inaccurate.
+
+```
+# one trail
+python3 scripts/reconcile_invocation_trail.py \
+  --trail s3://<workspace-bucket>/invocations/2026-10-19/<session>/<ts>.jsonl \
+  --model-logs s3://<logs-bucket>/bedrock/AWSLogs/<account>/BedrockModelInvocationLogs/<region>/2026/10/19/
+
+# every trail of a day, with the accounting across them
+python3 scripts/reconcile_invocation_trail.py \
+  --trail s3://<workspace-bucket>/invocations/2026-10-19/ \
+  --model-logs s3://<logs-bucket>/bedrock/AWSLogs/<account>/BedrockModelInvocationLogs/<region>/2026/10/19/
+```
+
+The exit status is 0 when the trails are consistent and 1 when there are
+findings. Calls routed through llm-edge (the `litellm` backend) or an
+AgentCore gateway are not recorded by Bedrock invocation logging, so the
+reconciliation covers the `bedrock` backend only.
+
+The Observability page groups ledger rows by runtime session, so a chat with
+many messages (Debug, channels) is one row that expands into its turns.
 
 To generate results without customer data, run the synthetic benchmark against
 a **deployed** portal:

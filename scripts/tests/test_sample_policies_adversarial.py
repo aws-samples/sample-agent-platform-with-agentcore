@@ -13,7 +13,9 @@ statements and attacked as a policy set.
      appears, no CallTool/Mcp hierarchy grant (which would permit every tool)
   3. the resource is the exact gateway ARN (`==`), never `is` or a wildcard
   4. crypto-price's condition restricts `symbol` to the allowlist in both
-     cases and requires the attribute; stock-quote requires `symbol`
+     cases and requires the attribute; stock-quote requires `symbol`;
+     web-search requires `query` and caps results (10) and page text (4000)
+     whenever the request sets them
   5. there is no `forbid`-free path to a different gateway: substituting the
      gateway ARN in the render changes every resource, so a template cannot
      hard-code one
@@ -36,6 +38,10 @@ PRINCIPALS = {
     "investment-assistant": "arn:aws:sts::ACCOUNTID001:assumed-role/agent-platform-sample-investment-assistant-role",
     "other-sample": "arn:aws:sts::ACCOUNTID001:assumed-role/agent-platform-sample-other-sample-role",
 }
+
+
+# the input each tool's policy must require (default: symbol)
+REQUIRED_INPUT = {"web-search": "query"}
 
 
 def ok(msg: str) -> None:
@@ -122,10 +128,18 @@ def main() -> int:
             assert s["resource"] == f'resource == AgentCore::Gateway::"{GW}"', f"{tid}: resource must be the exact gateway, got {s['resource']!r}"
         ok(f"{tid}: resource is the exact gateway ARN")
 
-        # 4. conditions
+        # 4. conditions: every tool requires its one key input
+        required = REQUIRED_INPUT.get(tid, "symbol")
         for s in st:
-            assert "context.input has symbol" in s["when"], f"{tid}: condition must require the symbol attribute"
-        if tid == "crypto-price":
+            assert f"context.input has {required}" in s["when"], f"{tid}: condition must require the {required} attribute"
+        if tid == "web-search":
+            for s in st:
+                w = re.sub(r"\s+", " ", s["when"])
+                assert "context.input.numResults <= 10" in w, f"{tid}: results must be capped at 10"
+                assert "maxCharacters <= 4000" in w, f"{tid}: page text must be capped at 4000 characters"
+                assert "||" in w and "!(context.input has numResults)" in w, f"{tid}: an absent optional field must not deny, a present one must be bounded"
+            ok(f"{tid}: query required; results <= 10 and page text <= 4000 chars when given")
+        elif tid == "crypto-price":
             handler = open(os.path.join(TOOLS, tid, "src", "handler.py"), encoding="utf-8").read()
             allow = set(re.findall(r'^\s+"([A-Z]+)":\s*"[a-z0-9-]+",?$', handler, re.M))
             for s in st:

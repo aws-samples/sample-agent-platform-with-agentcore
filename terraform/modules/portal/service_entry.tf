@@ -194,6 +194,153 @@ resource "aws_api_gateway_integration" "poll" {
   }
 }
 
+# --------------------------- pipeline run API -----------------------------
+# POST /service/v1/pipelines/{name}/runs  start a run on behalf of a user
+# GET  /service/v1/pipeline-runs/{runId}  poll it
+# The schedule-runner Lambda fires pipeline schedules through these, signed
+# with its own role instead of a portal sign-in. The backend admits a caller
+# only if its role is on PLATFORM_PIPELINE_SERVICE_CALLERS.
+
+resource "aws_api_gateway_resource" "pipelines" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "pipelines"
+}
+
+resource "aws_api_gateway_resource" "pipeline_name" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.pipelines.id
+  path_part   = "{name}"
+}
+
+resource "aws_api_gateway_resource" "pipeline_runs" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.pipeline_name.id
+  path_part   = "runs"
+}
+
+resource "aws_api_gateway_resource" "pipeline_run_records" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "pipeline-runs"
+}
+
+resource "aws_api_gateway_resource" "pipeline_run_id" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.pipeline_run_records.id
+  path_part   = "{runId}"
+}
+
+resource "aws_api_gateway_method" "pipeline_run_start" {
+  rest_api_id   = aws_api_gateway_rest_api.service_entry.id
+  resource_id   = aws_api_gateway_resource.pipeline_runs.id
+  http_method   = "POST"
+  authorization = "AWS_IAM"
+
+  request_parameters = {
+    "method.request.path.name" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "pipeline_run_start" {
+  rest_api_id             = aws_api_gateway_rest_api.service_entry.id
+  resource_id             = aws_api_gateway_resource.pipeline_runs.id
+  http_method             = aws_api_gateway_method.pipeline_run_start.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "http://${aws_lb.service_entry.dns_name}/service/v1/pipelines/{name}/runs"
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.service_entry.id
+
+  request_parameters = {
+    "integration.request.header.x-caller-arn"           = "context.identity.userArn"
+    "integration.request.header.x-service-entry-secret" = local.entry_secret_header
+    "integration.request.path.name"                     = "method.request.path.name"
+  }
+}
+
+resource "aws_api_gateway_method" "pipeline_run_poll" {
+  rest_api_id   = aws_api_gateway_rest_api.service_entry.id
+  resource_id   = aws_api_gateway_resource.pipeline_run_id.id
+  http_method   = "GET"
+  authorization = "AWS_IAM"
+
+  request_parameters = {
+    "method.request.path.runId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "pipeline_run_poll" {
+  rest_api_id             = aws_api_gateway_rest_api.service_entry.id
+  resource_id             = aws_api_gateway_resource.pipeline_run_id.id
+  http_method             = aws_api_gateway_method.pipeline_run_poll.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "GET"
+  uri                     = "http://${aws_lb.service_entry.dns_name}/service/v1/pipeline-runs/{runId}"
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.service_entry.id
+
+  request_parameters = {
+    "integration.request.header.x-caller-arn"           = "context.identity.userArn"
+    "integration.request.header.x-service-entry-secret" = local.entry_secret_header
+    "integration.request.path.runId"                    = "method.request.path.runId"
+  }
+}
+
+# ------------------------- schedule fire API ------------------------------
+# POST /service/v1/schedules/{scheduleId}/fire  run one occurrence on the backend
+# The schedule-runner Lambda hands every non-pipeline schedule to the backend
+# through this: an agent invoke needs the backend's model routing (llm-edge,
+# the AgentCore gateway caller role), which the Lambda does not have. The
+# caller names only the schedule; the backend runs it as the schedule's owner
+# and admits only roles on PLATFORM_PIPELINE_SERVICE_CALLERS.
+
+resource "aws_api_gateway_resource" "schedules" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.v1.id
+  path_part   = "schedules"
+}
+
+resource "aws_api_gateway_resource" "schedule_id" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.schedules.id
+  path_part   = "{scheduleId}"
+}
+
+resource "aws_api_gateway_resource" "schedule_fire" {
+  rest_api_id = aws_api_gateway_rest_api.service_entry.id
+  parent_id   = aws_api_gateway_resource.schedule_id.id
+  path_part   = "fire"
+}
+
+resource "aws_api_gateway_method" "schedule_fire" {
+  rest_api_id   = aws_api_gateway_rest_api.service_entry.id
+  resource_id   = aws_api_gateway_resource.schedule_fire.id
+  http_method   = "POST"
+  authorization = "AWS_IAM"
+
+  request_parameters = {
+    "method.request.path.scheduleId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "schedule_fire" {
+  rest_api_id             = aws_api_gateway_rest_api.service_entry.id
+  resource_id             = aws_api_gateway_resource.schedule_fire.id
+  http_method             = aws_api_gateway_method.schedule_fire.http_method
+  type                    = "HTTP_PROXY"
+  integration_http_method = "POST"
+  uri                     = "http://${aws_lb.service_entry.dns_name}/service/v1/schedules/{scheduleId}/fire"
+  connection_type         = "VPC_LINK"
+  connection_id           = aws_api_gateway_vpc_link.service_entry.id
+
+  request_parameters = {
+    "integration.request.header.x-caller-arn"           = "context.identity.userArn"
+    "integration.request.header.x-service-entry-secret" = local.entry_secret_header
+    "integration.request.path.scheduleId"               = "method.request.path.scheduleId"
+  }
+}
+
 # ------------------------- sandbox service API ----------------------------
 # /service/v1/sandboxes and everything under it (create, exec, jobs, files,
 # stop, run), when the one-shot code sandbox feature is on. Same front door as
@@ -267,6 +414,12 @@ resource "aws_api_gateway_deployment" "service_entry" {
       aws_api_gateway_method.poll.id,
       aws_api_gateway_integration.submit.uri,
       aws_api_gateway_integration.poll.uri,
+      aws_api_gateway_method.pipeline_run_start.id,
+      aws_api_gateway_method.pipeline_run_poll.id,
+      aws_api_gateway_integration.pipeline_run_start.uri,
+      aws_api_gateway_integration.pipeline_run_poll.uri,
+      aws_api_gateway_method.schedule_fire.id,
+      aws_api_gateway_integration.schedule_fire.uri,
       [for k, m in aws_api_gateway_method.sandboxes : m.id],
       [for k, i in aws_api_gateway_integration.sandboxes : i.uri],
       data.aws_iam_policy_document.service_entry_api.json,
@@ -283,6 +436,9 @@ resource "aws_api_gateway_deployment" "service_entry" {
   depends_on = [
     aws_api_gateway_integration.submit,
     aws_api_gateway_integration.poll,
+    aws_api_gateway_integration.pipeline_run_start,
+    aws_api_gateway_integration.pipeline_run_poll,
+    aws_api_gateway_integration.schedule_fire,
     aws_api_gateway_integration.sandboxes,
     aws_api_gateway_rest_api_policy.service_entry,
   ]

@@ -21,6 +21,12 @@ project and reads only what this root publishes). Static; no credentials.
      resolves from its module, and `terraform validate` passes in terraform/
      and ci/infra.
 
+The published sample composes both roots into one tree, with the workloads
+root at terraform/workloads and no ci/: there the scan skips that one
+directory (the other root, held by its own test) and the ci/infra validate is
+skipped. Only the whole directory being absent counts as "published"; a
+missing file inside an existing ci/ still fails.
+
 Run: python3 terraform/tests/test_foundation_contract_adversarial.py
 """
 
@@ -34,6 +40,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FOUNDATION = os.path.join(ROOT, "terraform")
 CI_INFRA = os.path.join(ROOT, "ci", "infra")
+# the other root, present only in the published tree that composes both
+WORKLOADS = os.path.join(FOUNDATION, "workloads")
 MODULE_OUTPUTS = [os.path.join(FOUNDATION, "modules", m, "outputs.tf") for m in ("portal", "llm_edge")]
 
 WORKLOAD_TYPES = {
@@ -61,6 +69,7 @@ FROZEN_OUTPUTS = {
     # the frontend build there after every workloads apply and invalidates
     "frontend_bucket_name": ("portal", "frontend_bucket_name"),
     "distribution_id": ("portal", "distribution_id"),
+    "schedule_runner_function": ("portal", "schedule_runner_function"),
     # the MCP hub demo and its IAM entry (2026-10-10)
     "mcp_hub_endpoint": ("mcp_hub", "hub_endpoint"),
     "mcp_hub_resource_url": ("mcp_hub", "hub_resource_url"),
@@ -87,7 +96,8 @@ def ok(msg: str) -> None:
 def tf_files(root: str) -> list:
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".terraform", "charts")]
+        dirnames[:] = [d for d in dirnames if d not in (".terraform", "charts")
+                       and os.path.join(dirpath, d) != WORKLOADS]
         out += [os.path.join(dirpath, f) for f in filenames if f.endswith(".tf")]
     return out
 
@@ -197,14 +207,16 @@ def main() -> int:
             assert os.path.isdir(os.path.normpath(os.path.dirname(f) + chart)), f"chart path {chart} does not resolve from {os.path.relpath(f, ROOT)}"
         for script in re.findall(r'"\$\{path\.module\}(/[^"]*scripts/[a-z_]+\.py)"', text):
             assert os.path.isfile(os.path.normpath(os.path.dirname(f) + script)), f"script path {script} does not resolve from {os.path.relpath(f, ROOT)}"
+    public_tree = not os.path.isdir(os.path.join(ROOT, "ci"))
     if shutil.which("terraform"):
-        for root in (FOUNDATION, CI_INFRA):
+        for root in (FOUNDATION,) if public_tree else (FOUNDATION, CI_INFRA):
             env = {**os.environ, "TF_IN_AUTOMATION": "1", "TF_INPUT": "0"}
             init = subprocess.run(["terraform", "init", "-backend=false", "-no-color"], cwd=root, env=env, capture_output=True, text=True, timeout=600, check=False)  # nosec B603
             assert init.returncode == 0, f"terraform init failed in {root}:\n{init.stderr[-800:]}"
             val = subprocess.run(["terraform", "validate", "-no-color"], cwd=root, env=env, capture_output=True, text=True, timeout=300, check=False)  # nosec B603
             assert val.returncode == 0, f"terraform validate failed in {root}:\n{val.stdout[-800:]}{val.stderr[-800:]}"
-        ok("chart and script paths resolve; terraform validate passes in terraform/ and ci/infra")
+        ok("chart and script paths resolve; terraform validate passes in terraform/"
+           + (" (published tree: no ci/infra)" if public_tree else " and ci/infra"))
     else:
         ok("chart and script paths resolve (terraform not on PATH: validate skipped)")
 

@@ -31,7 +31,7 @@ import jwt
 import uvicorn
 import yaml
 from jwt import PyJWKClient
-from entry_identity import entry_actor, load_entry_identity
+from entry_identity import entry_actor, is_entry_request, load_entry_identity
 from mcphub_hmac import (
     DEFAULT_CLOCK_SKEW_S,
     HmacVerificationError,
@@ -49,6 +49,7 @@ from mcp.types import (
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
+    Tool,
 )
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
@@ -120,6 +121,14 @@ current_claims: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 current_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_token", default=None
 )
+# The application, when the request came through the IAM entry: the verified
+# actor and the identity the gateway authenticated. Unset on the Bearer and
+# HMAC paths.
+current_app: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "current_app", default=None
+)
+
+WHOAMI_TOOL = "hub__whoami"
 
 
 def caller_departments() -> set[str]:
@@ -157,6 +166,12 @@ async def on_list_tools(
     ctx: ServerRequestContext, params: PaginatedRequestParams | None
 ) -> ListToolsResult:
     tools = []
+    if current_app.get() is not None:
+        tools.append(Tool(
+            name=WHOAMI_TOOL,
+            description="The application identity the hub resolved for this call (IAM entry), and the user if one was presented.",
+            input_schema={"type": "object", "properties": {}},
+        ))
     for cfg in allowed_servers():
         try:
             async with backend_client(cfg["url"]) as client:
@@ -180,6 +195,16 @@ def _tool_error(text: str) -> CallToolResult:
 async def on_call_tool(
     ctx: ServerRequestContext, params: CallToolRequestParams
 ) -> CallToolResult:
+    if params.name == WHOAMI_TOOL:
+        app_identity = current_app.get()
+        if app_identity is None:
+            return _tool_error(f"unknown tool: {params.name}")
+        claims = current_claims.get() or {}
+        return CallToolResult(content=[TextContent(type="text", text=json.dumps({
+            **app_identity,
+            "user": claims.get("preferred_username") or claims.get("sub"),
+            "departments": sorted(caller_departments()),
+        }))])
     prefix, sep, real_name = params.name.partition("__")
     cfg = SERVERS.get(prefix)
     if not sep or cfg is None:
@@ -211,15 +236,19 @@ server = Server("mcp-hub", on_list_tools=on_list_tools, on_call_tool=on_call_too
 #                           X-MCPHUB-SSO-TOKEN, whose sha256 is part of the
 #                           signed material so it cannot be swapped under an
 #                           existing signature.
-#   x-mcp-hub-entry-secret — the request came through the IAM entry (a private
-#                           API Gateway that authenticated the application
-#                           with SigV4); x-caller-arn names it and the actor
-#                           is its assumed-role session name. The user
-#                           identity rides in X-MCPHUB-SSO-TOKEN as above.
+#   IAM entry             - the request came through a private API Gateway
+#                           that authenticated the application with SigV4;
+#                           x-caller-arn names it (see entry_identity.py for
+#                           how the hub knows the request came that way and
+#                           how the ARN maps to an actor). The user identity
+#                           rides in X-MCPHUB-SSO-TOKEN as above - or, with
+#                           require_user_token: false, may be absent: the call
+#                           is then the application's alone.
 #
-# Either way, the token that names the user is verified against the IdP
-# (signature via JWKS, issuer, audience, expiry) and its claims drive the
-# department routing — the HMAC only adds "and we know which app sent it".
+# Whenever a user token is present it is verified against the IdP (signature
+# via JWKS, issuer, audience, expiry) and its claims drive the department
+# routing - the application scheme only adds "and we know which app sent it".
+# A call without a user has no department, so it reaches no backend.
 # --------------------------------------------------------------------------
 class HubAuthMiddleware:
     def __init__(self, app):
@@ -234,18 +263,21 @@ class HubAuthMiddleware:
         auth = headers.get("authorization", "")
 
         downstream_receive = receive
-        if ENTRY is not None and ENTRY["secret_header"] in headers:
+        app_identity = None
+        if ENTRY is not None and is_entry_request(headers, ENTRY):
             # Through the IAM entry: the gateway already authenticated the
-            # application; the shared secret proves the request really came
-            # that way, x-caller-arn says which application.
+            # application and says which in x-caller-arn; the shared secret
+            # (trust: secret) or the network path (trust: network) is what
+            # proves the request really came that way.
             reason, actor = entry_actor(headers, ENTRY)
             if reason:
                 await self._unauthorized(send, f"entry: {reason}")
                 return
             raw = headers.get(McpHubHmacSignature.HEADER_SSO_TOKEN.lower(), "")
-            if not raw:
+            if not raw and ENTRY["require_user_token"]:
                 await self._unauthorized(send, "entry: missing X-MCPHUB-SSO-TOKEN")
                 return
+            app_identity = {"actor": actor, "caller_arn": headers[ENTRY["identity_header"]], "trust": ENTRY["trust"]}
             log.info("entry actor verified: %s", actor)
         elif auth.startswith(McpHubHmacSignature.ALGORITHM):
             # The signature covers the body hash, so the whole body must be
@@ -293,18 +325,25 @@ class HubAuthMiddleware:
             await self._unauthorized(send, "missing bearer token")
             return
 
-        try:
-            claims = await anyio.to_thread.run_sync(self._verify, raw)
-        except jwt.PyJWTError as exc:
-            await self._unauthorized(send, f"invalid token: {exc}")
-            return
+        claims = None
+        # Only an application-only entry call may go without a user token;
+        # every other path (Bearer, HMAC, entry with require_user_token)
+        # verifies one, and an empty one fails verification.
+        if raw or app_identity is None:
+            try:
+                claims = await anyio.to_thread.run_sync(self._verify, raw)
+            except jwt.PyJWTError as exc:
+                await self._unauthorized(send, f"invalid token: {exc}")
+                return
         t1 = current_claims.set(claims)
-        t2 = current_token.set(raw)
+        t2 = current_token.set(raw or None)
+        t3 = current_app.set(app_identity)
         try:
             await self.app(scope, downstream_receive, send)
         finally:
             current_claims.reset(t1)
             current_token.reset(t2)
+            current_app.reset(t3)
 
     def _verify(self, token: str) -> dict:
         signing_key = self.jwk_client.get_signing_key_from_jwt(token)

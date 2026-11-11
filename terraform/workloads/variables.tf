@@ -45,28 +45,33 @@ variable "image_tag" {
 }
 
 variable "claude_code_image_tag" {
-  type    = string
-  default = ""
+  description = "Image tag of the Claude Code (interactive) kernel; empty uses image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "sdk_image_tag" {
-  type    = string
-  default = ""
+  description = "Image tag of the Agent SDK (headless) kernel; empty uses image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "mcp_tools_image_tag" {
-  type    = string
-  default = ""
+  description = "Image tag of the MCP tools kernel; empty uses image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "backend_image_tag" {
-  type    = string
-  default = ""
+  description = "Image tag of the portal backend; empty uses image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "llm_edge_image_tag" {
-  type    = string
-  default = ""
+  description = "Image tag of the llm-edge service; empty uses image_tag."
+  type        = string
+  default     = ""
 }
 
 variable "sandbox_image_tag" {
@@ -84,28 +89,33 @@ variable "use_bedrock" {
 }
 
 variable "anthropic_model" {
-  type    = string
-  default = ""
+  description = "ANTHROPIC_MODEL for the kernels (a global. inference profile ID when use_bedrock is on); empty leaves the kernel's own default."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_small_fast_model" {
-  type    = string
-  default = ""
+  description = "ANTHROPIC_SMALL_FAST_MODEL for the kernels; empty leaves the kernel's own default."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_default_opus_model" {
-  type    = string
-  default = ""
+  description = "Model the in-terminal `/model opus` alias resolves to when use_bedrock is on (a global. inference profile ID); empty leaves the alias unset."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_default_sonnet_model" {
-  type    = string
-  default = ""
+  description = "Model the in-terminal `/model sonnet` alias resolves to when use_bedrock is on; empty falls back to anthropic_model."
+  type        = string
+  default     = ""
 }
 
 variable "anthropic_default_haiku_model" {
-  type    = string
-  default = ""
+  description = "Model the in-terminal `/model haiku` alias resolves to when use_bedrock is on; empty falls back to anthropic_small_fast_model."
+  type        = string
+  default     = ""
 }
 
 # ------------------------------- replicas ----------------------------------
@@ -122,9 +132,9 @@ variable "backend_desired_count" {
 }
 
 variable "entry_desired_count" {
-  description = "Replica count for the data-plane (ENTRY_ONLY) backend Deployment behind the private service-entry API. Published-agent traffic lands here instead of on the management backend."
+  description = "Replica count for the data-plane (ENTRY_ONLY) backend Deployment behind the private service-entry API. Published-agent traffic lands here instead of on the management backend, and so do pipeline schedules (the schedule-runner starts them through the service entry, and a run executes in the replica that accepted it), so 2 keeps them through rollouts."
   type        = number
-  default     = 1
+  default     = 2
 
   validation {
     condition     = var.entry_desired_count >= 1
@@ -191,7 +201,7 @@ variable "agent_observability" {
 variable "sample_tool_ids" {
   description = "Tool packages under samples/tools/ to put on the sample-tools gateway. An OpenAPI tool whose API-key provider the foundation has not published is skipped (see the module's skipped_tools output)."
   type        = list(string)
-  default     = ["crypto-price", "stock-quote"]
+  default     = ["crypto-price", "stock-quote", "web-search"]
 }
 
 variable "sample_platform_version" {

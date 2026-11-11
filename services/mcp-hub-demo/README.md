@@ -195,6 +195,12 @@ application it is, both carrying the acting user's token in
   `hub/config.local.yaml`) and `HUB_ENTRY_SECRET` in the environment, and
   make sure the listener is reachable only through the gateway's path.
 
+  Without the shared secret (`trust: network`: the guarantee is that only the
+  gateway's VPC Link can reach the listener, the NLB in front of it included) and with roles rather than session names as actors (`callers`),
+  the same entry serves an EKS pod that calls the hub with its own IRSA role:
+  see [`deploy/eks-iam-entry`](deploy/eks-iam-entry/) for a two-VPC, pod-to-pod
+  deployment with no static key anywhere.
+
 Either way the department routing follows the token's claims; the
 application scheme only adds "and we know which app sent it".
 

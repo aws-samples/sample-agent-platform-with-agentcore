@@ -18,6 +18,7 @@ so this runs where the repository is checked out. Two ways in:
       PLATFORM_AWS_REGION=<region> PLATFORM_DYNAMO_TABLE=agent-platform[-staging] \\
       PLATFORM_WORKSPACE_BUCKET=<bucket> \\
       PLATFORM_SAMPLE_RUNTIME_ARNS='{"investment-assistant": "<arn>"}' \\
+      PLATFORM_SAMPLE_MEMORY_IDS='{"lark-teammate": "<memory id>"}' \\
       PLATFORM_SAMPLE_TOOLS_GATEWAY_URL=<gateway mcp url> \\
       PLATFORM_SDK_RUNTIME_ARNS='{"V1": "<sdk runtime arn>"}' \\
       PLATFORM_INTERACTIVE_RUNTIME_ARNS='{"V1": "<interactive runtime arn>"}' \\
@@ -148,7 +149,8 @@ def seed_direct(ids: list[str], dry_run: bool) -> int:
             system_prompt=agent["system_prompt"], max_turns=int(agent.get("max_turns", 8)),
             mcp_server_names=[str(x) for x in agent.get("mcp_server_names") or []],
             skill_names=[str(x) for x in agent.get("skill_names") or []],
-            platform_version=str(agent.get("platform_version", "")), source=ref, runtime=ref,
+            platform_version=str(agent.get("platform_version", "")), memory_id=status["memory_id"],
+            source=ref, runtime=ref,
         )
         samples_service.set_shared_agent(sid, published["id"])
         print(f"  shared instance {published['name']} v{published['version']} id={published['id']} on {ref}")

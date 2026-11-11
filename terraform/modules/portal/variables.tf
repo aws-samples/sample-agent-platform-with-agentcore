@@ -79,6 +79,12 @@ variable "service_api_allowed_vpces" {
   default     = []
 }
 
+variable "enable_cognito" {
+  description = "Create the Cognito user pool, app client and admin group the backend authenticates against. The root sets it only without an OIDC issuer: one identity provider per deployment."
+  type        = bool
+  default     = true
+}
+
 variable "name_suffix" {
   description = "Environment suffix appended to the portal's resource names (Cognito pool, buckets, load balancers, roles, secrets, Kubernetes namespace); empty for production."
   type        = string

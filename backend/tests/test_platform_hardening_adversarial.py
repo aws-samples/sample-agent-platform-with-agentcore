@@ -6,6 +6,7 @@ import json
 import re
 import time
 import unittest
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -39,15 +40,25 @@ class RevocationOutlivesCredentialTests(unittest.TestCase):
             values = self.svc.table.update_item.call_args.kwargs["ExpressionAttributeValues"]
             self.assertGreaterEqual(values[":ttl"], rotated["expires_at"])
 
-    def test_a_revocation_outlives_the_credential_it_revokes(self):
-        expires_at = int(time.time()) + 900
-        self.svc.table.get_item.return_value = {"Item": {"expires_at": expires_at, "mode": "agentcore_gateway"}}
+    def test_an_agentcore_grant_row_outlives_every_credential_renewed_under_it(self):
+        """Renewal is refused once the row is gone, so a row that TTL-expired
+        early would only cut a run short. The opposite direction matters more:
+        the row must not outlive its own grant ceiling by being re-extended."""
+        sts = MagicMock()
+        sts.assume_role.return_value = {"Credentials": {
+            "AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T",
+            "Expiration": datetime.fromtimestamp(time.time() + 900, tz=timezone.utc)}}
+        self.svc.sts = sts
+        self.svc._account_id = "ACCOUNTID001"
+        self.svc.table.update_item.return_value = {"Attributes": {"renew_nonce": "n", "grant_expires_at": int(time.time()) + 9 * 3600}}
+        spec = {"backend": "agentcore_gateway", "base_url": "https://g1.gateway.bedrock-agentcore.us-east-1.amazonaws.com", "model": "m"}
         with patch.object(self.mod.settings, "agentcore_gateway_caller_role_arn", "arn:aws:iam::ACCOUNTID001:role/caller"), \
-                patch.object(self.svc, "_rebuild_agentcore_denies"):
-            self.svc.revoke_agentcore("rsid-2")
-        item = self.svc.table.put_item.call_args.kwargs["Item"]
-        self.assertEqual(item["PK"], "LLMREVOKE")
-        self.assertGreaterEqual(item["ttl"], expires_at)
+                patch.dict("os.environ", {"AWS_WEB_IDENTITY_TOKEN_FILE": ""}):
+            grant = self.svc.mint_agentcore("rsid-2", "u", spec, ttl_s=9 * 3600)
+        self.assertEqual(sts.assume_role.call_args.kwargs["DurationSeconds"], 900)
+        values = self.svc.table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        self.assertGreaterEqual(values[":ttl"], values[":g"] + 900)
+        self.assertGreaterEqual(values[":g"], grant["expires_at"])
 
 
 class PipelineRunLookupAdversarialTests(unittest.TestCase):

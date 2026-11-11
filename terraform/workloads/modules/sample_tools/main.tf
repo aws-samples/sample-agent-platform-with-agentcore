@@ -23,11 +23,7 @@
 # the difference; the policy engine decides which runtime role may call
 # which, with which inputs.
 
-data "aws_region" "current" {}
-
 locals {
-  region = data.aws_region.current.region
-
   tools_dir = "${path.module}/../../../../samples/tools"
   tools     = { for id in var.tool_ids : id => yamldecode(file("${local.tools_dir}/${id}/tool.yaml")) }
 

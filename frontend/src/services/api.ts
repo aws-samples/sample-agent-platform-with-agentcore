@@ -115,6 +115,40 @@ export interface InvokeResult {
   runtime_session_id: string
 }
 
+export interface KernelInvokeBody {
+  prompt: string
+  system?: string
+  max_turns?: number
+  session_id?: string
+  mcp_server_ids?: string[]
+  skill_ids?: string[]
+  memory_id?: string
+  memory_actor_id?: string
+  platform_version?: PlatformVersion | ''
+  /** resume the previous conversation of session_id on the kernel */
+  continue_conversation?: boolean
+}
+
+export interface AgentInvokeBody {
+  prompt: string
+  session_id?: string
+  memory_actor_id?: string
+  continue_conversation?: boolean
+}
+
+/** One event of a streamed invocation (runtimes/agent-sdk-kernel/src/stream_events.py,
+ * plus the backend's own `session` marker). */
+export type StreamEvent =
+  | { type: 'session'; runtime_session_id: string }
+  | { type: 'start'; continued: boolean }
+  | { type: 'text_delta'; text: string }
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }
+  | { type: 'result'; ok: boolean; result: string; usage: Record<string, unknown> }
+  | { type: 'error'; error: string }
+  | { type: 'truncated'; dropped?: number; note?: string }
+
 export interface ArtifactFile {
   key: string
   size: number
@@ -159,6 +193,8 @@ export interface SampleToolStatus {
 export interface SampleStatus {
   cloneable: boolean
   runtime_deployed: boolean
+  /** the sample's own memory store id when it has memory; '' otherwise */
+  memory_id: string
   mcp_registered: boolean
   tools: SampleToolStatus[]
   tools_verified: boolean
@@ -173,6 +209,8 @@ export interface SampleSummary {
   patterns: string[]
   industries: string[]
   runtime: string
+  /** the sample remembers (its own memory store, bound to its shared instance and clones) */
+  memory: boolean
   requires_tools: { id: string; optional: boolean }[]
   mcp_server: string
   try_prompt: string
@@ -412,10 +450,12 @@ export interface InvocationRecord {
   ok: boolean
   duration_ms: number | null
   num_turns: number | null
+  tool_calls?: number | null
   total_cost_usd: number | null
   runtime_session_id: string
   error: string
   ref: string
+  events_key?: string // S3 key of the full event trail; '' = none
 }
 
 /** One row of the platform's live-session ledger. AgentCore Runtime has no
@@ -616,6 +656,76 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+/** POST and consume a Server-Sent Events response, calling ``onEvent`` per
+ * ``data:`` line. Resolves when the stream ends; rejects on HTTP errors (which
+ * the server sends before the first byte) or a dropped connection. */
+async function stream(path: string, body: unknown, onEvent: (e: StreamEvent) => void, signal?: AbortSignal): Promise<void> {
+  if (accessTokenNeedsRefresh()) await refreshAccessToken()
+  let resp = await send(path, { method: 'POST', body: JSON.stringify(body), signal })
+  if (resp.status === 401) {
+    const renewed = await refreshAccessToken()
+    if (renewed) resp = await send(path, { method: 'POST', body: JSON.stringify(body), signal })
+  }
+  if (resp.status === 401) {
+    clearLocalSession()
+    window.location.href = '/login'
+    throw new Error('401 Unauthorized')
+  }
+  if (!resp.ok) {
+    const raw = await resp.text().catch(() => '')
+    let detail = raw
+    try {
+      detail = JSON.parse(raw).detail ?? raw
+    } catch {
+      /* plain-text error body */
+    }
+    throw new Error(`${resp.status} ${resp.statusText}: ${detail}`)
+  }
+  if (!resp.body) throw new Error(`${path}: empty response body`)
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const flush = (chunk: string) => {
+    buffer += chunk
+    let idx: number
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim()
+      buffer = buffer.slice(idx + 1)
+      if (!line.startsWith('data:')) continue
+      try {
+        onEvent(JSON.parse(line.slice(5).trim()) as StreamEvent)
+      } catch {
+        /* a partial or non-JSON line: skip */
+      }
+    }
+  }
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    flush(decoder.decode(value, { stream: true }))
+  }
+  flush(decoder.decode())
+  if (buffer.trim()) flush('\n')
+}
+
+export interface Playbook {
+  proposal_id?: string
+  name: string
+  description: string
+  body: string
+  status: string
+  chat_id?: string
+  proposed_by?: string
+  proposed_at?: number
+  approved_by?: string
+  approved_at?: number
+}
+
+export interface PlaybookList {
+  pending: Playbook[]
+  approved: Playbook[]
+}
+
 export const api = {
   listSessions: () => request<Session[]>('/api/v1/sessions'),
   createSession: (
@@ -646,21 +756,14 @@ export const api = {
   readArtifact: (id: string, key: string) =>
     request<ArtifactContent>(`/api/v1/sessions/${id}/artifacts/${encodeURIComponent(key)}`),
   listKernels: () => request<Kernel[]>('/api/v1/kernels'),
-  invokeSdkKernel: (body: {
-    prompt: string
-    system?: string
-    max_turns?: number
-    session_id?: string
-    mcp_server_ids?: string[]
-    skill_ids?: string[]
-    memory_id?: string
-    memory_actor_id?: string
-    platform_version?: PlatformVersion | ''
-  }) =>
+  invokeSdkKernel: (body: KernelInvokeBody) =>
     request<InvokeResult>('/api/v1/kernels/agent-sdk/invoke', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /** Streaming twin of invokeSdkKernel (same body). */
+  invokeSdkKernelStream: (body: KernelInvokeBody, onEvent: (e: StreamEvent) => void, signal?: AbortSignal) =>
+    stream('/api/v1/kernels/agent-sdk/invoke/stream', body, onEvent, signal),
 
   // Published agents
   listAgents: () => request<PublishedAgent[]>('/api/v1/agents'),
@@ -682,8 +785,11 @@ export const api = {
       body: JSON.stringify({ session_id: sessionId }),
     }),
   deleteAgent: (id: string) => request<{ ok: boolean }>(`/api/v1/agents/${id}`, { method: 'DELETE' }),
-  invokeAgent: (id: string, body: { prompt: string; session_id?: string; memory_actor_id?: string }) =>
+  invokeAgent: (id: string, body: AgentInvokeBody) =>
     request<InvokeResult>(`/api/v1/agents/${id}/invoke`, { method: 'POST', body: JSON.stringify(body) }),
+  /** Streaming twin of invokeAgent (same body). */
+  invokeAgentStream: (id: string, body: AgentInvokeBody, onEvent: (e: StreamEvent) => void, signal?: AbortSignal) =>
+    stream(`/api/v1/agents/${id}/invoke/stream`, body, onEvent, signal),
 
   // Sample Agents
   listSamples: () => request<SampleSummary[]>('/api/v1/samples'),
@@ -692,6 +798,14 @@ export const api = {
     request<PublishedAgent>(`/api/v1/samples/${id}/clone`, { method: 'POST', body: JSON.stringify({ name }) }),
   trySample: (id: string, body: { prompt: string; session_id?: string }) =>
     request<InvokeResult>(`/api/v1/samples/${id}/try`, { method: 'POST', body: JSON.stringify(body) }),
+  // lark-teammate playbooks (administrators): proposals from Lark groups wait for review
+  listPlaybooks: (id: string) => request<PlaybookList>(`/api/v1/samples/${id}/playbooks`),
+  approvePlaybook: (id: string, proposalId: string) =>
+    request<Playbook>(`/api/v1/samples/${id}/playbooks/proposals/${encodeURIComponent(proposalId)}/approve`, { method: 'POST' }),
+  rejectPlaybook: (id: string, proposalId: string) =>
+    request<{ ok: boolean }>(`/api/v1/samples/${id}/playbooks/proposals/${encodeURIComponent(proposalId)}/reject`, { method: 'POST' }),
+  retirePlaybook: (id: string, name: string) =>
+    request<{ ok: boolean }>(`/api/v1/samples/${id}/playbooks/${encodeURIComponent(name)}/retire`, { method: 'POST' }),
 
   // Scheduler
   listSchedules: () => request<Schedule[]>('/api/v1/schedules'),
