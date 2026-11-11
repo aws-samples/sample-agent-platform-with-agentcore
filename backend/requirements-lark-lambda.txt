@@ -1,0 +1,5 @@
+# Dependencies for the lark-webhook Lambda package: the schedule-runner's set
+# (the invocation pipeline) plus cryptography for Lark's event decryption.
+# boto3 ships with the Lambda runtime.
+-r requirements-lambda.txt
+cryptography>=43.0.0

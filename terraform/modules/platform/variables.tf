@@ -9,3 +9,9 @@ variable "protect_stateful" {
   type        = bool
   default     = true
 }
+
+variable "bedrock_invocation_logging" {
+  description = "Deliver Amazon Bedrock model invocation logs (full request and response bodies of every model call in this account and region) to the logs bucket under bedrock/. This is the model-side record the kernels' event trails are reconciled against (scripts/reconcile_invocation_trail.py in the application repo). The setting is one per account and region: enable it from one root only."
+  type        = bool
+  default     = false
+}

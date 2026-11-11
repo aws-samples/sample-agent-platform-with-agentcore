@@ -16,7 +16,7 @@ The full rationale is in the comments of `iam.tf` and the module's other files.
 | deny\_gateway\_arns | Gateway ARNs (wildcards allowed) the kernel roles are explicitly denied, overriding their gateway/* InvokeGateway allow. Used for the agentcore\_gateway model backend's inference gateway. | `list(string)` | `[]` | no |
 | name\_suffix | Environment suffix appended to role and delivery-destination names; empty for production. | `string` | `""` | no |
 | sample\_bedrock\_models | Global inference profile IDs (global.<model>) a sample runtime role may invoke directly, for deployments without the agentcore\_gateway model backend. Each becomes the three-part global cross-Region grant: the profile in this Region, and the foundation model in this Region and region-less, both only through that profile. Empty = no direct Bedrock on sample roles (the gateway deployment). | `list(string)` | `[]` | no |
-| sample\_runtimes | Sample agents that get their own runtime and execution role (Sample Agents feature), by sample id (lowercase letters, digits, hyphens). The workloads root creates one runtime per key with the headless kernel image. | `map(object({}))` | `{}` | no |
+| sample\_runtimes | Sample agents that get their own runtime and execution role (Sample Agents feature), by sample id (lowercase letters, digits, hyphens). The workloads root creates one runtime per key with the headless kernel image. | `map(object({ memory = optional(bool, false) }))` | `{}` | no |
 
 ## Outputs
 
@@ -24,6 +24,8 @@ The full rationale is in the comments of `iam.tf` and the module's other files.
 | ---- | ----------- |
 | interactive\_role\_arn | Execution role of the claude-code-kernel (Dev Workbench) runtime. |
 | mcp\_tools\_role\_arn | Execution role of the mcp-tools-kernel runtime (demo MCP server, no S3 access). |
+| sample\_memory\_arns | AgentCore Memory store ARN per sample agent with memory = true, by sample id. |
+| sample\_memory\_ids | AgentCore Memory store id per sample agent with memory = true, by sample id. |
 | sample\_role\_arns | Execution role per sample agent runtime, by sample id. |
 | sdk\_role\_arn | Execution role of the agent-sdk-kernel (headless) runtimes; the team\_demo runtime runs under it too. |
 | workspace\_access\_role\_arn | Role the backend assumes per session, with a session policy that narrows it to that session's workspaces/ prefix. The portal module grants the backend AssumeRole on it. |

@@ -1,5 +1,6 @@
 """Backend configuration — everything comes from environment variables."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -39,6 +40,11 @@ class Settings(BaseSettings):
     # runtime: the gateway's Cedar policies name that role, so the sample's
     # tool boundary follows the identity, not the agent's configuration.
     sample_runtime_arns: dict[str, str] = {}
+    # sample id -> its own AgentCore Memory store id, for samples the
+    # foundation gives memory (sample_runtimes.<id>.memory, facts
+    # runtime.sample_memories). A sample runtime's role reaches that store
+    # and no other, so it is the only memory an agent on that runtime can use.
+    sample_memory_ids: dict[str, str] = {}
     # MCP URL of the sample-tools gateway, registered in the ecosystem as the
     # entry the samples attach ("" = the feature is not deployed)
     sample_tools_gateway_url: str = ""
@@ -102,6 +108,12 @@ class Settings(BaseSettings):
     # be reverting to exporting the key into a container the session's user is
     # root in.
     llm_edge_url: str = ""
+    # Where a headless kernel renews its AgentCore gateway credential
+    # (POST /api/v1/llm-credentials/renew on this backend, through the
+    # portal's public entry, like sandbox_mcp_url). Credentials live 15
+    # minutes and revocation is "no more renewals", so without this a run
+    # longer than that loses model access. Empty = no renewal route.
+    llm_renew_url: str = ""
 
     # Role the backend assumes once per session to mint the kernel's AgentCore
     # Gateway credentials, named after that session's runtime id. The kernel
@@ -109,11 +121,10 @@ class Settings(BaseSettings):
     # on its own identity.
     #
     # On EKS the role is assumed with the pod's IRSA web-identity token rather
-    # than the backend role's credentials, so it is not role chaining and the
-    # 9-hour grant a headless async run needs is possible (chained sessions
-    # are capped at one hour). Ending a session adds a Deny conditioned on the
-    # session's identity, which stops its credentials without touching any
-    # other live session's.
+    # than the backend role's credentials (a first hop, not role chaining).
+    # Every credential lives 15 minutes and is renewed by the kernel; ending a
+    # session deletes its grant so the next renewal is refused, which stops
+    # that session within 15 minutes without touching any other.
     # Empty = the agentcore_gateway model backend is unavailable and the
     # backend refuses it rather than falling back to a shared credential.
     agentcore_gateway_caller_role_arn: str = ""
@@ -200,10 +211,32 @@ class Settings(BaseSettings):
     # entry with auth = iam is then refused rather than silently signed HMAC.
     mcp_hub_caller_role_arn: str = ""
 
+    # Secrets Manager name prefixes that a `{{secret:NAME}}` placeholder in a
+    # registered MCP server's target/headers is allowed to reference. The
+    # agent-sdk kernel resolves placeholders at session warmup; this list
+    # mirrors the kernel's allowlist (KERNEL_SECRET_ALLOW_PREFIXES) and lets
+    # the backend refuse a bad registration with a 400 instead of silently
+    # storing it and relying on the kernel to reject at use time. Comma- or
+    # list-separated, defaults to the single documented remote-MCP namespace.
+    mcp_placeholder_secret_allowed_prefixes: list[str] = [
+        "agent-platform/remote-mcp-key",
+    ]
+
     # Pipeline delegation: the schedule-runner Lambda cannot execute workflow
-    # scripts (no Node in its runtime), so when this is set (Lambda env) a
-    # pipeline schedule is delegated to the backend API instead, authenticated
-    # as the portal admin via the named secret.
+    # scripts (no Node in its runtime), so a pipeline schedule is delegated to
+    # the backend. pipeline_service_url (Lambda env) is the private service
+    # entry's endpoint-specific URL ({api-id}-{vpce-id}.execute-api...,
+    # ending in /svc/): the runner signs with its own role (SigV4) and the
+    # backend admits it by pipeline_service_callers.
+    # Without it, portal_api_url (the previous path) signs in to the portal as
+    # the portal admin via the named secret.
+    pipeline_service_url: str = ""
+    # IAM principals (caller ARNs relayed by the service entry) allowed to
+    # start pipeline runs on behalf of a user and to hand a schedule
+    # occurrence to the backend (/service/v1/schedules/{id}/fire),
+    # comma-separated role ARNs; empty = none (the schedule-runner role in a
+    # deployment)
+    pipeline_service_callers: str = ""
     portal_api_url: str = ""
     portal_admin_secret: str = "agent-platform/portal-admin"
     # The portal users the schedule-runner Lambda signs in as. Only these may
@@ -216,6 +249,15 @@ class Settings(BaseSettings):
     # switched to when the backend runs as root (see workflow_engine). The
     # Dockerfile creates it; empty = keep the backend's own identity.
     workflow_runner_user: str = "workflow"
+    # agent() calls one pipeline run may have in flight; the rest queue
+    # engine-side. Each holds a bedrock-agentcore connection for as long as the
+    # kernel works, so this must stay <= aws_max_pool_connections. Per run, not
+    # per process: a parent and its parallel workflow() children each get this
+    # many. 8 kept every fan-out phase queueing (2026-10-20..24: search and
+    # crawl spans 4-5x their longest single call) with AgentCore far from its
+    # 50/s session-creation quota; the pressure that grows with it lands on the
+    # model gateway.
+    workflow_max_fanout: int = 32
 
     # Keys the caller-binding of client-controllable AgentCore session ids
     # (see session_binding). A caller-submitted session_id and a channel
@@ -231,6 +273,18 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     model_config = {"env_prefix": "PLATFORM_"}
+
+    @model_validator(mode="after")
+    def _fanout_fits_the_pool(self):
+        # Fail at startup rather than at the first pipeline: 0 makes the
+        # engine's ThreadPoolExecutor raise mid-run, and a fan-out wider than
+        # the bedrock-agentcore pool only moves the queue onto connections.
+        if not 1 <= self.workflow_max_fanout <= self.aws_max_pool_connections:
+            raise ValueError(
+                f"workflow_max_fanout={self.workflow_max_fanout} must be between 1 and "
+                f"aws_max_pool_connections={self.aws_max_pool_connections}"
+            )
+        return self
 
 
 settings = Settings()
@@ -287,6 +341,14 @@ def runtime_arn(kernel: str, platform_version: str = "") -> str:
 
 
 SAMPLE_RUNTIME_PREFIX = "sample:"
+
+
+def sample_memory_id(runtime: str) -> str:
+    """The memory store of a sample runtime (``sample:<id>``); "" when the
+    reference is not a sample runtime or the sample has no store here."""
+    if not runtime or not runtime.startswith(SAMPLE_RUNTIME_PREFIX):
+        return ""
+    return settings.sample_memory_ids.get(runtime[len(SAMPLE_RUNTIME_PREFIX):], "")
 
 
 def sample_runtime_arn(runtime: str) -> str:

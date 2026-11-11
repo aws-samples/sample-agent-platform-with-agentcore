@@ -24,6 +24,13 @@ A sample's runtime (and so its IAM identity and tool boundary) is fixed by
 `sample.yaml`; the foundation creates one execution role per sample
 (`agent-platform-ops`, `modules/runtime`), and the clone inherits it.
 
+A sample that remembers sets `memory: true` in `sample.yaml`, and the
+foundation entry the same (`sample_runtimes = { <id> = { memory = true } }`):
+the sample gets its own AgentCore Memory store that only its role can reach,
+and its shared instance and every clone are bound to it. An agent on a sample
+runtime cannot name any other store (publish refuses it). The sample is not
+cloneable until the store exists.
+
 ## Tool package layout
 
 ```
@@ -54,7 +61,7 @@ Rules that keep a tool package honest:
 
 ```
 agents/<id>/
-  sample.yaml      id, title, summary, patterns, industries, runtime, requires_tools (optional flag), try_prompt
+  sample.yaml      id, title, summary, patterns, industries, runtime, requires_tools (optional flag), try_prompt, memory (optional)
   agent.yaml       the publish manifest (publish-from-session shape)
   prompt.md        system prompt
   eval.jsonl       {"prompt", "expected", "tags"} cases, at most 20; run nightly against the shared instance

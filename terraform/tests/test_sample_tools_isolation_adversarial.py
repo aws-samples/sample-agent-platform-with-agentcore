@@ -34,6 +34,10 @@ names and interpolations. Each is asserted against the Terraform text:
      PassRole; it may create targets and policies, never a gateway, policy
      engine, credential provider or role
 
+The deploy role lives in ci/infra, which the published sample does not carry:
+there section 7 is skipped. Only a tree with no ci/ at all counts as
+published; an internal checkout missing ci/infra/workloads_roles.tf fails.
+
 Run: python3 terraform/tests/test_sample_tools_isolation_adversarial.py
 """
 
@@ -90,6 +94,35 @@ def statements(body: str) -> list[dict]:
     return out
 
 
+def check_deploy_role(roles_tf: str) -> None:
+    """7. the application's deploy role (ci/infra/workloads_roles.tf)"""
+    allow = block(roles_tf, r'data "aws_iam_policy_document" "workloads_deploy"')
+    pass_rt = [s for s in statements(allow) if s["sid"] == "PassRuntimeRoles"][0]["body"]
+    assert re.search(r'role/agent-platform-sample-\*-role\$\{each\.value\.suffix\}"', pass_rt), \
+        "the deploy role must be able to pass the sample runtime roles to AgentCore"
+    pass_fn = [s for s in statements(allow) if s["sid"] == "PassRunnerRole"][0]["body"]
+    assert re.search(r'role/agent-platform-sample-tools-lambda\$\{each\.value\.suffix\}"', pass_fn), \
+        "the deploy role must be able to pass the sample Lambda role to Lambda"
+    for sid in ("SampleToolsGateway", "SampleToolsPolicies", "SampleToolsLambda"):
+        assert any(s["sid"] == sid for s in statements(allow)), f"workloads_deploy lacks {sid}"
+    gw_s = [s for s in statements(allow) if s["sid"] == "SampleToolsGateway"][0]["body"]
+    assert "CreateGatewayTarget" in gw_s and "bedrock-agentcore:CreateGateway\"" not in gw_s and "UpdateGateway\"" not in gw_s and "DeleteGateway\"" not in gw_s, \
+        "the deploy role manages targets, never the gateway itself"
+    assert re.search(r"gateway/agent-platform-sample-tools\$\{each\.value\.suffix\}-\*", gw_s) and "gateway/*" not in gw_s
+    pe_s = [s for s in statements(allow) if s["sid"] == "SampleToolsPolicies"][0]["body"]
+    assert "CreatePolicy\"" in pe_s and "CreatePolicyEngine" not in pe_s and "DeletePolicyEngine" not in pe_s and "UpdatePolicyEngine" not in pe_s, \
+        "the deploy role manages policies, never the engine"
+    assert "policy-engine/*" not in pe_s
+    la_s = [s for s in statements(allow) if s["sid"] == "SampleToolsLambda"][0]["body"]
+    assert re.search(r"function:agent-platform-sample-\*\$\{each\.value\.suffix\}", la_s) and "function:*" not in la_s
+    assert "CredentialProvider" not in allow, "the deploy role never touches credential providers"
+    # actions only: the PassRole statements' condition names iam:PassedToService, which is a key, not an action
+    iam_actions = {a for s in statements(allow) for a in re.findall(r'"(iam:[A-Za-z*]+)"', re.search(r"actions\s*=\s*\[(.*?)\]", s["body"], re.S).group(1) if re.search(r"actions\s*=\s*\[", s["body"]) else "")}
+    assert iam_actions == {"iam:PassRole"}, f"the deploy role's only iam: action is PassRole, found {sorted(iam_actions)}"
+    ok("deploy role: passes sample roles to their services, manages targets/policies/functions, creates no identity, gateway or engine")
+
+
+
 def main() -> int:
     mod = read(MODULE, "main.tf")
     mod_vars = read(MODULE, "variables.tf")
@@ -97,7 +130,8 @@ def main() -> int:
     root_main = read(FOUNDATION, "main.tf")
     ssm = read(FOUNDATION, "ssm.tf")
     overlay = read(FOUNDATION, "envs", "staging.tfvars")
-    roles_tf = read(CI_INFRA, "workloads_roles.tf")
+    public_tree = not os.path.isdir(os.path.join(ROOT, "ci"))
+    roles_tf = "" if public_tree else read(CI_INFRA, "workloads_roles.tf")
 
     # 1. sample runtime roles
     role = block(runtime_iam, r'resource "aws_iam_role" "sample"')
@@ -209,30 +243,10 @@ def main() -> int:
     ok("root gates both halves on enable_sample_tools; facts publish roles.samples and sample_tools; staging opts in")
 
     # 7. the application's deploy role
-    allow = block(roles_tf, r'data "aws_iam_policy_document" "workloads_deploy"')
-    pass_rt = [s for s in statements(allow) if s["sid"] == "PassRuntimeRoles"][0]["body"]
-    assert re.search(r'role/agent-platform-sample-\*-role\$\{each\.value\.suffix\}"', pass_rt), \
-        "the deploy role must be able to pass the sample runtime roles to AgentCore"
-    pass_fn = [s for s in statements(allow) if s["sid"] == "PassRunnerRole"][0]["body"]
-    assert re.search(r'role/agent-platform-sample-tools-lambda\$\{each\.value\.suffix\}"', pass_fn), \
-        "the deploy role must be able to pass the sample Lambda role to Lambda"
-    for sid in ("SampleToolsGateway", "SampleToolsPolicies", "SampleToolsLambda"):
-        assert any(s["sid"] == sid for s in statements(allow)), f"workloads_deploy lacks {sid}"
-    gw_s = [s for s in statements(allow) if s["sid"] == "SampleToolsGateway"][0]["body"]
-    assert "CreateGatewayTarget" in gw_s and "bedrock-agentcore:CreateGateway\"" not in gw_s and "UpdateGateway\"" not in gw_s and "DeleteGateway\"" not in gw_s, \
-        "the deploy role manages targets, never the gateway itself"
-    assert re.search(r"gateway/agent-platform-sample-tools\$\{each\.value\.suffix\}-\*", gw_s) and "gateway/*" not in gw_s
-    pe_s = [s for s in statements(allow) if s["sid"] == "SampleToolsPolicies"][0]["body"]
-    assert "CreatePolicy\"" in pe_s and "CreatePolicyEngine" not in pe_s and "DeletePolicyEngine" not in pe_s and "UpdatePolicyEngine" not in pe_s, \
-        "the deploy role manages policies, never the engine"
-    assert "policy-engine/*" not in pe_s
-    la_s = [s for s in statements(allow) if s["sid"] == "SampleToolsLambda"][0]["body"]
-    assert re.search(r"function:agent-platform-sample-\*\$\{each\.value\.suffix\}", la_s) and "function:*" not in la_s
-    assert "CredentialProvider" not in allow, "the deploy role never touches credential providers"
-    # actions only: the PassRole statements' condition names iam:PassedToService, which is a key, not an action
-    iam_actions = {a for s in statements(allow) for a in re.findall(r'"(iam:[A-Za-z*]+)"', re.search(r"actions\s*=\s*\[(.*?)\]", s["body"], re.S).group(1) if re.search(r"actions\s*=\s*\[", s["body"]) else "")}
-    assert iam_actions == {"iam:PassRole"}, f"the deploy role's only iam: action is PassRole, found {sorted(iam_actions)}"
-    ok("deploy role: passes sample roles to their services, manages targets/policies/functions, creates no identity, gateway or engine")
+    if public_tree:
+        print("  skip deploy role: skipped (published tree: the CI roles are not part of it)")
+    else:
+        check_deploy_role(roles_tf)
 
     print("sample tools isolation: all assertions passed")
     return 0

@@ -1,9 +1,11 @@
 variable "private_subnet_ids" {
-  type = list(string)
+  description = "Private subnets the runtimes' ENIs are placed in (VPC network mode)."
+  type        = list(string)
 }
 
 variable "runtime_sg_id" {
-  type = string
+  description = "Security group attached to the runtimes' ENIs (from the foundation)."
+  type        = string
 }
 
 variable "kernel_repos" {
@@ -14,7 +16,8 @@ variable "kernel_repos" {
 }
 
 variable "workspace_bucket_name" {
-  type = string
+  description = "Name of the S3 workspace bucket the kernels sync session files with."
+  type        = string
 }
 
 variable "roles" {
@@ -44,6 +47,7 @@ variable "kernel_tags" {
 }
 
 variable "model_env" {
+  description = "Model settings passed to the kernels as environment variables (CLAUDE_CODE_USE_BEDROCK, ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL and the /model alias targets); an empty string leaves that variable unset."
   type = object({
     use_bedrock                    = string
     anthropic_model                = string
@@ -67,8 +71,9 @@ variable "xray_delivery_destination_arn" {
 }
 
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to this module's resource names (empty in production, -staging in staging); runtime names use runtime_name_suffix."
+  type        = string
+  default     = ""
 }
 
 variable "runtime_name_suffix" {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import {
+  AlertTriangle,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -10,63 +11,94 @@ import {
   SendHorizontal,
   Settings2,
   User,
+  Wrench,
 } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import { PLATFORM_VERSION_LABEL, PlatformVersionSelect } from '@/components/common/PlatformVersion'
 import {
   api,
   type EcosystemEntry,
-  type InvokeResult,
   type Kernel,
   type MemoryStore,
   type PlatformVersion,
   type PublishedAgent,
+  type StreamEvent,
 } from '@/services/api'
 import { getUser } from '@/services/auth'
 
-/** One bubble in the conversation. An assistant message is ``pending`` from
- * the moment the request leaves until the kernel answers (the invoke contract
- * is a single request/response; there is no token stream to render yet). */
+/** What the agent did while answering, in order: text it wrote and tools it
+ * called. Filled live from the event stream; a text segment is ``live`` while
+ * deltas are still arriving and is replaced by the completed block. */
+type Segment =
+  | { kind: 'text'; text: string; live: boolean }
+  | { kind: 'tool'; id: string; name: string; input: unknown; result?: string; isError?: boolean; done: boolean }
+
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
-  text: string
+  text: string // the user's message, or the assistant's final result
+  segments: Segment[]
   at: string
   pending?: boolean
   error?: string
-  usage?: InvokeResult['usage']
-  raw?: unknown
-  /** how many earlier exchanges were sent along as client-side context */
-  contextTurns?: number
+  usage?: Record<string, unknown>
+  /** the kernel resumed this session's previous conversation (multi-turn) */
+  continued?: boolean
+  /** a follow-up was sent, but the runtime had no history to resume (recycled microVM) */
+  lostContext?: boolean
 }
 
-// Client-side context keeps the kernel from seeing each message in isolation
-// when the target has no memory binding. Bounded so a long chat cannot grow
-// the prompt without limit; the oldest exchanges drop first.
-const CONTEXT_MAX_CHARS = 12_000
-
-function buildPrompt(messages: ChatMessage[], next: string, carryContext: boolean): { prompt: string; turns: number } {
-  if (!carryContext) return { prompt: next, turns: 0 }
-  const settled = messages.filter((m) => !m.pending && !m.error && m.text)
-  const lines: string[] = []
-  let budget = CONTEXT_MAX_CHARS
-  let turns = 0
-  for (let i = settled.length - 1; i >= 0; i--) {
-    const m = settled[i]
-    const line = `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`
-    if (line.length > budget) break
-    budget -= line.length
-    lines.unshift(line)
-    if (m.role === 'user') turns++
-  }
-  if (!lines.length) return { prompt: next, turns: 0 }
-  return {
-    prompt: `Conversation so far:\n\n${lines.join('\n\n')}\n\nUser: ${next}\n\nReply to the last user message only.`,
-    turns,
+/** Fold one stream event into the pending assistant message. */
+function applyEvent(m: ChatMessage, e: StreamEvent, expectedContinue: boolean): ChatMessage {
+  const segs = [...m.segments]
+  const last = segs[segs.length - 1]
+  switch (e.type) {
+    case 'start':
+      return { ...m, continued: e.continued, lostContext: expectedContinue && !e.continued }
+    case 'text_delta':
+      if (last && last.kind === 'text' && last.live) segs[segs.length - 1] = { ...last, text: last.text + e.text }
+      else segs.push({ kind: 'text', text: e.text, live: true })
+      return { ...m, segments: segs }
+    case 'text':
+      if (last && last.kind === 'text' && last.live) segs[segs.length - 1] = { kind: 'text', text: e.text, live: false }
+      else segs.push({ kind: 'text', text: e.text, live: false })
+      return { ...m, segments: segs }
+    case 'tool_use':
+      if (last && last.kind === 'text' && last.live) segs[segs.length - 1] = { ...last, live: false }
+      segs.push({ kind: 'tool', id: e.id, name: e.name, input: e.input, done: false })
+      return { ...m, segments: segs }
+    case 'tool_result':
+      return {
+        ...m,
+        segments: segs.map((sg) =>
+          sg.kind === 'tool' && sg.id === e.tool_use_id ? { ...sg, result: e.content, isError: e.is_error, done: true } : sg,
+        ),
+      }
+    case 'result': {
+      const closed = segs.map((sg) => (sg.kind === 'text' ? { ...sg, live: false } : sg))
+      const hasText = closed.some((sg) => sg.kind === 'text' && sg.text.trim())
+      // the result is the final reply; it normally equals the last text block,
+      // so it is shown in the thread only when no text block arrived
+      if (!hasText && e.result) closed.push({ kind: 'text', text: e.result, live: false })
+      return {
+        ...m,
+        segments: closed,
+        text: e.result,
+        usage: e.usage,
+        pending: false,
+        error: e.ok ? undefined : 'The kernel reported a failed run',
+        at: new Date().toLocaleTimeString(),
+      }
+    }
+    case 'error':
+      return { ...m, pending: false, error: e.error, at: new Date().toLocaleTimeString() }
+    default:
+      return m
   }
 }
 
 const fmtCost = (v: unknown) => (typeof v === 'number' ? v.toFixed(4) : String(v))
+const fmtJson = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v, null, 2))
 
 let seq = 0
 const nextId = () => `m${Date.now()}-${seq++}`
@@ -80,36 +112,56 @@ function ElapsedTimer({ since }: { since: number }) {
   return <span className="font-mono tabular-nums">{((now - since) / 1000).toFixed(1)}s</span>
 }
 
-function AssistantMeta({ m }: { m: ChatMessage }) {
+function ToolCard({ seg }: { seg: Extract<Segment, { kind: 'tool' }> }) {
   const [open, setOpen] = useState(false)
-  const u = m.usage || {}
+  const preview = (seg.result || '').split('\n')[0].slice(0, 120)
   return (
-    <div className="mt-2 text-[11px] text-slate-400">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        {u.num_turns != null && (
-          <span title="Model turns the kernel ran for this reply (each tool call adds a turn)">
-            turns: {String(u.num_turns)}
-          </span>
+    <div className={`rounded-xl border px-3 py-2 text-xs ${seg.isError ? 'border-red-200 bg-red-50/60' : 'border-amber-200 bg-amber-50/60'}`}>
+      <button className="flex w-full items-center gap-2 text-left" onClick={() => setOpen((v) => !v)}>
+        {seg.done ? (
+          <Wrench size={13} className={seg.isError ? 'text-red-500' : 'text-amber-600'} />
+        ) : (
+          <Loader2 size={13} className="animate-spin text-amber-600" />
         )}
-        {u.duration_ms != null && <span>duration: {String(u.duration_ms)} ms</span>}
-        {u.total_cost_usd != null && <span>cost: ${fmtCost(u.total_cost_usd)}</span>}
-        {m.contextTurns ? (
-          <span className="badge bg-slate-100 text-slate-500" title="Earlier exchanges sent with this message as client-side context">
-            +{m.contextTurns} earlier turn{m.contextTurns > 1 ? 's' : ''} as context
-          </span>
-        ) : null}
-        <span>{m.at}</span>
-        {m.raw != null && (
-          <button className="inline-flex items-center gap-0.5 hover:text-slate-600" onClick={() => setOpen((v) => !v)}>
-            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />} raw
-          </button>
-        )}
-      </div>
+        <span className="font-mono font-medium text-slate-800">{seg.name}</span>
+        <span className="truncate text-slate-500">{seg.done ? preview || (seg.isError ? 'error' : 'done') : 'running…'}</span>
+        <span className="ml-auto text-slate-400">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+      </button>
       {open && (
-        <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-900 p-3 font-mono text-[11px] leading-relaxed text-slate-100">
-          {JSON.stringify(m.raw, null, 2)}
-        </pre>
+        <div className="mt-2 space-y-2">
+          <div>
+            <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">input</p>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-white/80 p-2 font-mono text-[11px] text-slate-700">{fmtJson(seg.input)}</pre>
+          </div>
+          {seg.done && (
+            <div>
+              <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">{seg.isError ? 'error' : 'result'}</p>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-white/80 p-2 font-mono text-[11px] text-slate-700">{seg.result || '(empty)'}</pre>
+            </div>
+          )}
+        </div>
       )}
+    </div>
+  )
+}
+
+function AssistantMeta({ m }: { m: ChatMessage }) {
+  const u = m.usage || {}
+  const tools = m.segments.filter((s) => s.kind === 'tool').length
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+      {u.num_turns != null && (
+        <span title="Model turns the kernel ran for this reply (each tool call adds a turn)">turns: {String(u.num_turns)}</span>
+      )}
+      {tools > 0 && <span>tools: {tools}</span>}
+      {u.duration_ms != null && <span>duration: {String(u.duration_ms)} ms</span>}
+      {u.total_cost_usd != null && <span>cost: ${fmtCost(u.total_cost_usd)}</span>}
+      {m.continued && (
+        <span className="badge bg-emerald-50 text-emerald-700" title="The kernel resumed this session's conversation">
+          resumed
+        </span>
+      )}
+      <span>{m.at}</span>
     </div>
   )
 }
@@ -134,13 +186,10 @@ export default function DebugPage() {
   const [memoryId, setMemoryId] = useState('')
   const [memoryActor, setMemoryActor] = useState('')
   const [storesLoading, setStoresLoading] = useState(false)
-  const [carryContext, setCarryContext] = useState<boolean | null>(null) // null = follow the memory binding
   const [showSettings, setShowSettings] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
-  // bumped whenever the conversation is reset, so a reply that lands after
-  // the reset cannot write the old session id (or its text) into the new one
-  const conversationRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
 
   const isAgent = target.startsWith('agent:')
   const targetAgent = isAgent ? agents.find((a) => a.id === target.slice('agent:'.length)) : undefined
@@ -149,8 +198,6 @@ export default function DebugPage() {
     ? memoryStores.find((m) => m.id === targetAgent.memory_id)
     : undefined
   const memoryActive = isAgent ? Boolean(targetAgent?.memory_id) : Boolean(memoryId)
-  // with a memory binding the kernel replays this session's turns itself
-  const effectiveCarry = carryContext ?? !memoryActive
   const targetLabel = isAgent
     ? targetAgent
       ? `${targetAgent.name} v${targetAgent.version}`
@@ -189,10 +236,9 @@ export default function DebugPage() {
   // switching target or platform version (a different runtime) invalidates
   // the warm session and ends the conversation
   useEffect(() => {
-    conversationRef.current++
+    abortRef.current?.abort()
     setSessionId(null)
     setMessages([])
-    setCarryContext(null)
     if (target.startsWith('agent:')) setParams({ target }, { replace: true })
     else if (params.get('target')) setParams({}, { replace: true })
   }, [target, platformVersion]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -201,8 +247,10 @@ export default function DebugPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages])
 
+  useEffect(() => () => abortRef.current?.abort(), [])
+
   const newConversation = () => {
-    conversationRef.current++
+    abortRef.current?.abort()
     setSessionId(null)
     setMessages([])
     composerRef.current?.focus()
@@ -211,23 +259,47 @@ export default function DebugPage() {
   const send = async () => {
     const text = prompt.trim()
     if (!text || busy) return
-    const { prompt: wirePrompt, turns } = buildPrompt(messages, text, effectiveCarry)
     const started = Date.now()
-    const userMsg: ChatMessage = { id: nextId(), role: 'user', text, at: new Date().toLocaleTimeString() }
+    // a follow-up in a warm session asks the kernel to resume the conversation
+    const expectContinue = Boolean(sessionId)
+    const userMsg: ChatMessage = { id: nextId(), role: 'user', text, segments: [], at: new Date().toLocaleTimeString() }
     const pendingId = nextId()
-    setMessages((cur) => [...cur, userMsg, { id: pendingId, role: 'assistant', text: '', at: '', pending: true, contextTurns: turns }])
+    setMessages((cur) => [...cur, userMsg, { id: pendingId, role: 'assistant', text: '', segments: [], at: '', pending: true }])
     setPrompt('')
     setBusy(true)
-    const conversation = conversationRef.current
+    const controller = new AbortController()
+    abortRef.current = controller
+    const patch = (fn: (m: ChatMessage) => ChatMessage) =>
+      setMessages((cur) => cur.map((m) => (m.id === pendingId ? fn(m) : m)))
+    // the backend sends one session marker first; only that one pins the
+    // conversation (a later one would not be the backend's)
+    let sessionPinned = false
+    const onEvent = (e: StreamEvent) => {
+      if (e.type === 'session') {
+        if (!sessionPinned) setSessionId(e.runtime_session_id)
+        sessionPinned = true
+        return
+      }
+      sessionPinned = true
+      patch((m) => applyEvent(m, e, expectContinue))
+    }
     try {
-      const result = isAgent
-        ? await api.invokeAgent(target.slice('agent:'.length), {
-            prompt: wirePrompt,
+      if (isAgent) {
+        await api.invokeAgentStream(
+          target.slice('agent:'.length),
+          {
+            prompt: text,
             session_id: sessionId || undefined,
             memory_actor_id: memoryActor || undefined,
-          })
-        : await api.invokeSdkKernel({
-            prompt: wirePrompt,
+            continue_conversation: expectContinue,
+          },
+          onEvent,
+          controller.signal,
+        )
+      } else {
+        await api.invokeSdkKernelStream(
+          {
+            prompt: text,
             system: system || undefined,
             session_id: sessionId || undefined,
             mcp_server_ids: selMcp.length ? selMcp : undefined,
@@ -235,36 +307,21 @@ export default function DebugPage() {
             memory_id: memoryId || undefined,
             memory_actor_id: memoryActor || undefined,
             platform_version: platformVersion || undefined,
-          })
-      if (conversationRef.current !== conversation) return // reset while in flight
-      setSessionId(result.runtime_session_id)
-      const text = result.result || ''
-      const failed = !result.ok
-      setMessages((cur) =>
-        cur.map((m) =>
-          m.id === pendingId
-            ? {
-                ...m,
-                pending: false,
-                text: text || (failed ? '' : JSON.stringify(result.raw, null, 2)),
-                error: failed ? `The kernel reported a failed run${text ? '' : ` (${JSON.stringify(result.raw).slice(0, 300)})`}` : undefined,
-                usage: result.usage,
-                raw: result.raw,
-                at: new Date().toLocaleTimeString(),
-              }
-            : m,
-        ),
+            continue_conversation: expectContinue,
+          },
+          onEvent,
+          controller.signal,
+        )
+      }
+      // a stream that closed without a result (dropped connection) is an error
+      patch((m) =>
+        m.pending ? { ...m, pending: false, error: 'The stream ended before the kernel reported a result', at: new Date().toLocaleTimeString() } : m,
       )
     } catch (e) {
-      if (conversationRef.current !== conversation) return
-      setMessages((cur) =>
-        cur.map((m) =>
-          m.id === pendingId
-            ? { ...m, pending: false, error: String(e), at: new Date().toLocaleTimeString(), usage: { duration_ms: Date.now() - started } }
-            : m,
-        ),
-      )
+      if (controller.signal.aborted) return
+      patch((m) => ({ ...m, pending: false, error: String(e), at: new Date().toLocaleTimeString(), usage: { duration_ms: Date.now() - started } }))
     } finally {
+      if (abortRef.current === controller) abortRef.current = null
       setBusy(false)
       composerRef.current?.focus()
     }
@@ -284,7 +341,7 @@ export default function DebugPage() {
       <div className="flex items-start justify-between">
         <SectionTitle
           title="Debug"
-          subtitle="Talk to the headless kernel or any published agent the way an end user would — every message goes through the /invocations contract"
+          subtitle="Talk to the headless kernel or any published agent the way an end user would — replies stream in as the agent writes and calls tools; follow-ups continue the same conversation"
         />
         <button className="btn-secondary lg:hidden" onClick={() => setShowSettings((v) => !v)}>
           <Settings2 size={14} /> {showSettings ? 'Hide' : 'Show'} settings
@@ -435,24 +492,6 @@ export default function DebugPage() {
             </p>
           )}
 
-          <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">Conversation context</label>
-          <label className="flex cursor-pointer items-start gap-2 text-xs text-slate-700">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={effectiveCarry}
-              onChange={(e) => setCarryContext(e.target.checked)}
-            />
-            <span>
-              Send earlier turns with each message
-              <span className="block text-[11px] text-slate-400">
-                {memoryActive
-                  ? 'Off by default here: the memory binding replays this session’s turns inside the kernel.'
-                  : 'The kernel starts a fresh run per call; without this, every message is answered in isolation. Earlier turns are prepended to the prompt (bounded, oldest dropped first).'}
-              </span>
-            </span>
-          </label>
-
           {!isAgent && (
             <>
               <label className="mb-1 mt-4 block text-sm font-medium text-slate-700">
@@ -522,24 +561,33 @@ export default function DebugPage() {
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white">
                     <Bot size={13} />
                   </div>
-                  <div className="min-w-0 max-w-[85%]">
-                    {m.pending ? (
-                      <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-500">
-                        <Loader2 size={14} className="animate-spin" /> running… <ElapsedTimer since={pendingSince} />
+                  <div className="min-w-0 max-w-[85%] space-y-2">
+                    {m.lostContext && (
+                      <div className="flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+                        <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                        The runtime had no history for this session (new instance), so this reply was made without the earlier turns.
                       </div>
-                    ) : (
-                      <>
-                        {m.text && (
-                          <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800">
-                            {m.text}
-                          </div>
-                        )}
-                        {m.error && (
-                          <div className="mt-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{m.error}</div>
-                        )}
-                        <AssistantMeta m={m} />
-                      </>
                     )}
+                    {m.segments.map((sg, i) =>
+                      sg.kind === 'text' ? (
+                        <div key={i} className="whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800">
+                          {sg.text}
+                          {sg.live && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-slate-400 align-text-bottom" />}
+                        </div>
+                      ) : (
+                        <ToolCard key={sg.id} seg={sg} />
+                      ),
+                    )}
+                    {m.pending && (
+                      <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500">
+                        <Loader2 size={13} className="animate-spin" />
+                        {m.segments.length ? 'working…' : 'waiting for the kernel…'} <ElapsedTimer since={pendingSince} />
+                      </div>
+                    )}
+                    {m.error && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{m.error}</div>
+                    )}
+                    {!m.pending && <AssistantMeta m={m} />}
                   </div>
                 </div>
               ),

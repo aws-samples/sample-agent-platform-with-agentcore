@@ -237,23 +237,16 @@ data "aws_iam_policy_document" "backend" {
 
 # agentcore_gateway model backend. On EKS the caller role is assumed with
 # the pod's web-identity token, which needs no identity-policy grant; the
-# AssumeRole/TagSession pair covers the non-IRSA path. Revocation rewrites an
-# inline Deny on the caller role, and reads its RoleId for aws:userid.
+# AssumeRole/TagSession pair covers the non-IRSA path. Revocation is
+# non-renewal of a 15-minute credential (application repo,
+# llm_credentials_service), so the backend holds no IAM write on the caller
+# role. It used to rewrite an inline Deny there.
 data "aws_iam_policy_document" "backend_agentcore_gateway" {
   count = var.enable_agentcore_gateway_backend ? 1 : 0
 
   statement {
     sid       = "AssumeAgentCoreGatewayCaller"
     actions   = ["sts:AssumeRole", "sts:TagSession"]
-    resources = [var.agentcore_gateway_caller_role_arn]
-  }
-  statement {
-    sid = "RevokeAgentCoreGatewaySessions"
-    actions = [
-      "iam:GetRole",
-      "iam:PutRolePolicy",
-      "iam:DeleteRolePolicy",
-    ]
     resources = [var.agentcore_gateway_caller_role_arn]
   }
 }

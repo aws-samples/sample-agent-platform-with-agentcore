@@ -8,7 +8,7 @@ REST API. The portal's **Sandbox** page and the Dev Workbench's
 `platform-sandbox` MCP tools are two more clients of the same service.
 
 The image is yours to choose. The platform ships a reference image
-(`runtimes/sandbox-kernel`: Python 3.13, numpy, pandas, pyarrow on arm64), and
+(`runtimes/sandbox-kernel`: Python 3.13, numpy, pandas, pyarrow, and python-pptx, python-docx, openpyxl and reportlab for documents, on arm64), and
 any image that implements the same control contract, claiming included, can
 replace it and be pinned per version.
 
@@ -158,12 +158,25 @@ claimed twice. Read timeouts are not retried. Throttling is returned as 429
 | Service API | an application's host, server to server | SigV4 at the private service-entry API Gateway; the caller's IAM role must be on `sandbox_service_callers` | `/service/v1/sandboxes` |
 | Sandbox page | platform administrators | portal sign-in | `/api/v1/sandboxes` |
 | MCP tools | Claude in a Dev Workbench session | a per-session token issued at warmup, revoked when the session stops | `/api/v1/sandbox-mcp` |
+| MCP tools | a published agent with `platform-sandbox` attached, in one invocation | a per-call token issued by the invocation pipeline, revoked when the call ends | `/api/v1/sandbox-mcp` |
 
-All three call the same service methods. The MCP server runs in the backend,
-not in the Workbench container, so a container user who is root cannot reach
-the runtime and bypass the ledger, the claim or the reaper. Ending a
+All of them call the same service methods. The MCP server runs in the
+backend, not in a kernel container, so a container user who is root cannot
+reach the runtime and bypass the ledger, the claim or the reaper. Ending a
 Workbench session stops every sandbox it opened, and a session may hold at
-most 5 open sandboxes.
+most 5 open sandboxes. For a published agent, the invocation pipeline turns
+the `platform-sandbox` attachment into an MCP-over-HTTP entry carrying a
+token for that call only (stored as its digest, 15 minutes at most); the
+sandboxes the call opens belong to the call, and the pipeline stops them and
+revokes the token when the call ends, also when it fails. Concurrent calls on
+one runtime session have separate tokens and separate sandboxes.
+
+`sandbox_export_file` hands a file the sandbox produced (pptx, docx, xlsx,
+pdf, csv, txt, md, png, jpg or zip; at most 20 MB) out of the sandbox: the
+backend copies it to the workspace bucket under
+`exports/<runtime session>/<owner session>/` and returns its key, for a
+channel to deliver. The image carries python-pptx, python-docx, openpyxl and
+reportlab for such documents.
 
 ### Service API
 

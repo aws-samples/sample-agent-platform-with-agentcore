@@ -306,21 +306,89 @@ class ScheduleService:
         the run is delegated to the backend API instead, which also lifts the
         Lambda's 10-minute budget off long pipelines."""
         name = target.partition(":")[2]
-        if settings.portal_api_url:
+        if settings.pipeline_service_url or settings.portal_api_url:
             return ScheduleService._delegate_pipeline(name, user)
         from app.services.pipeline_service import pipeline_service
         return pipeline_service.run_sync(name, user=user)
 
     @staticmethod
     def _delegate_pipeline(name: str, user: str) -> dict:
-        """Lambda path: start the run through the portal API, signed in as the
-        delegation user but on behalf of ``user`` (the schedule's created_by),
-        and poll it to a terminal state within the Lambda budget."""
+        """Lambda path: start the run on the backend on behalf of ``user`` (the
+        schedule's created_by), and poll it to a terminal state within the
+        Lambda budget.
+
+        With ``pipeline_service_url`` the runner calls the private IAM service
+        entry signed with its own role (SigV4): no password, no IdP. Without
+        it, the previous path signs in to the portal as the delegation user
+        (Cognito, the portal-admin secret)."""
+        if settings.pipeline_service_url:
+            http = ScheduleService._service_entry_http(settings.pipeline_service_url)
+            prefix, body = "/service/v1", {"on_behalf_of": user or "scheduler"}
+        else:
+            http = ScheduleService._portal_http(settings.portal_api_url)
+            prefix, body = "/api/v1", delegation_body(user)
+
+        # the run belongs to the schedule's owner, not to the delegation user
+        run = http("POST", f"{prefix}/pipelines/{name}/runs", body)
+        run_id = run["id"]
+        deadline = _now() + timedelta(seconds=480)  # leave headroom inside the 10-min budget
+        while _now() < deadline:
+            time.sleep(15)
+            run = http("GET", f"{prefix}/pipeline-runs/{run_id}", None)
+            if run.get("status") != "running":
+                break
+        # a run still in flight at the Lambda deadline is NOT a failure - long
+        # pipelines (async feed refresh) outlive this poll and finish on the
+        # backend; the portal Pipeline page has the live record
+        return {"ok": run.get("status") in ("completed", "running"), "run_id": run_id,
+                "result": run.get("result"), "status": run.get("status")}
+
+    @staticmethod
+    def _delegate_fire(schedule_id: str) -> dict:
+        """Lambda path for every target but ``pipeline:*``: the backend runs
+        the occurrence. An agent invoke needs the model routing only the
+        backend holds (the llm-edge URL, the AgentCore gateway caller role
+        its IRSA identity may assume); the Lambda has neither, and giving it
+        them would widen two boundaries. The backend answers 202 and runs
+        run_once itself, as the schedule's owner, recording the outcome on the
+        schedule; the caller names the schedule, never a user."""
+        http = ScheduleService._service_entry_http(settings.pipeline_service_url)
+        return http("POST", f"/service/v1/schedules/{schedule_id}/fire", {})
+
+    @staticmethod
+    def _service_entry_http(base_url: str):
+        """JSON calls to the private service entry, SigV4-signed (execute-api)
+        with the process's own credentials: the Lambda's role."""
         import urllib.request
 
-        base = settings.portal_api_url.rstrip("/")
+        import botocore.session
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
 
-        def http(method: str, path: str, token: str | None = None, body: dict | None = None):
+        base = base_url.rstrip("/")
+        session = botocore.session.get_session()
+
+        def http(method: str, path: str, body: dict | None):
+            data = json.dumps(body).encode() if body is not None else None
+            req = AWSRequest(method=method, url=base + path, data=data,
+                             headers={"Content-Type": "application/json"})
+            SigV4Auth(session.get_credentials().get_frozen_credentials(),
+                      "execute-api", settings.aws_region).add_auth(req)
+            out = urllib.request.Request(base + path, method=method, data=data, headers=dict(req.headers))
+            with urllib.request.urlopen(out, timeout=60) as r:  # noqa: S310 - fixed base URL
+                return json.loads(r.read())
+
+        return http
+
+    @staticmethod
+    def _portal_http(base_url: str):
+        """JSON calls to the portal API, signed in as the delegation user
+        (Cognito USER_PASSWORD_AUTH with the portal-admin secret)."""
+        import urllib.request
+
+        base = base_url.rstrip("/")
+
+        def raw(method: str, path: str, token: str | None = None, body: dict | None = None):
             req = urllib.request.Request(
                 base + path, method=method,
                 data=json.dumps(body).encode() if body is not None else None,
@@ -332,36 +400,48 @@ class ScheduleService:
 
         sm = boto3.client("secretsmanager", region_name=settings.aws_region)
         cred = json.loads(sm.get_secret_value(SecretId=settings.portal_admin_secret)["SecretString"])
-        cfg = http("GET", "/api/v1/config")
+        cfg = raw("GET", "/api/v1/config")
         idp = boto3.client("cognito-idp", region_name=settings.aws_region)
         token = idp.initiate_auth(
             ClientId=cfg["cognito_client_id"], AuthFlow="USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": cred.get("username", "admin"), "PASSWORD": cred["password"]},
         )["AuthenticationResult"]["IdToken"]
 
-        # the run belongs to the schedule's owner, not to the delegation user
-        run = http("POST", f"/api/v1/pipelines/{name}/runs", token, body=delegation_body(user))
-        run_id = run["id"]
-        deadline = _now() + timedelta(seconds=480)  # leave headroom inside the 10-min budget
-        while _now() < deadline:
-            time.sleep(15)
-            run = http("GET", f"/api/v1/pipeline-runs/{run_id}", token)
-            if run.get("status") != "running":
-                break
-        # a run still in flight at the Lambda deadline is NOT a failure — long
-        # pipelines (async feed refresh) outlive this poll and finish on the
-        # backend; the portal Pipeline page has the live record
-        return {"ok": run.get("status") in ("completed", "running"), "run_id": run_id,
-                "result": run.get("result"), "status": run.get("status")}
+        def http(method: str, path: str, body: dict | None):
+            return raw(method, path, token, body)
 
-    def run_once(self, item: dict, source: str = "schedule") -> dict:
+        return http
+
+    def run_once(self, item: dict, source: str = "schedule", local: bool = False) -> dict:
         """Execute one schedule occurrence through the invocation pipeline.
         Called by the schedule-runner Lambda (eventbridge mode), the local
-        tick loop, and the run-now endpoint."""
+        tick loop, the run-now endpoint, and the service entry's fire route
+        (``local=True``: the backend executing what the Lambda handed it,
+        which never hands it on again)."""
         from app.services.invocation_service import invoke  # avoid import cycle
 
         schedule_id = item["SK"].partition("#")[2]
         target = item.get("target", "agent-sdk")
+        if not local and settings.pipeline_service_url and not target.startswith("pipeline:"):
+            # the schedule-runner Lambda: the backend runs it and records the
+            # outcome (run_count, last_status) itself; this records only a
+            # failure to hand it over
+            try:
+                ack = self._delegate_fire(schedule_id)
+                return {"ok": True, "delegated": True, "ack": ack}
+            except Exception as e:
+                logger.exception("schedule %s: handing the run to the backend failed", schedule_id)
+                self.table.update_item(
+                    Key={"PK": PK, "SK": item["SK"]},
+                    UpdateExpression=(
+                        "SET last_run_at = :t, last_status = :s, last_result_preview = :r ADD run_count :one"
+                    ),
+                    ExpressionAttributeValues={
+                        ":t": _iso(_now()), ":s": "error",
+                        ":r": f"handing the run to the backend failed: {e}"[:RESULT_PREVIEW], ":one": 1,
+                    },
+                )
+                return {"ok": False, "error": "handing the run to the backend failed - see the runner logs"}
         # A ``pipeline:*`` target is a multi-phase orchestration (fan-out over
         # many invocations), not a single kernel invoke — dispatch to its
         # service. Each of its internal steps still flows through invoke() with

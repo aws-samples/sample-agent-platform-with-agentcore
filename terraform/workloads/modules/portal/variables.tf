@@ -1,5 +1,6 @@
 variable "account_id" {
-  type = string
+  description = "AWS account ID, for the service-entry execute-api ARN base the backend authorizes callers against."
+  type        = string
 }
 
 variable "portal" {
@@ -11,8 +12,10 @@ variable "portal" {
     backend_target_group_arn  = string
     entry_target_group_arn    = string
     cloudfront_domain         = string
-    cognito_pool_id           = string
-    cognito_client_id         = string
+    # the Cognito pool the backend verifies against when there is no OIDC
+    # issuer; a foundation on OIDC may publish none
+    cognito_pool_id           = optional(string, "")
+    cognito_client_id         = optional(string, "")
     scheduler_group           = string
     scheduler_role_arn        = string
     schedule_runner_role_arn  = string
@@ -21,7 +24,6 @@ variable "portal" {
     schedule_dlq_arn          = string
     service_entry_secret_name = string
     service_entry_api_id      = string
-    portal_admin_secret_name  = string
   })
 }
 
@@ -35,6 +37,8 @@ variable "runtimes" {
     sdk_runtime_arns         = map(string)
     # one per sample agent (Sample Agents feature); {} when off
     sample_runtime_arns = optional(map(string), {})
+    # the sample's own memory store, for samples the foundation gives memory
+    sample_memory_ids = optional(map(string), {})
   })
 }
 
@@ -45,27 +49,33 @@ variable "sample_tools_gateway_url" {
 }
 
 variable "default_platform_version" {
-  type = string
+  description = "AgentCore platform version (V1 Standard or V2 Fast Runtime) a session or published agent gets when it does not choose one."
+  type        = string
 }
 
 variable "platform_table_name" {
-  type = string
+  description = "Name of the platform DynamoDB table (from the foundation)."
+  type        = string
 }
 
 variable "workspace_bucket_name" {
-  type = string
+  description = "Name of the S3 workspace bucket (from the foundation)."
+  type        = string
 }
 
 variable "workspace_access_role_arn" {
-  type = string
+  description = "Role the backend assumes to reach session workspaces in the bucket (from the foundation)."
+  type        = string
 }
 
 variable "backend_repo_url" {
-  type = string
+  description = "ECR repository URL of the backend image (from the foundation)."
+  type        = string
 }
 
 variable "backend_image_tag" {
-  type = string
+  description = "Image tag of the backend container."
+  type        = string
 }
 
 variable "backend_desired_count" {
@@ -104,6 +114,11 @@ variable "oidc" {
     client_id = string
     audience  = string
   })
+
+  validation {
+    condition     = var.oidc.issuer != "" || (var.portal.cognito_pool_id != "" && var.portal.cognito_client_id != "")
+    error_message = "The backend needs one identity provider: an OIDC issuer, or (without one) the foundation's Cognito pool and client."
+  }
 }
 
 variable "mcp_hub_caller_role_arn" {
@@ -131,7 +146,51 @@ variable "sandbox" {
   }
 }
 
+variable "schedule_runner" {
+  description = "Where the schedule-runner Lambda runs and how it reaches the backend: the platform VPC's private subnets and a security group (the private service entry is reachable only from inside the VPC), and the entry's endpoint-specific URL ending in /svc/. Required: the runner has no other way to the backend."
+  type = object({
+    subnet_ids        = list(string)
+    security_group_id = string
+    service_url       = string
+  })
+
+  # without the service URL the runner would run pipeline schedules
+  # in-process, where workflow scripts have no Node, and hand agent schedules
+  # to nobody
+  validation {
+    condition     = var.schedule_runner.service_url != "" && length(var.schedule_runner.subnet_ids) > 0 && var.schedule_runner.security_group_id != ""
+    error_message = "schedule_runner needs the private service entry's URL, and the subnet_ids and security_group_id the runner reaches it from."
+  }
+}
+
 variable "name_suffix" {
-  type    = string
-  default = ""
+  description = "Environment suffix appended to this module's names (empty in production, -staging in staging)."
+  type        = string
+  default     = ""
+}
+
+variable "lark_ingress" {
+  description = "The foundation's Lark ingress facts (lark_ingress), or null when the foundation has none (enable_lark_ingress off). Creates the lark-webhook function for the lark-teammate sample."
+  type = object({
+    function_name = string
+    role_arn      = string
+    log_group     = string
+    secret_arn    = string
+    open_base     = string
+    # the ambient-memory function; "" when the foundation has the jobs off
+    memory_function_name = optional(string, "")
+    memory_role_arn      = optional(string, "")
+    memory_log_group     = optional(string, "")
+    ambient_model        = optional(string, "")
+    # the reminders table; "" when the foundation has reminders off
+    reminders_table  = optional(string, "")
+    utc_offset_hours = optional(number, 8)
+    # the function may remember and forget on the sample's store
+    memory_notes = optional(bool, false)
+    # the ingress's /lark/mcp route; "" when the foundation has the Lark tools off
+    mcp_url = optional(string, "")
+    # the turn's agent may use the code sandbox and send the files it makes
+    sandbox = optional(bool, false)
+  })
+  default = null
 }

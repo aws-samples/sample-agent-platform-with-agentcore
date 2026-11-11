@@ -68,8 +68,9 @@ module "network" {
 module "platform" {
   source = "./modules/platform"
 
-  protect_stateful = var.protect_stateful
-  name_suffix      = var.name_suffix
+  protect_stateful           = var.protect_stateful
+  name_suffix                = var.name_suffix
+  bedrock_invocation_logging = var.bedrock_invocation_logging
 }
 
 # WAF in front of the portal and team-auth distributions (both environments);
@@ -278,6 +279,8 @@ module "agentcore_gateway_backend" {
   models                  = var.agentcore_gateway_models
   private_endpoint        = var.agentcore_gateway_private_endpoint
   backend_role_arn        = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/agent-platform-backend-task${var.name_suffix}"
+  # the lark-teammate ingress runs the pipeline too (modules/lark_ingress)
+  extra_caller_role_arns = local.lark_ingress_on ? ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/agent-platform-lark-webhook${var.name_suffix}"] : []
   eks = {
     oidc_provider_arn = local.eks_facts.oidc_provider_arn
     oidc_issuer_host  = local.eks_facts.oidc_issuer_host
@@ -318,6 +321,8 @@ module "portal" {
   eks                               = local.eks_facts
   name_suffix                       = var.name_suffix
   custom_domain                     = var.portal_custom_domain
+  # one identity provider: the Cognito pool only without an OIDC issuer
+  enable_cognito = local.oidc_issuer == ""
 }
 
 module "team_auth" {
@@ -523,6 +528,33 @@ module "team_demo" {
   discovery_url       = module.team_auth[0].discovery_url
   image_tag           = coalesce(var.team_demo_image_tag, var.image_tag)
   team_demo_build     = var.team_demo_build
+  gateway_hosts       = var.team_demo_gateway_hosts
   model_env           = local.model_env
   runtime_name_suffix = local.runtime_suffix
+}
+
+# Lark (Feishu) ingress of the lark-teammate sample (enable_lark_ingress, off
+# by default). The function is the workloads root's; this is its role, secret,
+# log group and the public endpoint in front of it.
+locals {
+  lark_ingress_on = var.enable_lark_ingress && var.enable_portal && var.enable_runtime && var.enable_sample_tools && contains(keys(var.sample_runtimes), "lark-teammate")
+}
+
+module "lark_ingress" {
+  source = "./modules/lark_ingress"
+  count  = local.lark_ingress_on ? 1 : 0
+
+  name_suffix                       = var.name_suffix
+  platform_table                    = module.platform.platform_table
+  workspace_bucket                  = module.platform.workspace_bucket
+  open_base                         = var.lark_open_base
+  agentcore_gateway_caller_role_arn = try(module.agentcore_gateway_backend[0].caller_role_arn, "")
+  ambient                           = var.enable_lark_ambient
+  memory_arn                        = try(module.runtime[0].sample_memory_arns["lark-teammate"], "")
+  reminders                         = var.enable_lark_reminders
+  utc_offset_hours                  = var.lark_utc_offset_hours
+  memory_notes                      = var.enable_lark_memory_notes
+  tools                             = var.enable_lark_tools
+  # files need the platform's code sandbox deployed
+  sandbox = var.enable_lark_sandbox && var.enable_sandbox
 }

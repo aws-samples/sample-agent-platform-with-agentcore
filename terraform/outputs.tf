@@ -97,12 +97,12 @@ output "alb_dns_name" {
 }
 
 output "user_pool_id" {
-  description = "Cognito user pool for portal sign-in, used by the user setup steps in docs/deployment.md. Null without the portal. ci/infra reads it through terraform_remote_state."
+  description = "Cognito user pool for portal sign-in, used by the user setup steps in docs/deployment.md. Null without the portal or with an OIDC issuer (no pool then). ci/infra reads it through terraform_remote_state."
   value       = try(module.portal[0].user_pool_id, null)
 }
 
 output "user_pool_client_id" {
-  description = "Cognito app client the portal frontend signs in with. Null without the portal. Read by deploy-cli/tests/verify.sh."
+  description = "Cognito app client the portal frontend signs in with. Null without the portal or with an OIDC issuer. Read by deploy-cli/tests/verify.sh."
   value       = try(module.portal[0].user_pool_client_id, null)
 }
 
@@ -114,11 +114,6 @@ output "schedule_runner_function" {
 output "schedule_dlq_url" {
   description = "SQS dead-letter queue for EventBridge Scheduler deliveries to the schedule-runner Lambda that failed (14-day retention). Null without the portal."
   value       = try(module.portal[0].schedule_dlq_url, null)
-}
-
-output "portal_admin_secret_name" {
-  description = "Name of the portal-admin secret the operator creates by hand (docs/deployment.md); the schedule-runner Lambda signs in with it to delegate pipeline runs. Suffix-aware, so read it from here; null without the portal."
-  value       = try(module.portal[0].portal_admin_secret_name, null)
 }
 
 output "service_entry_api_url" {

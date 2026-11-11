@@ -71,6 +71,20 @@ def _session_config(item: dict) -> dict | None:
     return cfg
 
 
+def _revoke_llm_grant(runtime_session_id: str) -> None:
+    """Drop the session's model grant, or fail the request.
+
+    A stop that answered 200 while the grant survived would tell the user the
+    session's credential is dead when its renewals still work. Refusing here
+    leaves the session as it was, so the user retries rather than trusts it.
+    """
+    try:
+        llm_credentials_service.revoke(runtime_session_id)
+    except Exception as e:  # noqa: BLE001 - any failure leaves a live grant
+        logger.error("could not revoke the model grant of %s: %s", runtime_session_id, e)
+        raise HTTPException(status_code=503, detail="Could not revoke the session's model grant; try again")
+
+
 @router.post("/workspace-credentials")
 def refresh_workspace_credentials(body: dict):
     """Container-facing: renew the session's short-lived grants.
@@ -295,14 +309,16 @@ def stop_session(session_id: str, user: str = Depends(get_current_user)):
     item = session_service.get_session(user, session_id)
     if not item:
         raise HTTPException(status_code=404, detail="Session not found")
-    session_service.set_status(user, session_id, "dormant")
-    # The next connect mints a fresh grant, so drop this one now: a token
-    # scraped out of the container stops working when the session does rather
-    # than lingering until its hour is up. Same for the workspace refresh
+    # The next connect mints a fresh grant, so drop this one now: an edge
+    # token scraped out of the container stops working when the session does,
+    # and an AgentCore credential can no longer be renewed, so it dies within
+    # its 15 minutes rather than lingering. Same for the workspace refresh
     # token, which otherwise had no end of life at all. Revoked before the
     # stop so the grace period in which an ended microVM still runs (tens of
-    # seconds, observed) holds no live credential.
-    llm_credentials_service.revoke(item["runtime_session_id"])
+    # seconds, observed) holds no live credential. Before the status write, so
+    # a failed revoke leaves the session reported as it really is (live).
+    _revoke_llm_grant(item["runtime_session_id"])
+    session_service.set_status(user, session_id, "dormant")
     workspace_credentials_service.revoke(user, session_id, item["runtime_session_id"])
     _end_sandboxes(user, item["runtime_session_id"])
     _end_compute(item)
@@ -315,8 +331,8 @@ def delete_session(session_id: str, user: str = Depends(get_current_user)):
     item = session_service.get_session(user, session_id)
     if not item:
         raise HTTPException(status_code=404, detail="Session not found")
+    _revoke_llm_grant(item["runtime_session_id"])  # before the status write, as in stop
     session_service.set_status(user, session_id, "terminated")
-    llm_credentials_service.revoke(item["runtime_session_id"])
     workspace_credentials_service.revoke(user, session_id, item["runtime_session_id"])
     _end_sandboxes(user, item["runtime_session_id"])
     if item.get("status") != "dormant":

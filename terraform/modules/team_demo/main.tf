@@ -18,7 +18,17 @@ locals {
       # bump to force a new runtime version when the image tag is mutable
       # (AgentCore resolves the tag at version creation)
       KERNEL_BUILD = var.team_demo_build
+      # This runtime is invoked by end users directly (any portal login token
+      # passes the authorizer below), not by the backend, so the kernel treats
+      # the payload as an allowlist: no memory, skills, async, model routing or
+      # secret placeholders, and MCP servers only on the gateway hosts below
+      # (AWS Continuum C004). Unconditional: there is no team-demo deployment
+      # that should trust its caller.
+      KERNEL_INBOUND = "jwt"
     },
+    # Without a host the kernel attaches no MCP server at all (fail closed);
+    # the demo then answers without its team tools.
+    length(var.gateway_hosts) > 0 ? { KERNEL_JWT_GATEWAY_HOSTS = join(",", var.gateway_hosts) } : {},
     var.model_env.use_bedrock ? { CLAUDE_CODE_USE_BEDROCK = "1" } : {},
     var.model_env.anthropic_model != "" ? { ANTHROPIC_MODEL = var.model_env.anthropic_model } : {},
     var.model_env.anthropic_small_fast_model != "" ? { ANTHROPIC_SMALL_FAST_MODEL = var.model_env.anthropic_small_fast_model } : {},

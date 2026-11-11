@@ -9,13 +9,19 @@ believes it is testing staging proves nothing about staging, and its test data
 lands in production.
 
   PORTAL_URL             portal origin of the environment under test
-  QA_TEST_USERS_SECRET   Secrets Manager secret of that environment's test users:
-                         {"issuer", "client_id", "users": {name: password}}
+  QA_TEST_USERS_SECRET   Secrets Manager secret of that environment's test users,
+                         one of two shapes, after the portal's sign-in mode:
+                         OIDC (Keycloak realm): {"issuer", "client_id", "users": {name: password}}
+                         Cognito (the default deployment, no oidc_issuer):
+                         {"cognito_client_id", "users": {name: password}}, the
+                         users created in the portal's user pool (docs/deployment.md)
   AWS_REGION
   QA_ENV                 staging | prod (what the engine passes as --env)
 
 check_same_environment() is the cross-environment guard: the issuer the portal
-accepts (GET /api/v1/config) must be the issuer the test users sign in to.
+accepts (GET /api/v1/config) must be the issuer the test users sign in to; for
+a Cognito portal, its app client must be the one the test users' secret names
+(each environment has its own pool and client).
 """
 
 import json
@@ -62,12 +68,35 @@ def users() -> dict:
     return _users
 
 
+_OIDC_KEYS = ("issuer", "client_id")
+
+
+def provider(u: dict) -> str:
+    """"cognito" or "oidc": which identity provider the test users' secret is
+    for. One shape only: a secret carrying keys of both (or of neither) is
+    refused, so the guard and the sign-in can never pick different providers."""
+    cognito = "cognito_client_id" in u
+    oidc = any(k in u for k in _OIDC_KEYS)
+    if cognito == oidc:
+        print("refusing to run: QA_TEST_USERS_SECRET must be exactly one shape, "
+              '{"cognito_client_id", "users"} or {"issuer", "client_id", "users"}', file=sys.stderr)
+        sys.exit(2)
+    return "cognito" if cognito else "oidc"
+
+
 def token_for(user: str) -> str:
-    """Access token for a test user through the realm's password grant."""
+    """Bearer token for a test user: the realm's password grant (OIDC), or a
+    Cognito USER_PASSWORD_AUTH sign-in on the portal's app client. The
+    provider is the one provider() names, the same one the guard checked."""
     u = users()
     pw = u["users"][user]
     if isinstance(pw, dict):
         pw = pw.get("password")
+    if provider(u) == "cognito":
+        idp = boto3.client("cognito-idp", region_name=region())
+        res = idp.initiate_auth(ClientId=u["cognito_client_id"], AuthFlow="USER_PASSWORD_AUTH",
+                                AuthParameters={"USERNAME": user, "PASSWORD": pw})
+        return res["AuthenticationResult"]["IdToken"]
     body = urllib.parse.urlencode({
         "grant_type": "password", "client_id": u["client_id"],
         "username": user, "password": pw, "scope": "openid",
@@ -104,16 +133,34 @@ def check_same_environment() -> dict:
     if status != 200 or not isinstance(cfg, dict):
         print(f"refusing to run: GET {portal()}/api/v1/config returned {status}", file=sys.stderr)
         sys.exit(2)
-    if cfg.get("auth_mode") != "oidc":
-        print(f"refusing to run: the portal's auth mode is {cfg.get('auth_mode')!r}; these checks sign "
-              "in through the environment's OIDC realm", file=sys.stderr)
+    mode = cfg.get("auth_mode")
+    u = users()
+    if mode in ("cognito", "oidc") and provider(u) != mode:
+        print(f"refusing to run: the portal signs in with {mode} but the test users in QA_TEST_USERS_SECRET "
+              f"are for {provider(u)}: PORTAL_URL and the test users are not the same environment", file=sys.stderr)
+        sys.exit(2)
+    if mode == "cognito":
+        portal_client = cfg.get("cognito_client_id") or ""
+        if not portal_client or portal_client != u.get("cognito_client_id", ""):
+            # the test users' client id comes out of the secret payload and is kept out of the log
+            print("refusing to run: the portal signs in with Cognito app client "
+                  f"{portal_client or '<no cognito_client_id in /api/v1/config>'} but the test users in "
+                  "QA_TEST_USERS_SECRET name a different client (or none): PORTAL_URL and the test users are "
+                  "not the same environment", file=sys.stderr)
+            sys.exit(2)
+        cfg["signed_in_via"] = f"Cognito, app client {portal_client}"
+        return cfg
+    if mode != "oidc":
+        print(f"refusing to run: the portal's auth mode is {mode!r}; these checks sign in through the "
+              "environment's OIDC realm or its Cognito user pool", file=sys.stderr)
         sys.exit(2)
     portal_issuer = (cfg.get("oidc_issuer") or "").rstrip("/")
-    users_issuer = users()["issuer"].rstrip("/")
+    users_issuer = (u.get("issuer") or "").rstrip("/")
     if not portal_issuer or portal_issuer != users_issuer:
         # the test users' issuer comes out of the secret payload and is kept out of the log
         print("refusing to run: the portal accepts tokens from "
               f"{portal_issuer or '<no oidc_issuer in /api/v1/config>'} but the test users in QA_TEST_USERS_SECRET "
               "sign in to a different issuer: PORTAL_URL and the test users are not the same environment", file=sys.stderr)
         sys.exit(2)
+    cfg["signed_in_via"] = f"OIDC, {portal_issuer}"
     return cfg

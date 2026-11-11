@@ -20,5 +20,6 @@ output "tool_names" {
 }
 
 output "function_names" {
-  value = { for id, f in aws_lambda_function.tool : id => f.function_name }
+  description = "Tool Lambda function names by tool id."
+  value       = { for id, f in aws_lambda_function.tool : id => f.function_name }
 }

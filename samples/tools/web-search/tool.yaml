@@ -1,0 +1,39 @@
+# Tool package: web-search (OpenAPI target)
+#
+# Web search with page text, from Exa (https://exa.ai). As with stock-quote
+# there is no code of ours: openapi.json is the tool definition, the gateway
+# turns the one operation into an MCP tool and makes the HTTPS call, and the
+# API key lives in an AgentCore Identity credential provider that the gateway
+# sends as the x-api-key header. The agent, the repository and the Terraform
+# state never hold the key.
+#
+# The upstream project this sample is ported from reached Exa's hosted MCP
+# server with the key in the URL's query string, from inside the agent's own
+# container. Here the agent reaches only the gateway, and the gateway's Cedar
+# policy bounds what a search may ask for.
+#
+# Enabling it is one step for the operator, with an Exa key at hand:
+#
+#   scripts/set_sample_tool_key.sh web-search < key.txt          # production
+#   scripts/set_sample_tool_key.sh web-search --env staging < key.txt
+#
+# That creates the provider under the name the foundation looks for
+# (<env>sample-tool-web-search); the next foundation apply publishes it and
+# terraform/workloads/modules/sample_tools creates this target. Without a
+# provider the target is skipped, and the agent is told web search is not
+# available here.
+kind: openapi
+description: Web search returning titles, URLs, dates and page text (Exa, API key held by AgentCore Identity)
+openapi: openapi.json
+# operationIds in openapi.json; the gateway names each <target>___<operationId>:
+# web-search___searchWeb
+operations:
+  - searchWeb
+credential:
+  type: api_key
+  # Exa reads the key from the x-api-key header; the gateway injects it there
+  location: header
+  parameter_name: x-api-key
+egress:
+  - api.exa.ai
+attribution: Search by Exa (https://exa.ai)

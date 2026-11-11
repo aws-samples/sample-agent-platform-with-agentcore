@@ -154,6 +154,9 @@ def main() -> int:
     assert "sample_runtime_arns      = module.runtime[0].sample_runtime_arns" in pc
     assert "local.facts.sample_tools.gateway_url" in pc
     assert "PLATFORM_SAMPLE_RUNTIME_ARNS" in portal_main and "PLATFORM_SAMPLE_TOOLS_GATEWAY_URL" in portal_main
+    # a sample's own memory store comes from the foundation's facts, never from this root
+    assert "sample_memory_ids = try(local.facts.runtime.sample_memories, {})" in pc, "sample memory ids must come from the facts"
+    assert "PLATFORM_SAMPLE_MEMORY_IDS                 = jsonencode(var.runtimes.sample_memory_ids)" in portal_main
     assert re.search(r'variable "sample_tool_ids"', root_vars) and re.search(r'variable "sample_platform_version"', root_vars)
     ok("root gates on features.sample_tools, reads ids/ARNs/URL from the facts, feeds the portal")
 

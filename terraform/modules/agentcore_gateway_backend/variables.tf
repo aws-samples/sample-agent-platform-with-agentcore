@@ -58,3 +58,9 @@ variable "name_suffix" {
   type        = string
   default     = ""
 }
+
+variable "extra_caller_role_arns" {
+  description = "IAM roles, besides the backend's, that run the invocation pipeline and mint the per-call model grant (the lark-teammate ingress function). Matched by aws:PrincipalArn, so the roles need not exist before this module is applied."
+  type        = list(string)
+  default     = []
+}

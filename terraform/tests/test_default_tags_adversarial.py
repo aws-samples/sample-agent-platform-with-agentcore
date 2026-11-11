@@ -15,7 +15,11 @@ aws_ssm_parameter that sets its own tag. Checks:
   - var.tags overrides a default key and adds new ones;
   - an empty or whitespace value is rejected;
   - no resource re-states a default key with a value of its own (two sources
-    for one tag drift apart).
+    for one tag drift apart);
+  - ci/infra (the CI roles and builds of both pipelines) follows the same
+    rules: one aws provider with default_tags from its local.common_tags,
+    Environment "ci" and no personal Owner by default, var.tags overrides,
+    blank values rejected, no resource re-states a default key.
 
 Run: python3 terraform/tests/test_default_tags_adversarial.py
 """
@@ -29,6 +33,7 @@ import sys
 import tempfile
 
 TF = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CI_INFRA = os.path.join(os.path.dirname(TF), "ci", "infra")
 KEYS = {"Project", "Environment", "Owner", "ManagedBy", "Lifecycle"}
 
 PROVIDER = '''
@@ -82,7 +87,7 @@ def _block(text: str, header: str) -> str:
 
 def _common_tags(main_tf: str) -> str:
     m = re.search(r"common_tags\s*=\s*merge\(", main_tf)
-    assert m, "main.tf must define local.common_tags = merge(...)"
+    assert m, "the root must define local.common_tags = merge(...)"
     depth, i = 0, m.end() - 1
     while True:
         depth += main_tf[i] == "("
@@ -124,16 +129,51 @@ def tag_violations(text: str) -> list:
     return found
 
 
-def resource_tag_violations() -> list:
+def resource_tag_violations(root: str = TF) -> list:
     found = []
-    for dirpath, _, files in os.walk(TF):
+    for dirpath, _, files in os.walk(root):
         if "/.terraform" in dirpath or "/tests" in dirpath:
             continue
         for f in files:
             if f.endswith(".tf"):
                 path = os.path.join(dirpath, f)
-                found += [f"{os.path.relpath(path, TF)}: tags sets {k}" for k in tag_violations(open(path, encoding="utf-8").read())]
+                found += [f"{os.path.relpath(path, root)}: tags sets {k}" for k in tag_violations(open(path, encoding="utf-8").read())]
     return found
+
+
+def _scratch(tmp: str, variables: str, locals_src: str) -> None:
+    """A root with the probe provider, the real `tags` variable and common_tags."""
+    with open(os.path.join(tmp, "main.tf"), "w", encoding="utf-8") as f:
+        f.write(PROVIDER)
+        f.write(_block(variables, 'variable "tags"') + "\n")
+        f.write("locals {\n  " + _common_tags(locals_src) + "\n}\n")
+    args = ["terraform", f"-chdir={tmp}", "init", "-backend=false", "-input=false", "-no-color"]
+    installed = os.path.join(TF, ".terraform", "providers")
+    if os.path.isdir(os.path.join(installed, "registry.terraform.io", "hashicorp", "aws")):
+        args.append(f"-plugin-dir={installed}")
+    subprocess.run(args, capture_output=True, text=True, timeout=600, check=True)  # nosec B603
+
+
+def check_ci_infra(root: str = CI_INFRA) -> None:
+    files = [f for f in os.listdir(root) if f.endswith(".tf")]
+    src = "".join(open(os.path.join(root, f), encoding="utf-8").read() for f in files)
+    assert len(re.findall(r'^provider "aws"', src, re.M)) == 1, "ci/infra must have exactly one aws provider block"
+    prov = _block(src, 'provider "aws"')
+    assert re.search(r"default_tags\s*\{\s*tags\s*=\s*local\.common_tags\s*\}", prov), \
+        "ci/infra: provider aws must set default_tags { tags = local.common_tags }"
+    assert 'variable "tags"' in src, "ci/infra must declare var.tags"
+    with tempfile.TemporaryDirectory() as tmp:
+        _scratch(tmp, src, src)
+        t = _plan(tmp)
+        assert KEYS <= set(t), f"ci/infra default tags missing: {sorted(KEYS - set(t))}"
+        assert t["Environment"] == "ci" and t["ManagedBy"] == "terraform" and t["Name"] == "probe", t
+        assert t["Owner"] == "unset", f"ci/infra must not default Owner to a person: {t['Owner']!r}"
+        t = _plan(tmp, '-var=tags={Owner="ops-team",CostCenter="cc-42"}')
+        assert t["Owner"] == "ops-team" and t["CostCenter"] == "cc-42" and t["Environment"] == "ci", t
+        for bad in ('{Owner=""}', '{Owner="  "}'):
+            assert _plan(tmp, f"-var=tags={bad}") is None, f"ci/infra tags = {bad} must be rejected"
+    found = resource_tag_violations(root)
+    assert not found, "\n".join(found)
 
 
 def main() -> int:
@@ -152,15 +192,7 @@ def main() -> int:
     ok("the root's single aws provider sets default_tags from local.common_tags")
 
     with tempfile.TemporaryDirectory() as tmp:
-        with open(os.path.join(tmp, "main.tf"), "w", encoding="utf-8") as f:
-            f.write(PROVIDER)
-            f.write(_block(variables, 'variable "tags"') + "\n")
-            f.write("locals {\n  " + _common_tags(main_tf) + "\n}\n")
-        args = ["terraform", f"-chdir={tmp}", "init", "-backend=false", "-input=false", "-no-color"]
-        installed = os.path.join(TF, ".terraform", "providers")
-        if os.path.isdir(os.path.join(installed, "registry.terraform.io", "hashicorp", "aws")):
-            args.append(f"-plugin-dir={installed}")
-        subprocess.run(args, capture_output=True, text=True, timeout=600, check=True)  # nosec B603
+        _scratch(tmp, variables, main_tf)
 
         t = _plan(tmp)
         assert KEYS <= set(t), f"default tags missing: {sorted(KEYS - set(t))}"
@@ -184,6 +216,28 @@ def main() -> int:
     found = resource_tag_violations()
     assert not found, "\n".join(found)
     ok("no resource re-states a default tag key in its own tags")
+
+    # ci/infra is the internal pipeline's and is not in the published sample:
+    # only a tree with no ci/ at all skips it; ci/ without infra/ fails.
+    if not os.path.isdir(os.path.join(os.path.dirname(TF), "ci")):
+        print("  skip ci/infra tags: published tree (no ci/)")
+    else:
+        # broken ci/infra first: main's old hard-coded map (a person as Owner, no var.tags)
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = os.path.join(tmp, "infra")
+            shutil.copytree(CI_INFRA, broken, ignore=shutil.ignore_patterns(".terraform", "tests"))
+            vpath = os.path.join(broken, "versions.tf")
+            v = open(vpath, encoding="utf-8").read()
+            assert "tags = local.common_tags" in v, "ci/infra/versions.tf no longer sets default_tags from local.common_tags"
+            open(vpath, "w", encoding="utf-8").write(v.replace("tags = local.common_tags", 'tags = { Project = "agent-platform", Owner = "odin" }'))
+            try:
+                check_ci_infra(broken)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError("a hard-coded ci/infra default_tags map must be rejected")
+        check_ci_infra()
+        ok("ci/infra: default_tags from local.common_tags, Environment ci, Owner unset, overridable, blanks rejected, no restated keys")
 
     print("default tags: all assertions passed")
     return 0

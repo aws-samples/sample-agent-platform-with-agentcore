@@ -28,6 +28,7 @@ locals {
       agent_observability       = var.agent_observability
       sample_tools              = var.enable_sample_tools && var.enable_runtime
       sandbox                   = var.enable_sandbox && var.enable_runtime
+      lark_ingress              = local.lark_ingress_on
     }
 
     network = {
@@ -58,6 +59,8 @@ locals {
         # one per sample agent (Sample Agents feature); {} when none
         samples = module.runtime[0].sample_role_arns
       }
+      # own memory store per sample agent with memory = true; {} when none
+      sample_memories               = module.runtime[0].sample_memory_ids
       workspace_access_role_arn     = module.runtime[0].workspace_access_role_arn
       xray_delivery_destination_arn = module.runtime[0].xray_delivery_destination_arn
     } : null
@@ -113,6 +116,10 @@ locals {
       role_arn          = module.sandbox[0].role_arn
       repository_url    = module.sandbox[0].repository_url
     } : null
+
+    # the Lark ingress of the lark-teammate sample (null when off): the
+    # workloads root creates the function under this name, role and log group
+    lark_ingress = local.lark_ingress_on ? module.lark_ingress[0].facts : null
 
     # the optional customer-owned MCP hub demo and its IAM entry (null when the
     # demo is off). The backend's mcp-hub iam mode needs caller_role_arn; the

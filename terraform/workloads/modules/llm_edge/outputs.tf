@@ -1,5 +1,6 @@
 output "namespace" {
-  value = local.namespace
+  description = "Kubernetes namespace llm-edge runs in."
+  value       = local.namespace
 }
 
 output "release_names" {

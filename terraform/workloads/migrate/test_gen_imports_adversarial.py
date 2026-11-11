@@ -15,7 +15,8 @@ the state history are stubbed.
      name matches; a changed image, secret or chart is a real change.
   6. ci/codebuild/run.sh plan_changes (the reviewed-vs-current comparison)
      ignores random_password.bcrypt_hash, which the provider salts afresh on
-     every import, and nothing else.
+     every import, and nothing else. Skipped in the published sample, which
+     has no ci/ at all; a checkout with ci/ but no run.sh fails.
   4. The session-binding key is taken from the current foundation state when
      it is still there, and otherwise from the newest EARLIER version of the
      state object that holds it (never the latest, which has forgotten it);
@@ -144,7 +145,12 @@ def main() -> int:
         print("  skip run.sh plan_changes check: no jq on PATH (CI installs it; run.sh itself needs it)")
         print("gen_imports adversarial: all assertions passed")
         return 0
-    run_sh = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "ci", "codebuild", "run.sh"), encoding="utf-8").read()
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    if not os.path.isdir(os.path.join(repo, "ci")):
+        print("  skip run.sh plan_changes check: published tree (no ci/, the pipeline is not part of it)")
+        print("gen_imports adversarial: all assertions passed")
+        return 0
+    run_sh = open(os.path.join(repo, "ci", "codebuild", "run.sh"), encoding="utf-8").read()
     jq_prog = re.search(r"plan_changes\(\) \{.*?\| jq -S -c '(.*?)'\n\}", run_sh, re.S).group(1)
     def canon(bh):
         plan = {"resource_changes": [{"address": "module.portal[0].random_password.session_binding", "type": "random_password",

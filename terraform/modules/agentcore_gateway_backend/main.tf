@@ -165,13 +165,34 @@ data "aws_iam_policy_document" "caller_assume" {
       identifiers = [var.backend_role_arn]
     }
   }
+  # Other functions that run the invocation pipeline outside the backend (the
+  # lark-teammate ingress), named by ARN: a condition rather than a
+  # principal, so the trust does not depend on the role existing first.
+  dynamic "statement" {
+    for_each = length(var.extra_caller_role_arns) > 0 ? [1] : []
+    content {
+      sid     = "PipelineFunctions"
+      actions = ["sts:AssumeRole", "sts:TagSession"]
+      principals {
+        type        = "AWS"
+        identifiers = ["arn:aws:iam::${local.account}:root"]
+      }
+      condition {
+        test     = "ArnEquals"
+        variable = "aws:PrincipalArn"
+        values   = var.extra_caller_role_arns
+      }
+    }
+  }
 }
 
 resource "aws_iam_role" "caller" {
-  name                 = "agent-platform-inference-caller${var.name_suffix}"
-  assume_role_policy   = data.aws_iam_policy_document.caller_assume.json
-  max_session_duration = 43200
-  description          = "Per-session identity for the agentcore_gateway model backend; session policy narrows each grant to this gateway, revocation is an inline Deny managed by the backend"
+  name               = "agent-platform-inference-caller${var.name_suffix}"
+  assume_role_policy = data.aws_iam_policy_document.caller_assume.json
+  # The backend only ever asks for 15 minutes (the STS minimum); a session
+  # is revoked by refusing to renew it. One hour is the IAM floor here.
+  max_session_duration = 3600
+  description          = "Per-session identity for the agentcore_gateway model backend; session policy narrows each grant to this gateway, revocation is non-renewal of 15-minute credentials"
 }
 
 data "aws_iam_policy_document" "caller" {

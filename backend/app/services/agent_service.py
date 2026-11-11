@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 import boto3
 import yaml
 
-from app.config import resolve_platform_version, sample_runtime_arn, settings
+from app.config import resolve_platform_version, sample_memory_id, sample_runtime_arn, settings
 from app.services.ecosystem_service import ecosystem_service
 from app.services.mcp_hub_credentials_service import mcp_hub_credentials_service
 from app.services.dynamo import query_all
@@ -208,6 +208,15 @@ class AgentService:
         elif existing and existing.get("runtime"):
             # a republish of a clone without the field keeps the clone's runtime
             runtime = existing["runtime"]
+        if runtime and memory_id and memory_id != sample_memory_id(runtime):
+            # a sample runtime's role reaches its sample's own store only
+            # (foundation modules/runtime/sample_memory.tf): any other store
+            # would fail at every invocation, so refuse it at publish
+            own = sample_memory_id(runtime)
+            raise ValueError(
+                f"an agent on {runtime} can use only its sample's memory store"
+                + (f" ({own})" if own else " (this sample has none here)")
+            )
         if existing and source == "manual" and existing.get("source"):
             # A republish does not change where the agent came from: the
             # Publish page never sends ``source``, and overwriting the stored

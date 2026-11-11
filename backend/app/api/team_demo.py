@@ -52,11 +52,16 @@ def _demo_config() -> dict:
 
 @router.get("/config")
 def team_demo_config(user: str = Depends(get_current_user)) -> dict:
+    # Not the runtime ARN, gateway id/URL or issuer: a caller needs none of
+    # them to use the demo (``/invoke`` reads them server-side), and the ARN is
+    # what a direct invocation of the JWT-inbound runtime needs. The runtime
+    # restricts such payloads itself (KERNEL_INBOUND=jwt); this only stops
+    # handing out the address.
     cfg = _demo_config()
     return {
         "enabled": bool(cfg.get("runtime_arn") and cfg.get("mcp_url")),
         "auth_mode_oidc": bool(settings.oidc_issuer),
-        **{k: cfg.get(k) for k in ("gateway_id", "issuer", "mcp_url", "teams", "runtime_arn")},
+        "teams": cfg.get("teams"),
     }
 
 

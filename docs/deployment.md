@@ -17,7 +17,21 @@
   EKS nodes are Graviton). On x86 hosts enable QEMU emulation or build on a
   Graviton instance.
 - Amazon Bedrock AgentCore available in your target region
-- Python ≥ 3.11, Node.js ≥ 20
+- Python ≥ 3.11 with `pip` and boto3/botocore ≥ 1.43.98, Node.js ≥ 20.
+  Terraform runs `scripts/set_platform_version.py` with the interpreter that
+  `platform_version_python` names (default `python3`); an older botocore fails
+  the apply with "this botocore does not know platformVersion".
+  `pip install -r backend/requirements.txt` provides it;
+  `deploy-schedule-lambda.sh` needs `pip` in the interpreter `PYTHON` names.
+- The API Gateway account-level CloudWatch role in the target region (one per
+  account and region; the private service-entry stage writes access logs and
+  fails without it):
+
+  ```bash
+  aws apigateway get-account --query cloudwatchRoleArn   # empty: set one
+  aws apigateway update-account --patch-operations \
+    op=replace,path=/cloudwatchRoleArn,value=<role-arn-with-AmazonAPIGatewayPushToCloudWatchLogs>
+  ```
 
 > **Deploying into a permission-controlled account?** Read
 > [permissions.md](permissions.md) first. It enumerates the IAM roles the
@@ -215,23 +229,33 @@ The `agentcore_gateway_inference_base_url` output is the `base_url` for step 7.
    all of the above against a live account.
 
 5. **Create the role the backend assumes per session**, with
-   `MaxSessionDuration` 12 h and one grant: `bedrock-agentcore:InvokeGateway`
-   on the gateway ARN. Its trust policy admits the backend's **IRSA
-   web-identity token** (the backend and entry ServiceAccounts): the backend
-   exchanges that token directly with `AssumeRoleWithWebIdentity`, so the
-   per-session credential is a first hop and can last the 9 hours a headless
-   async run needs. Assuming the role from the backend role's own
-   credentials would be role chaining, which STS caps at one hour. The
-   backend role also gets `iam:GetRole`/`PutRolePolicy`/`DeleteRolePolicy` on
-   the caller role for revocation, and `sts:AssumeRole`/`TagSession` for runs
-   outside a pod (local development, the e2e), which mint with plain
-   `AssumeRole` and a `session_id` tag instead. The module sets
-   `PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN` on the backend.
+   `MaxSessionDuration` 1 h (the backend only ever asks for 15 minutes) and
+   one grant: `bedrock-agentcore:InvokeGateway` on the gateway ARN. Its
+   trust policy admits the backend's **IRSA web-identity token** (the backend
+   and entry ServiceAccounts), which the backend exchanges directly with
+   `AssumeRoleWithWebIdentity`. The backend role also gets
+   `sts:AssumeRole`/`TagSession` for runs outside a pod (local development,
+   the e2e), which mint with plain `AssumeRole` and a `session_id` tag
+   instead. The module sets `PLATFORM_AGENTCORE_GATEWAY_CALLER_ROLE_ARN` on
+   the backend, and `PLATFORM_LLM_RENEW_URL` (the portal entry's
+   `/api/v1/llm-credentials/renew`) so a headless kernel can renew.
 
-   Either way the role session name is the runtime session id, and
-   revocation is an inline Deny on the caller role matching
-   `aws:userid = <caller role id>:<session id>` (web-identity sessions) or
-   `aws:PrincipalTag/session_id` (tagged ones).
+   Either way the role session name is the runtime session id. **Revocation
+   is non-renewal.** Every credential lives 15 minutes (the STS minimum); the
+   kernel renews it before it expires, and stopping or deleting a session
+   deletes its grant row so the next renewal is refused. A credential scraped
+   out of a container therefore works for at most 15 minutes after its
+   session ends. The grant itself has a ceiling (1 h for a synchronous run,
+   9 h for an async one) past which renewal is refused too. The backend holds
+   no IAM write permission for this.
+
+   **Cutover from the Deny-list design.** Earlier versions revoked through an
+   inline policy `AgentCoreSessionRevocations` on the caller role, written by
+   the backend. After deploying this version, wait until every credential
+   the old version issued has expired (9 h covers its longest grant), then
+   delete that policy and remove `iam:GetRole`/`PutRolePolicy`/
+   `DeleteRolePolicy` from the backend role. Deleting it earlier would
+   re-enable sessions revoked shortly before the upgrade.
 
 6. **Deny the kernel roles direct access to this gateway.** The kernel roles
    already hold `bedrock-agentcore:InvokeGateway` on `gateway/*` so they can
@@ -293,23 +317,37 @@ offers a Bedrock profile ID that the gateway would reject.
 ## 3. Build & push images
 
 ```bash
-./scripts/build-and-push.sh          # builds arm64 images, pushes to ECR
+./scripts/build-and-push.sh [tag]    # builds arm64 images, pushes to ECR
+PLATFORM_NAME_SUFFIX=-staging ./scripts/build-and-push.sh [tag]   # an environment with a name_suffix
 ```
 
 ## 4. Deploy the runtimes, the cluster and the portal
 
+Two applies, foundation first: the workloads root reads the facts document
+(`/agent-platform<suffix>/foundation` in SSM) that the foundation's apply
+publishes, and its plan fails without it.
+
 ```bash
+# in terraform/: the EKS cluster, load balancers, CloudFront, Cognito, the
+# scheduler engine's roles and the private service-entry API
 terraform apply
+
+# in terraform/workloads/: the three AgentCore runtimes, the backend and entry
+# Deployments on the cluster, the schedule-runner Lambda
+cd workloads
+cp terraform.tfvars.example terraform.tfvars   # aws_region and name_suffix as in the foundation; image tags
+terraform init
+terraform apply
+cd ..
 ```
 
-One apply creates the three AgentCore runtimes, the EKS cluster (control
-plane ≈ 10 min, node group ≈ 3 min, then the two cluster controllers) and the
-portal — the backend Deployments on the cluster, the load balancers, CloudFront,
-Cognito, the scheduler engine and the private service-entry API. Budget about
-25 minutes.
+The foundation apply takes about 20 minutes (EKS control plane ≈ 10 min,
+node group ≈ 3 min, then the two cluster controllers); the workloads apply
+about 5 (the runtimes). Until the second one there is no runtime and no
+backend pod behind the portal's API.
 
-Outputs: `interactive_runtime_arn`, `sdk_runtime_arn`, `portal_url`,
-`kubeconfig_command`.
+Outputs: `portal_url`, `kubeconfig_command` (foundation);
+`interactive_runtime_arn`, `sdk_runtime_arn` (`terraform -chdir=workloads output`).
 
 **Runtime platform version.** AgentCore Runtime has two platform versions.
 V1 (the default) boots the container for every new session; V2 boots it once,
@@ -389,8 +427,8 @@ terraform -chdir=terraform output -raw portal_url
 Both scripts take their targets (bucket, distribution, function name) from
 the foundation's facts document, `/agent-platform<suffix>/foundation`; set
 `PLATFORM_NAME_SUFFIX=-staging` to address the staging environment. Under the
-maintained pipeline the frontend is published by the apply builds instead
-(`docs/ci-cd.md`).
+maintained pipeline the apply builds publish both after every apply instead
+(`docs/ci-cd.md`), so neither is run by hand there.
 
 What runs where: the backend is two Deployments in the `portal` namespace of
 the `agent-platform` EKS cluster — `backend` (the management API, 2 replicas)
@@ -413,8 +451,12 @@ EventBridge Scheduler group, the `agent-platform-schedule-runner` Lambda and
 an SQS DLQ. Terraform creates the function with placeholder code —
 `deploy-schedule-lambda.sh` builds the real package (the backend's `app`
 module + arm64 wheels) and updates it, the same split as kernel images
-(infra in Terraform, code artifact via script). Re-run it whenever backend
-service code changes. Locally (`uvicorn`, no EventBridge wiring) the backend
+(infra in Terraform, code artifact via script). Without the pipeline, re-run
+it whenever backend service code changes: Terraform ignores the function's
+code, so a runner that was never redeployed keeps running old code without
+any error. The packages install from the hash-locked
+`ci/lock/schedule-runner.txt` (`ci/lock/update.sh` regenerates it from
+`backend/requirements-lambda.txt`). Locally (`uvicorn`, no EventBridge wiring) the backend
 falls back to an in-process tick loop automatically.
 
 ### Portal sign-in (Cognito)
@@ -445,6 +487,47 @@ Auth modes (backend resolves in this order):
 | Open | neither set **and** `PLATFORM_ALLOW_OPEN_AUTH=1` | Local development only. Without the flag the backend refuses to start; it also refuses a Cognito pair with one value missing, and an OIDC issuer without `PLATFORM_OIDC_AUDIENCE`. |
 
 ## 6. Smoke test
+
+### Verify the deployment
+
+`scripts/e2e_platform.py` drives the governed surface (invoke, observability,
+publish, channels, scheduler, eval, memory, quotas) as the `admin` test user
+and removes what it created; `e2e_publish_guards.py` and
+`e2e_session_binding_live.py` add the privilege and tenant checks with a
+second, non-admin user (`alice`). They sign in through the portal's own
+identity provider and refuse to run against any other environment. On a
+Cognito portal (the default), create the users in its pool and store their
+passwords in a secret:
+
+```bash
+POOL=$(terraform -chdir=terraform output -raw user_pool_id)
+CLIENT=$(terraform -chdir=terraform output -raw user_pool_client_id)
+for g in platform-admin platform-super-admin; do
+  aws cognito-idp create-group --user-pool-id "$POOL" --group-name "$g"
+done
+for u in admin alice bob; do
+  aws cognito-idp admin-create-user --user-pool-id "$POOL" --username "$u" --message-action SUPPRESS
+  aws cognito-idp admin-set-user-password --user-pool-id "$POOL" --username "$u" --permanent \
+    --password "<a password for $u>"
+done
+for g in platform-admin platform-super-admin; do
+  aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" --username admin --group-name "$g"
+done
+aws secretsmanager create-secret --name agent-platform/e2e-test-users \
+  --secret-string "{\"cognito_client_id\": \"$CLIENT\", \"users\": {\"admin\": \"...\", \"alice\": \"...\", \"bob\": \"...\"}}"
+
+export PORTAL_URL=$(terraform -chdir=terraform output -raw portal_url) AWS_REGION=<region> \
+  QA_ENV=prod QA_TEST_USERS_SECRET=agent-platform/e2e-test-users \
+  WORKSPACE_BUCKET=$(terraform -chdir=terraform output -raw workspace_bucket_name)
+python3 scripts/e2e_platform.py
+```
+
+With the team-auth demo as the portal's IdP (`oidc_issuer` set), the secret
+holds `{"issuer", "client_id", "users"}` for the realm instead. The memory
+check creates an AgentCore Memory store (`platform_default-*`) that outlives a
+`terraform destroy`; delete it when you tear down.
+
+### By hand
 
 1. **Headless kernel**: Debug page → enter a prompt → Invoke. First call has
    cold-start latency (microVM provisioning); reusing the warm session is fast.
@@ -480,29 +563,14 @@ Auth modes (backend resolves in this order):
      python3 scripts/e2e_platform.py
    ```
 
-   It signs in as `admin` (password from Secrets Manager
-   `agent-platform/portal-admin`, or set `PORTAL_PASSWORD`), creates uniquely
-   named test resources, asserts 20 checks and cleans up after itself. For
-   manual walkthroughs of each page, see the
-   [user guide](user-guide.md).
+   It signs in as a test user of the deployment's OIDC realm (the
+   environment `scripts/qa_env.py` documents), creates uniquely named test
+   resources, asserts 20 checks and cleans up after itself. For manual
+   walkthroughs of each page, see the [user guide](user-guide.md).
 
-   **The `portal-admin` secret.** Nothing creates it for you — it holds
-   `{"username","password"}` for a portal admin, and two things read it: this
-   E2E suite, and the schedule-runner Lambda when it delegates a
-   `pipeline:{name}` run to the backend API. Its name is **suffix-aware**,
-   because the credential is a user in *this* stack's Cognito pool and two
-   stacks in one account must not share one:
-
-   ```bash
-   cd terraform
-   aws secretsmanager create-secret \
-     --name "$(terraform output -raw portal_admin_secret_name)" \
-     --secret-string '{"username":"admin","password":"<the admin password>"}'
-   ```
-
-   With a `name_suffix` set, point the E2E suite at the same name
-   (`PORTAL_ADMIN_SECRET=agent-platform<suffix>/portal-admin`); its default is
-   the unsuffixed one.
+   No portal-admin password is involved anywhere in this deployment: the
+   E2E suite uses the realm, and the schedule-runner Lambda reaches the
+   backend through the private service entry with its own role.
 
    **The session-binding key.** The backend binds every caller-supplied
    AgentCore session id (and every channel conversation id) to the
@@ -689,7 +757,7 @@ never before it, at no cost. Items without `ttl` are kept. The backend sets
 | Daily quota counters | 90 days after the day | `RETENTION_USAGE_DAYS` |
 | Async service-entry results | 7 days | `RETENTION_SERVICE_INVOCATION_DAYS` |
 | Terminated sessions | 30 days after termination; workspace files in S3 are not touched | `RETENTION_TERMINATED_SESSION_DAYS` |
-| Model gateway grants and revocations | 1 day past the credential's expiry | fixed |
+| Model gateway grants | 1 day past the grant's last possible credential | fixed |
 | Workspace refresh-token lookups | 2 days; AgentCore sessions last at most 8 hours | fixed |
 | Audit trail | forever | `RETENTION_AUDIT_DAYS` |
 | Pipeline runs | forever | `RETENTION_PIPELINE_RUN_DAYS` |
@@ -720,7 +788,7 @@ and before TTL nothing removed them.
 | Feed pipeline search stage returns nothing / AccessDenied | The Web Search gateway is missing or unreachable: run `scripts/deploy_websearch_gateway.py`, confirm `/agent-platform/websearch-gateway` exists in SSM (us-east-1), and check the kernel role has `bedrock-agentcore:InvokeGateway` (`InvokeGateways` statement in the runtime module) |
 | Search stage fails with `ValidationException` on `filters` | The connector target is pinned to `1.1.0`, which has no request-level filters — re-run `scripts/deploy_websearch_gateway.py` (it re-pins to `1.2.0`; an omitted version is sticky on update) |
 | Crawl stage reports `crawl_ok: false` for most items | Expected for paywalled or bot-blocked pages — the summary falls back to the search snippet. If it is *every* item, check the `BuiltinTools` grant covers `StartBrowserSession` on `browser/*` |
-| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | The Lambda delegates pipeline runs to the backend API as the portal admin — check the secret named by `terraform output -raw portal_admin_secret_name` exists (it is suffix-aware: `agent-platform<suffix>/portal-admin`), that the Lambda's `PLATFORM_PORTAL_ADMIN_SECRET` env and its role's `PortalAdminSecret` grant name that same secret, and that `PLATFORM_PORTAL_API_URL` points at the CloudFront domain (not the bare ALB). A `NotAuthorizedException` here means the secret holds another stack's password |
+| `pipeline:{name}` schedule fails only when fired by the Lambda (works from the portal) | A `403 this IAM principal may not start pipeline runs` means the backend's `PLATFORM_PIPELINE_SERVICE_CALLERS` does not name the runner role; a `403` from API Gateway itself (no backend detail) means the runner role lacks the `PipelineServiceEntry` grant or the foundation predates the pipeline routes; a timeout means the Lambda is not in the VPC (`vpc_config`) or its security group cannot reach the execute-api endpoint. |
 | Eval run stuck in `running` | Check backend logs; note that DynamoDB `UpdateExpression` treats `status`/`error` as reserved words — any new update expression must alias attribute names |
 | Memory store stays `CREATING` | Normal for the first few minutes after creation; AgentCore provisions the store asynchronously |
 | Memory retrieval returns nothing right after a conversation | Long-term extraction is asynchronous (typically under a minute); raw events are visible immediately on the Memory page |
@@ -740,11 +808,18 @@ and before TTL nothing removed them.
 ## Teardown
 
 ```bash
-cd terraform && terraform destroy
+terraform -chdir=terraform/workloads destroy   # runtimes, Deployments, Lambda first
+terraform -chdir=terraform destroy
 ```
 
-The workspace bucket is retained by default (session data): `destroy` stops on
-it while it is non-empty — empty it first if you want a full cleanup. With the
+The workspace bucket is retained by default (session data) and versioned:
+`destroy` stops on it while any object version is left, so delete every
+version first if you want a full cleanup. AgentCore keeps the runtimes'
+network interfaces (type `agentic_ai`) for hours after the runtimes are
+deleted, and the private subnets and runtime security group cannot be deleted
+until it releases them: run the foundation `destroy` again later. Run-time
+leftovers outside any state: AgentCore Memory stores, the runtimes' log groups
+(`/aws/bedrock-agentcore/runtimes/*`) and the cluster's Fluent Bit log group. With the
 team-auth demo enabled, the Keycloak RDS instance has deletion protection on;
 turn it off before destroying. The NAT Gateway (~$32/mo) and the EKS control
 plane (~$73/mo) bill hourly whether or not anything runs — destroy when not

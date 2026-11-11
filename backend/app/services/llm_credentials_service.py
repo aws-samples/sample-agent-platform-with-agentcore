@@ -18,7 +18,13 @@ Delivery mirrors the workspace-credential flow:
 - at warmup, inside the ``/invocations`` payload (``llm_credentials``);
 - afterwards through ``POST /api/v1/sessions/workspace-credentials``, which
   rotates both grants in one call — the container already polls it on the
-  credential-expiry cadence, so this adds no new endpoint and no second secret.
+  credential-expiry cadence, so this adds no new endpoint and no second secret;
+- for a headless kernel on the AgentCore path, through
+  ``POST /api/v1/llm-credentials/renew`` with the renewal token delivered in
+  the grant (a headless kernel has no workspace refresh token).
+
+An AgentCore credential lives 15 minutes and is revoked by refusing to renew
+it, so every renewal path checks that the grant row still exists.
 
 A token that leaks buys nothing off-platform: the edge listener is internal to
 the VPC with no public route, the grant expires within the hour, and it is
@@ -38,7 +44,7 @@ import urllib.parse
 import boto3
 
 from app.config import settings
-from app.services import retention
+from app.services import retention, session_binding
 from app.services.dynamo import query_all
 
 logger = logging.getLogger(__name__)
@@ -54,18 +60,46 @@ LLM_TOKEN_PK = "LLMTOKEN"
 
 # ---------------------------------------------------------------- AgentCore
 
-# STS refuses anything shorter, so this is the floor on how stale a revoked
-# AgentCore session's credentials can be if the Deny below fails to apply.
+# Lifetime of every AgentCore gateway credential: the shortest STS issues.
+# This *is* the revocation bound. An STS session cannot be withdrawn, so a
+# session is revoked by no longer renewing it (see renew_agentcore), and a
+# credential scraped out of a container stays usable for at most this long
+# after its session ends. The previous design kept the credential long-lived
+# and revoked through a per-session Deny list on the caller role; that list
+# grew with the revocation rate and IAM caps a role's inline policies at
+# 10,240 characters in total, so past roughly 85 live entries revocation
+# stopped applying (Continuum C008, with C041 / C042 in the same mechanism).
 AGENTCORE_TTL_S = 900
 
-# Sessions whose AgentCore credentials have been revoked but whose STS
-# expiry has not yet passed. The role's inline Deny is rebuilt from this
-# partition, and entries are dropped once they expire — that pruning is what
-# keeps the policy inside the 10 KB per-policy limit.
-LLM_REVOKE_PK = "LLMREVOKE"
+# At most one STS call per session in this interval, however many kernels or
+# requests share the renewal token, so a holder of the token cannot turn it
+# into an STS call per request. A renewal inside it is throttled, not refused:
+# several invocations share one grant row, and one of them renewing must not
+# end another's grant. Kernels start renewing 5 minutes before expiry, which
+# leaves room for several retries past this.
+AGENTCORE_RENEW_MIN_INTERVAL_S = 60
 
-# Inline policy on the caller role carrying the per-session Deny statements.
-REVOKE_POLICY_NAME = "AgentCoreSessionRevocations"
+
+class RenewThrottled(Exception):
+    """A renewal arrived within AGENTCORE_RENEW_MIN_INTERVAL_S of the last one.
+
+    Not a refusal: the grant is alive and the caller should retry after
+    ``retry_after`` seconds.
+    """
+
+    def __init__(self, retry_after: int):
+        super().__init__(f"retry after {retry_after}s")
+        self.retry_after = retry_after
+
+# Inline policy the previous design kept on the caller role. Nothing writes it
+# any more; the name stays so the cutover runbook (docs/deployment.md) can
+# refer to it.
+LEGACY_REVOKE_POLICY_NAME = "AgentCoreSessionRevocations"
+
+# AgentCore runtimeSessionId: 33-100 characters of [A-Za-z0-9_-]; and the
+# renewal token's own shape (hex SHA-256).
+_RSID_RE = re.compile(r"[A-Za-z0-9_-]{1,100}")
+_RENEW_TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 
 _GATEWAY_HOST_RE = re.compile(
     r"^(?P<id>[A-Za-z0-9_-]+)\.gateway\.bedrock-agentcore\.(?P<region>[a-z0-9-]+)\.amazonaws\.com$"
@@ -98,6 +132,52 @@ def _region_from_gateway_arn(gateway_arn: str) -> str:
     return parts[3] if len(parts) > 4 else ""
 
 
+def _renew_token(runtime_session_id: str, nonce: str) -> str:
+    """The kernel's renewal credential for one AgentCore grant.
+
+    Derived rather than stored: an HMAC under the platform binding secret over
+    the session id and the row's nonce. Every invocation on one warm session
+    gets the same token (the nonce survives re-mints), and deleting the row
+    invalidates all of them at once. A reader of the table learns nothing
+    replayable without the binding secret.
+    """
+    return hmac.new(
+        session_binding._secret(),
+        b"llm-renew\x00" + runtime_session_id.encode() + b"\x00" + nonce.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _agentcore_block(item: dict, creds: dict, expires_at: int) -> dict:
+    """The kernel's credential block for an AgentCore grant row."""
+    runtime_session_id = str(item.get("runtime_session_id") or "")
+    gateway_arn = str(item.get("gateway_arn") or "")
+    return {
+        "mode": "agentcore_gateway",
+        "endpoint": str(item.get("upstream_base_url") or ""),
+        "session_id": runtime_session_id,
+        "region": _region_from_gateway_arn(gateway_arn) or settings.aws_region,
+        # The gateway's data plane signs as bedrock-agentcore, not as the
+        # control-plane service the SDK would guess from the hostname.
+        "service": "bedrock-agentcore",
+        "access_key_id": creds["AccessKeyId"],
+        "secret_access_key": creds["SecretAccessKey"],
+        "session_token": creds["SessionToken"],
+        "expires_at": expires_at,
+        # Carried for the kernel's fail-fast check only. The kernel must not
+        # treat this as authorization — see mint_agentcore's docstring.
+        "allowed_models": [str(m) for m in (item.get("allowed_models") or [])],
+        # How the kernel keeps the grant alive past one credential. Empty url =
+        # this deployment has no route back from the runtime, and the kernel
+        # simply runs until the credential expires.
+        "renew": {
+            "url": settings.llm_renew_url,
+            "token": _renew_token(runtime_session_id, str(item.get("renew_nonce") or "")),
+            "grant_expires_at": int(item.get("grant_expires_at") or 0),
+        },
+    }
+
+
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -124,9 +204,7 @@ class LlmCredentialsService:
         dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
         self.table = dynamodb.Table(settings.dynamo_table)
         self.sts = boto3.client("sts", region_name=settings.aws_region)
-        self.iam = boto3.client("iam")
         self._account_id = ""
-        self._caller_role_id_cache = ""
 
     @property
     def enabled(self) -> bool:
@@ -237,6 +315,7 @@ class LlmCredentialsService:
         team: str = "",
         ttl_s: int = AGENTCORE_TTL_S,
         models: list[str] | None = None,
+        renew_of: dict | None = None,
     ) -> dict | None:
         """Mint SigV4 credentials for one session's AgentCore Gateway access.
 
@@ -254,8 +333,15 @@ class LlmCredentialsService:
           any other gateway in the account;
         - the **session identity**: the role session name is the runtime
           session id (and, off EKS, a ``session_id`` session tag carries it
-          too), which is what :meth:`revoke_agentcore` conditions its Deny on.
-          That is how one session is revoked without disturbing any other.
+          too), so CloudTrail attributes every gateway call to its session.
+
+        Every credential lives :data:`AGENTCORE_TTL_S` (15 minutes) whatever
+        ``ttl_s`` says. ``ttl_s`` is instead the *grant* lifetime: how long the
+        kernel may keep renewing through :meth:`renew_agentcore`, bounded so
+        a renewal token that leaks out of a headless run (which nothing ever
+        revokes explicitly) stops working when the run's ceiling passes.
+        Revoking a session deletes its row, which stops renewal; the
+        credential already in the container then dies within 15 minutes.
 
         What is *not* enforced here is the per-session model allowlist: IAM
         conditions cannot see a request body, so which model a session may ask
@@ -292,7 +378,7 @@ class LlmCredentialsService:
             # session_binding), so it is safe to use verbatim as the session
             # name — and doing so makes CloudTrail read as the session.
             "RoleSessionName": runtime_session_id[:64],
-            "DurationSeconds": max(AGENTCORE_TTL_S, int(ttl_s)),
+            "DurationSeconds": AGENTCORE_TTL_S,
             "Tags": [{"Key": "session_id", "Value": runtime_session_id}],
             # Nothing downstream should be able to widen the grant by
             # re-assuming with a different tag.
@@ -328,23 +414,29 @@ class LlmCredentialsService:
             return None
 
         expires_at = int(creds["Expiration"].timestamp())
+        now = int(time.time())
+        if renew_of is not None:
+            return self._record_renewal(runtime_session_id, renew_of, creds, expires_at)
+        # The grant row outlives every credential issued under it: a renewal
+        # is refused past ``grant_expires_at``, and the last credential can
+        # have been issued just before that.
+        grant_expires_at = now + max(AGENTCORE_TTL_S, int(ttl_s))
         try:
-            self.table.put_item(
-                Item={
-                    "PK": LLM_TOKEN_PK,
-                    "SK": f"RSID#{runtime_session_id}",
-                    "mode": "agentcore_gateway",
-                    # No token digest: the credential is an STS session, not a
-                    # bearer value this table could be used to replay.
-                    "expires_at": expires_at,
-                    retention.TTL_ATTR: retention.ttl_after_expiry(expires_at),
-                    "runtime_session_id": runtime_session_id,
-                    "user": user,
-                    "team": team,
-                    "upstream_base_url": base_url,
-                    "gateway_arn": gateway_arn,
-                    "allowed_models": models,
-                },
+            item = self.table.update_item(
+                Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"},
+                # SET, not put_item: two invocations on one warm session mint
+                # concurrently, and the nonce the renewal token is derived from
+                # must survive the second one, or the first invocation's
+                # renewals would start failing. if_not_exists keeps it; a
+                # revoke deletes the row and with it every token derived from
+                # the old nonce.
+                UpdateExpression=(
+                    "SET #m = :mode, expires_at = :e, grant_expires_at = :g, "
+                    "#ttl = :ttl, runtime_session_id = :sid, #u = :user, "
+                    "team = :team, upstream_base_url = :base, "
+                    "gateway_arn = :garn, allowed_models = :models, "
+                    "renew_nonce = if_not_exists(renew_nonce, :nonce)"
+                ),
                 # A grant belongs to the session's owner: create, or re-mint the
                 # owner's own — never overwrite a live grant held by a different
                 # principal, since doing so would stop the victim's kernel from
@@ -352,9 +444,22 @@ class LlmCredentialsService:
                 # caller-bound upstream, so a collision should be unreachable;
                 # this makes it impossible even if that breaks.
                 ConditionExpression="attribute_not_exists(PK) OR #u = :user",
-                ExpressionAttributeNames={"#u": "user"},
-                ExpressionAttributeValues={":user": user},
-            )
+                ExpressionAttributeNames={"#m": "mode", "#ttl": retention.TTL_ATTR, "#u": "user"},
+                ExpressionAttributeValues={
+                    ":mode": "agentcore_gateway",
+                    ":e": expires_at,
+                    ":g": grant_expires_at,
+                    ":ttl": retention.ttl_after_expiry(grant_expires_at + AGENTCORE_TTL_S),
+                    ":sid": runtime_session_id,
+                    ":user": user,
+                    ":team": team,
+                    ":base": base_url,
+                    ":garn": gateway_arn,
+                    ":models": models,
+                    ":nonce": secrets.token_urlsafe(16),
+                },
+                ReturnValues="ALL_NEW",
+            )["Attributes"]
         except self.table.meta.client.exceptions.ConditionalCheckFailedException:
             logger.error(
                 "refusing to mint AgentCore gateway credentials for %s: "
@@ -363,39 +468,74 @@ class LlmCredentialsService:
             )
             return None
 
-        return {
-            "mode": "agentcore_gateway",
-            "endpoint": base_url,
-            "session_id": runtime_session_id,
-            "region": _region_from_gateway_arn(gateway_arn) or settings.aws_region,
-            # The gateway's data plane signs as bedrock-agentcore, not as the
-            # control-plane service the SDK would guess from the hostname.
-            "service": "bedrock-agentcore",
-            "access_key_id": creds["AccessKeyId"],
-            "secret_access_key": creds["SecretAccessKey"],
-            "session_token": creds["SessionToken"],
-            "expires_at": expires_at,
-            # Carried for the kernel's fail-fast check only. The kernel must
-            # not treat this as authorization — see the docstring.
-            "allowed_models": models,
-        }
+        return _agentcore_block(item, creds, expires_at)
+
+    def _claim_renew_slot(self, runtime_session_id: str, row: dict, now: int) -> None:
+        """Take this session's renewal slot or raise RenewThrottled.
+
+        Conditional on the row still carrying the nonce the caller was
+        authorized against, so a slot cannot be claimed on a row a revoke and
+        reconnect replaced.
+        """
+        last = int(row.get("last_renewed_at") or 0)
+        if now - last < AGENTCORE_RENEW_MIN_INTERVAL_S:
+            raise RenewThrottled(AGENTCORE_RENEW_MIN_INTERVAL_S - (now - last))
+        try:
+            self.table.update_item(
+                Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"},
+                UpdateExpression="SET last_renewed_at = :now",
+                ConditionExpression=(
+                    "attribute_exists(PK) AND renew_nonce = :n AND "
+                    "(attribute_not_exists(last_renewed_at) OR last_renewed_at <= :cut)"
+                ),
+                ExpressionAttributeValues={
+                    ":now": now,
+                    ":n": str(row.get("renew_nonce") or ""),
+                    ":cut": now - AGENTCORE_RENEW_MIN_INTERVAL_S,
+                },
+            )
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Another renewal took the slot (or the row was replaced; the
+            # conditional write after STS then discards this one).
+            raise RenewThrottled(AGENTCORE_RENEW_MIN_INTERVAL_S)
+
+    def _record_renewal(self, runtime_session_id: str, row: dict, creds: dict, expires_at: int) -> dict | None:
+        """Record a renewed credential on the grant row, if the grant survives.
+
+        The row was read before STS was called. A revoke can delete it in
+        between, and an unconditional write would then *create* a fresh grant
+        and undo the revocation. So the write requires the row to exist with
+        the nonce the renewal was authorized against, and it changes only the
+        credential's expiry: never the ceiling, the routing or the owner.
+        """
+        try:
+            item = self.table.update_item(
+                Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"},
+                UpdateExpression="SET expires_at = :e",
+                ConditionExpression="attribute_exists(PK) AND renew_nonce = :n AND #u = :user",
+                ExpressionAttributeNames={"#u": "user"},
+                ExpressionAttributeValues={
+                    ":e": expires_at,
+                    ":n": str(row.get("renew_nonce") or ""),
+                    ":user": str(row.get("user") or ""),
+                },
+                ReturnValues="ALL_NEW",
+            )["Attributes"]
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info("renewal of %s lost to a revoke; credential discarded", runtime_session_id)
+            return None
+        return _agentcore_block(item, creds, expires_at)
 
     def _assume_caller_role(self, kwargs: dict) -> dict:
         """AssumeRole into the caller role without role chaining.
 
-        A role session minted by another role session (role chaining) is
-        capped at one hour no matter what DurationSeconds says, which rules
-        out the 9-hour grant a headless async run needs. On EKS the backend's
-        own identity comes from an IRSA web-identity token, so the same token
-        is exchanged directly for the caller role: that is a first hop, and
-        the caller role's MaxSessionDuration applies.
-
-        AssumeRoleWithWebIdentity takes no Tags (session tags come from the
-        token's claims), so the session is identified by its RoleSessionName,
-        which is the runtime session id, and revocation matches on
-        aws:userid. Outside a pod (local runs, the e2e) there is no token and
-        the plain AssumeRole path with the session tag is used; the revocation
-        Deny covers both.
+        On EKS the backend's own identity comes from an IRSA web-identity
+        token, so the same token is exchanged directly for the caller role: a
+        first hop rather than a chained session. AssumeRoleWithWebIdentity
+        takes no Tags (session tags come from the token's claims), so the
+        session is identified by its RoleSessionName, the runtime session id.
+        Outside a pod (local runs, the e2e) there is no token and plain
+        AssumeRole with the ``session_id`` tag is used.
         """
         token_file = os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE", "")
         if token_file:
@@ -407,133 +547,61 @@ class LlmCredentialsService:
             )["Credentials"]
         return self.sts.assume_role(**kwargs)["Credentials"]
 
-    def _caller_role_id(self) -> str:
-        """Unique id (AROA...) of the caller role, for aws:userid matching."""
-        if not self._caller_role_id_cache:
-            name = settings.agentcore_gateway_caller_role_arn.rsplit("/", 1)[-1]
-            self._caller_role_id_cache = self.iam.get_role(RoleName=name)["Role"]["RoleId"]
-        return self._caller_role_id_cache
+    def renew_agentcore(self, runtime_session_id: str, token: str) -> dict | None:
+        """Kernel-facing renewal: a fresh 15-minute credential for a live grant.
 
-    def revoke_agentcore(self, runtime_session_id: str) -> None:
-        """Stop one session's gateway credentials from working, now.
+        This is where revocation happens. ``revoke`` deletes the row, so a
+        renewal after it finds nothing and the session's last credential runs
+        out within :data:`AGENTCORE_TTL_S`. Refused (None) when:
 
-        STS sessions cannot be withdrawn, so revocation is expressed as a Deny
-        on the caller role conditioned on the session's tag. The Deny set is
-        rebuilt from the LLMREVOKE partition on every call and entries whose
-        STS expiry has passed are dropped, which is what keeps the inline
-        policy inside its 10 KB limit: an entry only has to outlive the
-        credential it revokes.
+        - the row is gone (revoked, or never an AgentCore grant);
+        - the token was not derived from this row's nonce (constant-time);
+        - the grant's own lifetime has passed.
+
+        Raises :class:`RenewThrottled` when the session renewed less than
+        :data:`AGENTCORE_RENEW_MIN_INTERVAL_S` ago. The slot is claimed with a
+        conditional write *before* STS is called, so concurrent renewals of
+        one session cost one STS call between them.
+
+        The re-mint routes from what the row recorded, never from the request,
+        and keeps the grant's original lifetime: renewal extends a credential,
+        never the grant.
         """
-        if not self.agentcore_enabled or not runtime_session_id:
-            return
+        if not self.agentcore_enabled:
+            return None
+        # Unauthenticated input: anything that is not shaped like a runtime
+        # session id and a renewal token is refused before it reaches
+        # DynamoDB, where an oversized key is a ValidationException (a 500,
+        # not the uniform refusal).
+        if not isinstance(runtime_session_id, str) or not _RSID_RE.fullmatch(runtime_session_id):
+            return None
+        if not isinstance(token, str) or not _RENEW_TOKEN_RE.fullmatch(token):
+            return None
         item = self.table.get_item(
-            Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}
+            Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"},
+            ConsistentRead=True,
         ).get("Item")
-        expires_at = int((item or {}).get("expires_at") or 0)
-        if not expires_at:
-            # Nothing live to revoke; still fall through so the rebuild prunes.
-            expires_at = int(time.time()) + AGENTCORE_TTL_S
-        try:
-            self.table.put_item(
-                Item={
-                    "PK": LLM_REVOKE_PK,
-                    "SK": f"RSID#{runtime_session_id}",
-                    "expires_at": expires_at,
-                    # A revocation only has to outlive the credential it denies.
-                    retention.TTL_ATTR: retention.ttl_after_expiry(expires_at),
-                }
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("could not record revocation for %s", runtime_session_id)
-        self._rebuild_agentcore_denies()
-
-    def _rebuild_agentcore_denies(self) -> None:
+        if not item or item.get("mode") != "agentcore_gateway":
+            return None
+        expected = _renew_token(runtime_session_id, str(item.get("renew_nonce") or ""))
+        if not item.get("renew_nonce") or not hmac.compare_digest(expected, str(token)):
+            return None
         now = int(time.time())
-        live: list[str] = []
-        stale: list[str] = []
-        try:
-            rows = query_all(
-                self.table,
-                KeyConditionExpression="PK = :pk AND begins_with(SK, :p)",
-                ExpressionAttributeValues={":pk": LLM_REVOKE_PK, ":p": "RSID#"},
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error("could not read revocation list: %s", e)
-            return
-        for it in rows:
-            sid = str(it.get("SK", ""))[len("RSID#") :]
-            if not sid:
-                continue
-            # A small grace period past expiry: clock skew between here and
-            # STS must not un-revoke a session a second early.
-            if int(it.get("expires_at") or 0) + 60 > now:
-                live.append(sid)
-            else:
-                stale.append(sid)
-
-        role_name = settings.agentcore_gateway_caller_role_arn.rsplit("/", 1)[-1]
-        try:
-            if live:
-                # Two statements, one per way a session can have been minted
-                # (see _assume_caller_role): by session name for web-identity
-                # sessions, by session tag for plain AssumeRole ones. Separate
-                # statements because conditions inside one are ANDed.
-                role_id = self._caller_role_id()
-                self.iam.put_role_policy(
-                    RoleName=role_name,
-                    PolicyName=REVOKE_POLICY_NAME,
-                    PolicyDocument=json.dumps(
-                        {
-                            "Version": "2012-10-17",
-                            "Statement": [
-                                {
-                                    "Sid": "RevokedSessionsByName",
-                                    "Effect": "Deny",
-                                    "Action": "bedrock-agentcore:*",
-                                    "Resource": "*",
-                                    "Condition": {
-                                        "StringEquals": {
-                                            "aws:userid": [
-                                                f"{role_id}:{sid[:64]}"
-                                                for sid in sorted(live)
-                                            ]
-                                        }
-                                    },
-                                },
-                                {
-                                    "Sid": "RevokedSessionsByTag",
-                                    "Effect": "Deny",
-                                    "Action": "bedrock-agentcore:*",
-                                    "Resource": "*",
-                                    "Condition": {
-                                        "StringEquals": {
-                                            "aws:PrincipalTag/session_id": sorted(live)
-                                        }
-                                    },
-                                },
-                            ],
-                        }
-                    ),
-                )
-            else:
-                # Nothing outstanding — drop the policy rather than leave an
-                # empty statement behind.
-                try:
-                    self.iam.delete_role_policy(
-                        RoleName=role_name, PolicyName=REVOKE_POLICY_NAME
-                    )
-                except self.iam.exceptions.NoSuchEntityException:
-                    pass
-        except Exception as e:  # noqa: BLE001
-            logger.error("could not update AgentCore revocation policy: %s", e)
-            return
-        for sid in stale:
-            try:
-                self.table.delete_item(
-                    Key={"PK": LLM_REVOKE_PK, "SK": f"RSID#{sid}"}
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        grant_expires_at = int(item.get("grant_expires_at") or 0)
+        if grant_expires_at <= now:
+            return None
+        self._claim_renew_slot(runtime_session_id, item, now)
+        return self.mint_agentcore(
+            runtime_session_id,
+            str(item.get("user") or ""),
+            {
+                "backend": "agentcore_gateway",
+                "base_url": str(item.get("upstream_base_url") or ""),
+            },
+            team=str(item.get("team") or ""),
+            models=[str(m) for m in (item.get("allowed_models") or [])],
+            renew_of=item,
+        )
 
     def rotate(self, runtime_session_id: str) -> dict | None:
         """Issue a fresh token for an existing session grant.
@@ -548,9 +616,21 @@ class LlmCredentialsService:
             Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}
         ).get("Item")
         if existing and existing.get("mode") == "agentcore_gateway":
-            # STS credentials cannot be extended, so refresh is a re-mint from
-            # the routing already recorded on the item — which keeps the same
-            # "config edits apply at next warmup" rule as the edge path.
+            # The workbench's refresh call (authenticated by the workspace
+            # refresh token, which stop/delete drops). Same rule as
+            # renew_agentcore: a fresh credential inside the grant's own
+            # lifetime, routed from the row, never a longer grant.
+            now = int(time.time())
+            grant_expires_at = int(existing.get("grant_expires_at") or 0)
+            if grant_expires_at <= now:
+                return None
+            try:
+                self._claim_renew_slot(runtime_session_id, existing, now)
+            except RenewThrottled:
+                # The workbench kernel renews its model credential on its own
+                # clock through /llm-credentials/renew; this combined refresh
+                # just skips the model half when that renewed a moment ago.
+                return None
             return self.mint_agentcore(
                 runtime_session_id,
                 str(existing.get("user") or ""),
@@ -560,6 +640,7 @@ class LlmCredentialsService:
                 },
                 team=str(existing.get("team") or ""),
                 models=[str(m) for m in (existing.get("allowed_models") or [])],
+                renew_of=existing,
             )
         if not self.enabled:
             return None
@@ -595,27 +676,20 @@ class LlmCredentialsService:
 
     def revoke(self, runtime_session_id: str) -> None:
         """Drop a session's grant. Called when a session ends so a credential
-        scraped out of a container's memory stops working immediately rather
-        than at the end of its lifetime.
+        scraped out of a container's memory stops working as soon as possible.
 
-        Both modes are handled. The edge mode is a single delete — the edge
-        re-reads this item on every call, so the grant dies with the row. The
-        AgentCore mode cannot delete an STS session, so it records a Deny
-        keyed on the session's tag *before* dropping the row (the Deny needs
-        the row's expiry to know when it may be pruned)."""
+        One delete for both modes. The edge re-reads this row on every call, so
+        an edge grant dies with it. An AgentCore STS session cannot be
+        withdrawn: deleting the row stops every renewal (renew_agentcore and
+        rotate both need it), so the credential the container holds runs out
+        within :data:`AGENTCORE_TTL_S`. That 15-minute bound is the design,
+        not a gap — see the module constants for why it replaced a Deny list.
+        """
         if not runtime_session_id:
             return
-        item = self.table.get_item(
+        self.table.delete_item(
             Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}
-        ).get("Item")
-        if item and item.get("mode") == "agentcore_gateway":
-            self.revoke_agentcore(runtime_session_id)
-        try:
-            self.table.delete_item(
-                Key={"PK": LLM_TOKEN_PK, "SK": f"RSID#{runtime_session_id}"}
-            )
-        except Exception:
-            logger.warning("could not revoke gateway grant for %s", runtime_session_id)
+        )
 
     def verify(self, runtime_session_id: str, token: str) -> dict | None:
         """Backend-side counterpart of the edge's check. Not used on the model

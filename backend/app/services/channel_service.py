@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timezone
 
 import boto3
+from botocore.exceptions import ClientError
 
 from app.config import settings
 from app.services.session_binding import derive_channel_session_id
@@ -162,7 +163,14 @@ class ChannelService:
         """Shared routing: enabled check + stable session mapping + pipeline."""
         from app.services.invocation_service import invoke  # avoid import cycle
 
-        if not item.get("enabled", True):
+        # Require explicit attributes rather than permissive defaults. A
+        # resurrected/tombstone item lacks ``enabled`` and ``target`` entirely;
+        # defaulting those to True / "agent-sdk" would convert a deleted
+        # channel back into a live agent-sdk endpoint.
+        if "enabled" not in item or not item.get("enabled"):
+            raise ValueError("channel is disabled")
+        target = item.get("target")
+        if not target:
             raise ValueError("channel is disabled")
 
         runtime_session_id = None
@@ -182,7 +190,7 @@ class ChannelService:
         return invoke(
             user=user,
             source="channel",
-            target=item.get("target", "agent-sdk"),
+            target=target,
             prompt=message,
             runtime_session_id=runtime_session_id,
             memory_actor_id=memory_actor_id,
@@ -203,9 +211,12 @@ class ChannelService:
         item = self.get_channel_item(channel_id)
         if not item:
             raise KeyError("channel not found")
-        if item.get("kind", "token") != "iam":
+        # Explicit kind check: a resurrected/tombstone item lacks the kind
+        # attribute, and a permissive default would let that item satisfy an
+        # unrelated kind path.
+        if item.get("kind") != "iam":
             raise PermissionError("channel is not an IAM service channel")
-        if not item.get("enabled", True):
+        if not item.get("enabled", False):
             raise ValueError("channel is disabled")
         allowlist = [a for a in item.get("allowed_caller_arns", []) or [] if a]
         caller = normalize_caller_arn(caller_arn)
@@ -216,11 +227,26 @@ class ChannelService:
         return item
 
     def record_message(self, channel_id: str) -> None:
-        self.table.update_item(
-            Key={"PK": PK, "SK": f"CH#{channel_id}"},
-            UpdateExpression="SET last_message_at = :t ADD message_count :one",
-            ExpressionAttributeValues={":t": _now(), ":one": 1},
-        )
+        # Guard against DynamoDB UpdateItem's upsert semantics: without a
+        # ConditionExpression, a counter bump on a channel that was deleted
+        # mid-invocation would recreate the item as a bare {PK, SK,
+        # last_message_at, message_count} tombstone with no token/kind/enabled
+        # /target — i.e. a credential-less, internet-reachable endpoint.
+        # attribute_exists(PK) makes this a pure update: if the item is gone,
+        # the update is dropped and the channel stays revoked.
+        try:
+            self.table.update_item(
+                Key={"PK": PK, "SK": f"CH#{channel_id}"},
+                UpdateExpression="SET last_message_at = :t ADD message_count :one",
+                ExpressionAttributeValues={":t": _now(), ":one": 1},
+                ConditionExpression="attribute_exists(PK)",
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            logger.info(
+                "skipped message counter bump for deleted channel %s", channel_id
+            )
 
     def handle_webhook(self, channel_id: str, token: str, message: str, conversation_id: str = "") -> dict:
         """Verify the token and route the message through the invocation
@@ -229,9 +255,16 @@ class ChannelService:
         item = self.get_channel_item(channel_id)
         if not item:
             raise KeyError("channel not found")
+        # Authenticate fail-closed on the credential: a tombstone item (no
+        # token) would otherwise satisfy hmac.compare_digest("", "") and admit
+        # a caller sending no X-Channel-Token header at all. A missing kind
+        # still means "token": channels created before kind existed carry
+        # none (four live ones in production, 2026-11-06) and are valid; what
+        # makes a row trustworthy is a stored token, checked right below.
         if item.get("kind", "token") != "token":
             raise PermissionError("channel does not accept token webhooks — use the IAM service entry")
-        if not hmac.compare_digest(item.get("token", ""), token or ""):
+        stored = str(item.get("token") or "")
+        if not stored or not hmac.compare_digest(stored, token or ""):
             raise PermissionError("invalid channel token")
 
         result = self._route(

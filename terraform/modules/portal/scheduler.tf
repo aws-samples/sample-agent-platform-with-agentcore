@@ -119,11 +119,35 @@ data "aws_iam_policy_document" "schedule_runner" {
   }
 
   # workflow scripts need Node (backend container only), so the runner
-  # delegates pipeline runs to the backend API, signing in as portal admin
+  # delegates pipeline runs to the backend: through the private service entry,
+  # signed with this role (PLATFORM_PIPELINE_SERVICE_CALLERS on the backend
+  # names it), on exactly the two pipeline routes and the schedule fire route
   statement {
-    sid       = "PortalAdminSecret"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:${local.portal_admin_secret}*"]
+    sid     = "PipelineServiceEntry"
+    actions = ["execute-api:Invoke"]
+    resources = [
+      "${aws_api_gateway_rest_api.service_entry.execution_arn}/svc/POST/service/v1/pipelines/*/runs",
+      "${aws_api_gateway_rest_api.service_entry.execution_arn}/svc/GET/service/v1/pipeline-runs/*",
+      # every other schedule is handed to the backend whole (it holds the model routing)
+      "${aws_api_gateway_rest_api.service_entry.execution_arn}/svc/POST/service/v1/schedules/*/fire",
+    ]
+  }
+
+  # the private API is reachable only from inside the VPC, so the Lambda runs
+  # there: the network interface actions of AWSLambdaVPCAccessExecutionRole
+  # (the log actions are covered above). EC2 has no resource scoping for the
+  # Describe calls, and Lambda creates the interfaces in subnets it picks.
+  statement {
+    sid = "VpcNetworkInterfaces"
+    actions = [
+      "ec2:CreateNetworkInterface",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribeSubnets",
+      "ec2:DeleteNetworkInterface",
+      "ec2:AssignPrivateIpAddresses",
+      "ec2:UnassignPrivateIpAddresses",
+    ]
+    resources = ["*"]
   }
 }
 

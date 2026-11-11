@@ -62,6 +62,7 @@ class SamplesService:
             "patterns": item.get("patterns", []),
             "industries": item.get("industries", []),
             "runtime": item.get("runtime", ""),
+            "memory": bool(item.get("memory", False)),
             "requires_tools": item.get("requires_tools", []),
             "mcp_server": item.get("mcp_server", ""),
             "try_prompt": item.get("try_prompt", ""),
@@ -108,6 +109,9 @@ class SamplesService:
             "patterns": [str(p) for p in sample.get("patterns") or []][:10],
             "industries": [str(p) for p in sample.get("industries") or []][:10],
             "runtime": sample_id,
+            # the sample remembers: its shared instance and clones are bound to
+            # its own memory store (settings.sample_memory_ids)
+            "memory": bool(sample.get("memory", False)),
             "requires_tools": requires,
             "mcp_server": str(sample.get("mcp_server", "")),
             "try_prompt": str(sample.get("try_prompt", ""))[:1000],
@@ -191,11 +195,15 @@ class SamplesService:
                 blocking.append(f"tool {req['id']} is not on the sample-tools gateway")
         if not runtime_ok:
             blocking.append(f"runtime for sample {sample['runtime']} is not deployed")
+        memory_id = settings.sample_memory_ids.get(sample["runtime"], "")
+        if sample.get("memory") and not memory_id:
+            blocking.append(f"memory store for sample {sample['runtime']} is not deployed (foundation sample_runtimes.{sample['runtime']}.memory)")
         if not mcp_ok:
             blocking.append(f"MCP entry {sample['mcp_server']} is not registered")
         return {
             "cloneable": not blocking,
             "runtime_deployed": runtime_ok,
+            "memory_id": memory_id if sample.get("memory") else "",
             "mcp_registered": mcp_ok,
             "tools": tools,
             # None when the gateway could not be listed: deployed is unknown, not false
@@ -226,6 +234,7 @@ class SamplesService:
             mcp_server_names=list(a.get("mcp_server_names") or []),
             skill_names=list(a.get("skill_names") or []),
             platform_version=a.get("platform_version", ""),
+            memory_id=st["memory_id"],
             source=ref,
             runtime=ref,
         )

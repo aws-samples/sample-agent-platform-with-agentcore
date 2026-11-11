@@ -6,22 +6,17 @@ data "aws_region" "current" {}
 locals {
   account = data.aws_caller_identity.current.account_id
   region  = data.aws_region.current.region
-
-  # Portal-admin credential the schedule-runner Lambda signs in with to
-  # delegate pipeline runs. Created out-of-band by the operator (like the
-  # gateway key), so there is no resource to reference — but the name is
-  # suffix-aware like every other platform secret, because the credential is a
-  # user in *this* stack's Cognito pool. Two stacks in one account each need
-  # their own.
-  portal_admin_secret = "agent-platform${var.name_suffix}/portal-admin"
 }
 
 # ------------------------------- auth --------------------------------------
-# Cognito user pool guarding the portal. Self-signup is disabled — an
-# operator creates users (admin-create-user).
+# Cognito user pool guarding the portal when there is no OIDC issuer.
+# Self-signup is disabled — an operator creates users (admin-create-user).
+# With an issuer there is no pool: an OIDC backend that also had one would
+# accept the pool's ID tokens beside the realm's.
 
 resource "aws_cognito_user_pool" "portal" {
-  name = "agent-platform${var.name_suffix}"
+  count = var.enable_cognito ? 1 : 0
+  name  = "agent-platform${var.name_suffix}"
 
   admin_create_user_config {
     allow_admin_create_user_only = true
@@ -47,8 +42,9 @@ resource "aws_cognito_user_pool" "portal" {
 }
 
 resource "aws_cognito_user_pool_client" "portal" {
+  count        = var.enable_cognito ? 1 : 0
   name         = "PortalClient"
-  user_pool_id = aws_cognito_user_pool.portal.id
+  user_pool_id = aws_cognito_user_pool.portal[0].id
 
   explicit_auth_flows = [
     "ALLOW_USER_PASSWORD_AUTH",
@@ -68,9 +64,27 @@ resource "aws_cognito_user_pool_client" "portal" {
 # RBAC: members of this group get the platform's management surface.
 # Membership: aws cognito-idp admin-add-user-to-group.
 resource "aws_cognito_user_group" "admin" {
+  count        = var.enable_cognito ? 1 : 0
   name         = "platform-admin"
-  user_pool_id = aws_cognito_user_pool.portal.id
+  user_pool_id = aws_cognito_user_pool.portal[0].id
   description  = "Agent Platform administrators"
+}
+
+# The pool, client and group predate enable_cognito: a deployment that keeps
+# them keeps them (same users), it does not replace them.
+moved {
+  from = aws_cognito_user_pool.portal
+  to   = aws_cognito_user_pool.portal[0]
+}
+
+moved {
+  from = aws_cognito_user_pool_client.portal
+  to   = aws_cognito_user_pool_client.portal[0]
+}
+
+moved {
+  from = aws_cognito_user_group.admin
+  to   = aws_cognito_user_group.admin[0]
 }
 
 # ------------------------------ frontend -----------------------------------

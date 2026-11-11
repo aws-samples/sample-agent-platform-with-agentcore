@@ -22,6 +22,7 @@ The full rationale is in the comments of `main.tf` and the module's other files.
 | agentcore\_gateway\_caller\_role\_arn | Caller role for the agentcore\_gateway model backend. Empty = that backend is unavailable and the backend refuses it. | `string` | `""` | no |
 | custom\_domain | Custom domain name and its us-east-1 ACM certificate ARN for the distribution. null = the default *.cloudfront.net domain; the DNS record is managed outside Terraform. | <pre>object({<br/>    name            = string<br/>    certificate_arn = string<br/>  })</pre> | `null` | no |
 | enable\_agentcore\_gateway\_backend | Grant the backend role what the agentcore\_gateway backend needs on the caller role (a plan-time flag; the role ARN itself is only known after apply). | `bool` | `false` | no |
+| enable\_cognito | Create the Cognito user pool, app client and admin group the backend authenticates against. The root sets it only without an OIDC issuer: one identity provider per deployment. | `bool` | `true` | no |
 | enable\_sandbox\_entry | Route /service/v1/sandboxes/* through the service entry (the one-shot code sandbox service API). | `bool` | `false` | no |
 | name\_suffix | Environment suffix appended to the portal's resource names (Cognito pool, buckets, load balancers, roles, secrets, Kubernetes namespace); empty for production. | `string` | `""` | no |
 | service\_api\_allowed\_vpces | Interface VPC endpoint IDs associated with the private service-entry API and pinned in its resource policy as aws:SourceVpce. Empty = no endpoint association and no SourceVpce condition. | `list(string)` | `[]` | no |
@@ -37,7 +38,6 @@ The full rationale is in the comments of `main.tf` and the module's other files.
 | distribution\_id | ID of the CloudFront distribution in front of the portal, invalidated after each frontend publish. |
 | frontend\_bucket\_name | Name of the S3 bucket serving the portal's static frontend build (the distribution's S3 origin). |
 | namespace | Kubernetes namespace the backend and entry workloads run in (portal plus name\_suffix). |
-| portal\_admin\_secret\_name | Name of the portal-admin Secrets Manager secret the operator creates by hand; suffix-dependent, so read it from here. |
 | portal\_url | Public portal URL (https://), on the custom domain when one is set, otherwise the distribution's *.cloudfront.net domain. |
 | schedule\_dlq\_url | URL of the SQS dead-letter queue for EventBridge Scheduler deliveries to the schedule-runner Lambda that failed (14-day retention). |
 | schedule\_runner\_function | Fixed name of the schedule-runner Lambda (the function itself is a workload). |

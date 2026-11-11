@@ -15,11 +15,12 @@ variable "repo_url" {
 }
 
 variable "image_tag" {
-  type = string
+  description = "Image tag of the llm-edge container."
+  type        = string
 }
 
 variable "platform_table_name" {
-  description = "Shared platform DynamoDB table — the edge reads session token items and nothing else"
+  description = "Shared platform DynamoDB table: the edge reads session token items and nothing else"
   type        = string
 }
 

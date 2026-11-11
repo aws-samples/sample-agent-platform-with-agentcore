@@ -12,6 +12,10 @@ FROM python:3.13-slim
 
 # The numeric stack sandboxed jobs commonly need, as native arm64 wheels.
 RUN pip install --no-cache-dir numpy==2.3.4 pandas==2.3.3 pyarrow==21.0.0
+# Office and PDF documents an agent produces for people (slides, documents,
+# spreadsheets, PDFs), handed out with the sandbox_export_file tool. Not
+# preloaded: only the jobs that write documents import them.
+RUN pip install --no-cache-dir python-pptx==1.0.2 python-docx==1.2.0 openpyxl==3.1.5 reportlab==5.1.0
 
 COPY src/control_server.py /opt/control/control_server.py
 

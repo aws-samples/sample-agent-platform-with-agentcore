@@ -332,11 +332,59 @@ data "aws_iam_policy_document" "logs_bucket" {
       values   = ["false"]
     }
   }
+
+  # Bedrock model invocation logging writes under bedrock/AWSLogs/<account>/;
+  # pinned to this account's Bedrock so no other account's logging
+  # configuration can be pointed at the bucket.
+  dynamic "statement" {
+    for_each = var.bedrock_invocation_logging ? [1] : []
+    content {
+      sid     = "BedrockInvocationLogs"
+      actions = ["s3:PutObject"]
+      principals {
+        type        = "Service"
+        identifiers = ["bedrock.amazonaws.com"]
+      }
+      resources = ["${aws_s3_bucket.logs.arn}/bedrock/AWSLogs/${local.account}/*"]
+      condition {
+        test     = "StringEquals"
+        variable = "aws:SourceAccount"
+        values   = [local.account]
+      }
+      condition {
+        test     = "ArnLike"
+        variable = "aws:SourceArn"
+        values   = ["arn:aws:bedrock:${local.region}:${local.account}:*"]
+      }
+    }
+  }
 }
 
 resource "aws_s3_bucket_policy" "logs" {
   bucket = aws_s3_bucket.logs.id
   policy = data.aws_iam_policy_document.logs_bucket.json
+}
+
+# Amazon Bedrock model invocation logging: the record of every model call the
+# kernels make, written by Bedrock rather than by anything inside a microVM,
+# which is what makes it the reference the kernel-reported event trails are
+# checked against. Account-and-region singleton; opt-in (var.bedrock_invocation_logging).
+resource "aws_bedrock_model_invocation_logging_configuration" "this" {
+  count = var.bedrock_invocation_logging ? 1 : 0
+
+  logging_config {
+    text_data_delivery_enabled      = true
+    image_data_delivery_enabled     = false
+    embedding_data_delivery_enabled = false
+    video_data_delivery_enabled     = false
+
+    s3_config {
+      bucket_name = aws_s3_bucket.logs.bucket
+      key_prefix  = "bedrock"
+    }
+  }
+
+  depends_on = [aws_s3_bucket_policy.logs]
 }
 
 # Shared S3 destination for both distributions' standard logging (v2). Each

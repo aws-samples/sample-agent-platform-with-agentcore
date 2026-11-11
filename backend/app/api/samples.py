@@ -100,7 +100,7 @@ def seed_sample(sample_id: str, req: SampleSeedRequest, user: Principal = Depend
             shared = agent_service.publish(
                 user=SEED_USER, name=a["name"], description=a["description"], system_prompt=a["system_prompt"],
                 max_turns=a["max_turns"], mcp_server_names=a["mcp_server_names"], skill_names=a["skill_names"],
-                platform_version=a["platform_version"], source=ref, runtime=ref,
+                platform_version=a["platform_version"], memory_id=status["memory_id"], source=ref, runtime=ref,
             )
         except (PermissionError, ValueError, KeyError) as e:
             raise HTTPException(status_code=400, detail=f"shared instance: {e}")
@@ -108,3 +108,74 @@ def seed_sample(sample_id: str, req: SampleSeedRequest, user: Principal = Depend
         item["shared_agent_id"] = shared["id"]
     audit_service.record(user, "sample.seed", f"sample:{sample_id}", f"shared={shared['id'] if shared else '-'}")
     return {**item, "status": samples_service.status(item), "shared_instance": shared}
+
+
+# ------------------------------------------------- lark-teammate playbooks
+# Playbooks proposed from Lark groups wait here for an administrator; only an
+# approved one reaches the agent (app/integrations/lark/skills.py).
+
+PLAYBOOK_SAMPLE = "lark-teammate"
+_PLAYBOOK_FIELDS = ("proposal_id", "name", "description", "body", "status", "chat_id", "proposed_by",
+                    "proposed_at", "approved_by", "approved_at", "reviewed_by", "reviewed_at")
+
+
+def _playbook_table(sample_id: str):
+    if sample_id != PLAYBOOK_SAMPLE:
+        raise HTTPException(status_code=404, detail="this sample has no playbooks")
+    return samples_service.table
+
+
+def _public(item: dict) -> dict:
+    return {k: item[k] for k in _PLAYBOOK_FIELDS if k in item}
+
+
+@router.get("/{sample_id}/playbooks")
+def list_playbooks(sample_id: str, user: Principal = Depends(require_admin)):
+    from app.integrations.lark import skills
+
+    table = _playbook_table(sample_id)
+    return {"pending": [_public(i) for i in skills.proposals(table)],
+            "approved": [_public(i) for i in skills.approved(table)]}
+
+
+@router.post("/{sample_id}/playbooks/proposals/{proposal_id}/approve")
+def approve_playbook(sample_id: str, proposal_id: str, user: Principal = Depends(require_admin)):
+    from app.integrations.lark import skills
+
+    table = _playbook_table(sample_id)
+    try:
+        item = skills.approve(table, proposal_id, reviewer=str(user))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e).strip("'"))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    audit_service.record(user, "sample.playbook.approve", f"sample:{sample_id}", f"{item['name']} ({proposal_id})")
+    return _public(item)
+
+
+@router.post("/{sample_id}/playbooks/proposals/{proposal_id}/reject")
+def reject_playbook(sample_id: str, proposal_id: str, user: Principal = Depends(require_admin)):
+    from app.integrations.lark import skills
+
+    table = _playbook_table(sample_id)
+    try:
+        skills.reject(table, proposal_id, reviewer=str(user))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e).strip("'"))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    audit_service.record(user, "sample.playbook.reject", f"sample:{sample_id}", proposal_id)
+    return {"ok": True}
+
+
+@router.post("/{sample_id}/playbooks/{name}/retire")
+def retire_playbook(sample_id: str, name: str, user: Principal = Depends(require_admin)):
+    from app.integrations.lark import skills
+
+    table = _playbook_table(sample_id)
+    try:
+        skills.retire(table, name, reviewer=str(user))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e).strip("'"))
+    audit_service.record(user, "sample.playbook.retire", f"sample:{sample_id}", name)
+    return {"ok": True}

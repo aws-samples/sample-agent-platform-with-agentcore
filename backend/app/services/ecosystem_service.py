@@ -11,6 +11,7 @@ working catalog out of the box.
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -24,6 +25,37 @@ logger = logging.getLogger(__name__)
 
 PK = "ECOSYSTEM"
 SANDBOX_MCP_NAME = "platform-sandbox"
+
+# Matches the kernel's placeholder grammar
+# (app/runtimes/agent-sdk-kernel/src/main.py:resolve_secret_placeholders)
+_SECRET_PLACEHOLDER_RE = re.compile(r"\{\{secret:([A-Za-z0-9/_+=.@-]+)\}\}")
+
+
+def _allowed_secret_prefixes() -> tuple[str, ...]:
+    """Prefixes a `{{secret:NAME}}` placeholder is allowed to reference. Mirrors
+    the kernel's allowlist so a bad entry fails registration (HTTP 400) rather
+    than silently living in the registry."""
+    raw = getattr(settings, "mcp_placeholder_secret_allowed_prefixes", None) or []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+    else:
+        parts = [str(p).strip() for p in raw if str(p).strip()]
+    return tuple(parts) or ("agent-platform/remote-mcp-key",)
+
+
+def _validate_secret_placeholders(value: str, *, field: str) -> None:
+    """Refuse any `{{secret:NAME}}` whose NAME is outside the kernel's allowed
+    prefix set. Values without a placeholder are left alone."""
+    if not value:
+        return
+    allowed = _allowed_secret_prefixes()
+    for match in _SECRET_PLACEHOLDER_RE.finditer(value):
+        name = match.group(1)
+        if not any(name.startswith(p) for p in allowed):
+            raise ValueError(
+                f"{field} references secret {name!r} which is not in the "
+                f"allowed placeholder prefix set ({', '.join(allowed)})"
+            )
 
 
 def _now() -> str:
@@ -170,6 +202,17 @@ class EcosystemService:
 
     def create_mcp_server(self, name, description, kind, target, headers=None, auth="hmac") -> dict:
         self._require_unique_name("MCP#", name)
+        # Stop treating the registry as a trusted source of secret names: any
+        # `{{secret:NAME}}` placeholder in the target or in a header value
+        # must point at the operator-allowlisted remote-MCP namespace. The
+        # kernel enforces the same rule at resolution time; validating here
+        # turns a hostile registration into a 400 rather than a silent entry
+        # that fails only at session warmup.
+        _validate_secret_placeholders(target or "", field="target")
+        for header_name, header_value in (headers or {}).items():
+            _validate_secret_placeholders(
+                str(header_value), field=f"headers[{header_name!r}]"
+            )
         if kind == "mcp-hub" and not headers:
             # the hub resolves the acting user from this header; default the
             # standard identity-forwarding placeholder so a console-registered

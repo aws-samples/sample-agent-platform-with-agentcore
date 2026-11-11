@@ -48,6 +48,9 @@ OUTPUTS = {
     # published before 2026-10-15, which makes the publish refuse, not skip
     "frontend_bucket_name": ("portal", "frontend_bucket_name"),
     "distribution_id": ("portal", "distribution_id"),
+    # the schedule-runner Lambda the apply builds ship the backend to
+    # (ci/codebuild/run.sh publish_schedule_runner)
+    "schedule_runner_function": ("portal", "schedule_runner_function"),
     # the optional MCP hub demo and its IAM entry (section absent when the demo is off)
     "mcp_hub_endpoint": ("mcp_hub", "hub_endpoint"),
     "mcp_hub_resource_url": ("mcp_hub", "hub_resource_url"),

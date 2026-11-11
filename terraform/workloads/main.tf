@@ -58,6 +58,7 @@ locals {
   }
 }
 
+# tflint-ignore: terraform_unused_declarations # read for its precondition: the guards below run on every plan
 data "aws_caller_identity" "current" {
   # Puts both guards in the dependency graph explicitly.
   lifecycle {
@@ -162,6 +163,8 @@ module "portal" {
     interactive_runtime_arns = module.runtime[0].interactive_runtime_arns
     sdk_runtime_arns         = module.runtime[0].sdk_runtime_arns
     sample_runtime_arns      = module.runtime[0].sample_runtime_arns
+    # published by the foundation per sample with memory = true
+    sample_memory_ids = try(local.facts.runtime.sample_memories, {})
   }
   # the sample-tools gateway the backend registers as an MCP server for the
   # samples ("" when the feature is off)
@@ -190,6 +193,17 @@ module "portal" {
       [for n in var.sandbox_service_caller_role_names : "arn:aws:iam::${local.facts.account_id}:role/${n}"],
     )
   }
+  # schedules through the private service entry, from inside the platform
+  # VPC. A PRIVATE API has no public DNS and the endpoint's private DNS is off
+  # on purpose, so the runner uses the endpoint-specific hostname
+  # {api-id}-{vpce-id}.execute-api..., as scripts/e2e_service_entry.py does.
+  schedule_runner = {
+    subnet_ids        = local.facts.network.private_subnet_ids
+    security_group_id = local.facts.network.runtime_sg_id
+    service_url       = replace(local.facts.portal.service_entry_api_url, ".execute-api.", "-${local.facts.portal.service_entry_vpce_id}.execute-api.")
+  }
   oidc        = local.facts.portal.oidc
   name_suffix = var.name_suffix
+  # the Lark ingress of the lark-teammate sample; null when the foundation has none
+  lark_ingress = try(local.facts.lark_ingress, null)
 }

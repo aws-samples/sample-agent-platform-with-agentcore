@@ -54,3 +54,17 @@ variable "runtime_name_suffix" {
   type        = string
   default     = ""
 }
+
+variable "gateway_hosts" {
+  description = "Hostnames of the AgentCore Gateways the team-demo agent may attach as MCP servers (KERNEL_JWT_GATEWAY_HOSTS), e.g. the team gateway written to SSM /agent-platform/team-gateway by scripts/deploy_team_gateway.py. Bare hostnames, no scheme or path. Empty = no MCP server is attached."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for h in var.gateway_hosts :
+      can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", h))
+    ])
+    error_message = "gateway_hosts takes bare lowercase hostnames (no scheme, port, path, wildcard or trailing dot)."
+  }
+}

@@ -1,0 +1,41 @@
+# Sample agent: lark-teammate
+#
+# What the portal's Sample Agents tab shows and what a clone copies. The agent
+# configuration itself is agent.yaml (the publish manifest); this file is the
+# catalogue entry around it: where it runs, which tools it needs, how it is
+# described and filed.
+#
+# Ported from aws-samples/sample-claude-tag-in-lark, an always-on teammate for
+# Lark group chats: the agent and its web search, the Lark ingress, and
+# per-group memory (see README).
+id: lark-teammate
+title: Lark teammate (group chat, sourced web search)
+summary: >-
+  An AI teammate for Lark (Feishu) group chats: mentioned in a group, it
+  answers in the user's language and backs every current fact with a sourced
+  web search. Search is an OpenAPI target on the sample-tools gateway whose
+  key AgentCore Identity holds, so the agent has no key and no open internet.
+# how the catalogue files it; filter facets in the portal
+patterns: [chat-assistant, tool-calling, web-research]
+industries: [cross-industry, collaboration]
+# the runtime this sample (and every clone of it) runs on: its own, under its
+# own execution role, which is what the gateway's Cedar policies name
+runtime: lark-teammate
+# the sample remembers, per group: the foundation gives it its own AgentCore
+# Memory store (sample_runtimes.lark-teammate.memory = true in
+# agent-platform-ops), which only this sample's role can reach. Its shared
+# instance and every clone are bound to that store.
+memory: true
+# tool packages the sample calls (samples/tools/<id>); the portal shows each
+# one's deployment status, and a clone is refused while one is missing unless
+# it is marked optional
+requires_tools:
+  - id: web-search
+    optional: true # needs an Exa key the operator registers; without it the teammate answers from the conversation only
+# the registry MCP entry that fronts the gateway (seeded by the backend)
+mcp_server: sample-tools
+# a published shared instance users can try before cloning
+try_prompt: What changed in the latest Python release? Give me the three main points with sources.
+eval: eval.jsonl
+readme: README.md
+design_doc: docs/samples/lark-teammate/design.md

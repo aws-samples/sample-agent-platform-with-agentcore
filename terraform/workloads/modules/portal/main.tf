@@ -7,7 +7,7 @@
 #
 # Everything around the pods — the IAM role they assume through IRSA, the load
 # balancers and target groups they register into, the security group they
-# carry, Cognito, the scheduler group, the DLQ — is the foundation's and
+# carry, the identity provider, the scheduler group, the DLQ — is the foundation's and
 # arrives in var.facts. This module decides the image, the replica count and
 # the environment the code sees.
 
@@ -28,6 +28,7 @@ locals {
       PLATFORM_INTERACTIVE_RUNTIME_ARNS          = jsonencode(var.runtimes.interactive_runtime_arns)
       PLATFORM_SDK_RUNTIME_ARNS                  = jsonencode(var.runtimes.sdk_runtime_arns)
       PLATFORM_SAMPLE_RUNTIME_ARNS               = jsonencode(var.runtimes.sample_runtime_arns)
+      PLATFORM_SAMPLE_MEMORY_IDS                 = jsonencode(var.runtimes.sample_memory_ids)
       PLATFORM_SAMPLE_TOOLS_GATEWAY_URL          = var.sample_tools_gateway_url
       PLATFORM_DEFAULT_PLATFORM_VERSION          = var.default_platform_version
       PLATFORM_WORKSPACE_ACCESS_ROLE_ARN         = var.workspace_access_role_arn
@@ -38,8 +39,6 @@ locals {
       # all — this only readmits the one legitimate cross-origin caller
       # while ending the reflect-any-Origin + allow-credentials combination.
       PLATFORM_CORS_ORIGINS              = "https://${var.portal.cloudfront_domain}"
-      PLATFORM_COGNITO_POOL_ID           = var.portal.cognito_pool_id
-      PLATFORM_COGNITO_CLIENT_ID         = var.portal.cognito_client_id
       PLATFORM_SCHEDULER_GROUP           = var.portal.scheduler_group
       PLATFORM_SCHEDULER_LAMBDA_ARN      = aws_lambda_function.schedule_runner.arn
       PLATFORM_SCHEDULER_ROLE_ARN        = var.portal.scheduler_role_arn
@@ -56,15 +55,30 @@ locals {
       PLATFORM_SANDBOX_IDLE_TIMEOUT_S  = tostring(var.sandbox.idle_timeout_s)
       PLATFORM_SANDBOX_MAX_LIFETIME_S  = tostring(var.sandbox.max_lifetime_s)
       PLATFORM_SANDBOX_SERVICE_CALLERS = join(",", var.sandbox.service_callers)
+      # the schedule-runner fires pipeline schedules through the service entry
+      # (backend/app/api/pipelines.py), signed with its own role
+      PLATFORM_PIPELINE_SERVICE_CALLERS = var.portal.schedule_runner_role_arn
       # where a workbench container reaches the sandbox tools: this backend
       # through the portal's own entry (CloudFront forwards /api/*)
       PLATFORM_SANDBOX_MCP_URL = length(var.sandbox.versions) > 0 ? "https://${var.portal.cloudfront_domain}/api/v1/sandbox-mcp" : ""
+      # where a headless kernel renews its 15-minute AgentCore gateway
+      # credential; same entry. Revocation is "no more renewals", so this is
+      # what lets a run outlast one credential.
+      PLATFORM_LLM_RENEW_URL = var.agentcore_gateway_caller_role_arn != "" ? "https://${var.portal.cloudfront_domain}/api/v1/llm-credentials/renew" : ""
     },
+    # One identity provider. With OIDC configured the backend gets no Cognito
+    # setting at all: in OIDC mode it otherwise still accepts Cognito ID tokens
+    # (backend/app/dependencies.py chains to the pool), so the pool's admin
+    # password would be a second way in beside the realm. Cognito is the mode
+    # of a deployment without OIDC.
     var.oidc.issuer != "" ? {
       PLATFORM_OIDC_ISSUER    = var.oidc.issuer
       PLATFORM_OIDC_CLIENT_ID = var.oidc.client_id
       PLATFORM_OIDC_AUDIENCE  = var.oidc.audience
-    } : {},
+      } : {
+      PLATFORM_COGNITO_POOL_ID   = var.portal.cognito_pool_id
+      PLATFORM_COGNITO_CLIENT_ID = var.portal.cognito_client_id
+    },
   )
 
   backend_image = "${var.backend_repo_url}:${var.backend_image_tag}"
@@ -216,14 +230,21 @@ resource "aws_lambda_function" "schedule_runner" {
     log_group  = var.portal.schedule_runner_log_group
   }
 
-  # PLATFORM_PORTAL_API_URL is what puts this process on the pipeline
-  # delegation path (schedule_service._run_pipeline); it is deliberately set
-  # here and NOT on the backend, which runs pipelines in-process. The admin
-  # secret name has to be passed explicitly alongside it: config.py's default
-  # is unsuffixed, so a suffixed stack would otherwise read — and be denied —
-  # the wrong secret.
+  # The private service entry is reachable only from inside the platform VPC.
+  vpc_config {
+    subnet_ids         = var.schedule_runner.subnet_ids
+    security_group_ids = [var.schedule_runner.security_group_id]
+  }
+
+  # PLATFORM_PIPELINE_SERVICE_URL is what puts this process on the delegation
+  # path (schedule_service._run_pipeline / run_once); it is deliberately set
+  # here and NOT on the backend, which runs pipelines in-process. The runner
+  # calls the private service entry signed with its own role. No portal URL
+  # and no admin secret: the portal sign-in (Cognito, the portal-admin secret)
+  # is the CLI and CDK deployments' path, not this one's.
   environment {
     variables = {
+      PLATFORM_PIPELINE_SERVICE_URL     = var.schedule_runner.service_url
       PLATFORM_AWS_REGION               = local.region
       PLATFORM_DYNAMO_TABLE             = var.platform_table_name
       PLATFORM_WORKSPACE_BUCKET         = var.workspace_bucket_name
@@ -234,8 +255,6 @@ resource "aws_lambda_function" "schedule_runner" {
       PLATFORM_SDK_RUNTIME_ARNS         = jsonencode(var.runtimes.sdk_runtime_arns)
       PLATFORM_SAMPLE_RUNTIME_ARNS      = jsonencode(var.runtimes.sample_runtime_arns)
       PLATFORM_DEFAULT_PLATFORM_VERSION = var.default_platform_version
-      PLATFORM_PORTAL_API_URL           = "https://${var.portal.cloudfront_domain}"
-      PLATFORM_PORTAL_ADMIN_SECRET      = var.portal.portal_admin_secret_name
     }
   }
 
