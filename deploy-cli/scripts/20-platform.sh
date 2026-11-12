@@ -9,31 +9,43 @@ step "platform ($NAME)"
 
 # ------------------------------------------------------------------ buckets
 bucket_ensure() {  # name
-  local b="$1"
-  if aws s3api head-bucket --bucket "$b" >/dev/null 2>&1; then
-    log "bucket exists $b" >&2; return 0
-  fi
+  # A bucket name is no proof of ownership: the names here are derived from the
+  # account id and region, so another account can create one first. Reuse only
+  # a bucket this account owns, create only on a 404, and stop on anything else.
+  local b="$1" st ns_args=()
+  st="$(bucket_state "$b")"
+  case "$st" in
+    owned)  log "bucket exists $b (owned by this account)" >&2; return 0 ;;
+    absent) ;;
+    *)      die "bucket $b is not usable: it exists outside this account or cannot be checked (${st#foreign:}). Refusing to write to it; set SUFFIX to pick another name, or check your credentials" ;;
+  esac
+  [ "${#b}" -le 63 ] || die "bucket name $b is ${#b} characters (S3 allows 63): use a shorter SUFFIX"
+  # Only a name in this account's regional namespace can be created with the
+  # namespace header; a recorded pre-namespace name is created as it was.
+  case "$b" in *"-${ACCOUNT_ID}-${AWS_REGION}-an") ns_args=(--bucket-namespace account-regional) ;; esac
   # us-east-1 must NOT be given a LocationConstraint; every other region must.
   if [ "$AWS_REGION" = "us-east-1" ]; then
-    aws s3api create-bucket --bucket "$b" >/dev/null
+    aws s3api create-bucket --bucket "$b" ${ns_args[@]+"${ns_args[@]}"} >/dev/null
   else
-    aws s3api create-bucket --bucket "$b" \
+    aws s3api create-bucket --bucket "$b" ${ns_args[@]+"${ns_args[@]}"} \
       --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
   fi
+  # CreateBucket on a global name can still race another account; re-check.
+  [ "$(bucket_state "$b")" = owned ] || die "bucket $b was created but is not owned by this account"
   log "created bucket $b" >&2
 }
 
 harden_bucket() {  # name
   local b="$1"
-  aws s3api put-public-access-block --bucket "$b" --public-access-block-configuration \
+  s3_owned put-public-access-block --bucket "$b" --public-access-block-configuration \
     'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true' >/dev/null
-  aws s3api put-bucket-encryption --bucket "$b" --server-side-encryption-configuration \
+  s3_owned put-bucket-encryption --bucket "$b" --server-side-encryption-configuration \
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' >/dev/null
 }
 
 bucket_ensure "$WORKSPACE_BUCKET"
 harden_bucket "$WORKSPACE_BUCKET"
-aws s3api put-bucket-versioning --bucket "$WORKSPACE_BUCKET" \
+s3_owned put-bucket-versioning --bucket "$WORKSPACE_BUCKET" \
   --versioning-configuration Status=Enabled >/dev/null
 log "workspace bucket ready (versioned, encrypted, private)"
 
@@ -44,16 +56,16 @@ cat > /tmp/ws-policy.json <<JSON
   "Resource":["arn:aws:s3:::$WORKSPACE_BUCKET","arn:aws:s3:::$WORKSPACE_BUCKET/*"],
   "Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}
 JSON
-aws s3api put-bucket-policy --bucket "$WORKSPACE_BUCKET" --policy file:///tmp/ws-policy.json
+s3_owned put-bucket-policy --bucket "$WORKSPACE_BUCKET" --policy file:///tmp/ws-policy.json
 save WORKSPACE_BUCKET "$WORKSPACE_BUCKET"
 
 # ---- logs bucket (ALB access logs + CloudFront vended logs) ----
 bucket_ensure "$LOGS_BUCKET"
 harden_bucket "$LOGS_BUCKET"
 # ALB log delivery writes with an ACL, so the bucket cannot be BucketOwnerEnforced
-aws s3api put-bucket-ownership-controls --bucket "$LOGS_BUCKET" \
+s3_owned put-bucket-ownership-controls --bucket "$LOGS_BUCKET" \
   --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerPreferred}]' >/dev/null
-aws s3api put-bucket-lifecycle-configuration --bucket "$LOGS_BUCKET" \
+s3_owned put-bucket-lifecycle-configuration --bucket "$LOGS_BUCKET" \
   --lifecycle-configuration '{"Rules":[{"ID":"expire","Status":"Enabled","Filter":{},"Expiration":{"Days":90}}]}' >/dev/null
 
 # NB: the ALB statements use the logdelivery service principal (current model)
@@ -79,7 +91,7 @@ cat > /tmp/logs-policy.json <<JSON
   "Resource":["arn:aws:s3:::$LOGS_BUCKET","arn:aws:s3:::$LOGS_BUCKET/*"],
   "Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}
 JSON
-aws s3api put-bucket-policy --bucket "$LOGS_BUCKET" --policy file:///tmp/logs-policy.json
+s3_owned put-bucket-policy --bucket "$LOGS_BUCKET" --policy file:///tmp/logs-policy.json
 save LOGS_BUCKET "$LOGS_BUCKET"
 log "logs bucket ready (90d expiry, delivery principals allowed)"
 

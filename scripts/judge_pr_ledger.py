@@ -30,7 +30,14 @@ label wins, a quoted line ("> judge ...") is neither a label nor a citation,
 and a label naming an id the MR's runs never produced is ignored.
 
     GITLAB_TOKEN=... python3 scripts/judge_pr_ledger.py --api https://<gitlab>/api/v4 --project <id> \\
-        [--cookie <netscape cookie jar>] [--cache <dir>] [--json]
+        [--cookie <netscape cookie jar>] [--cache <dir>] [--json] [--shadow [--since YYYY-MM-DD]]
+
+--shadow adds the trial of a blocking rule for defects: a verified defect would
+block only when the MR's previous judged run reported the same id too, so a
+finding new on a push never blocks it (the judge finds new ones on most pushes
+and a gate on any defect would not converge). It reports what that rule would
+have blocked, against what blocking on any defect would; --since limits the
+count to runs from a date, with the run before it still the comparison.
 
 --cookie is for an instance behind a single sign-on proxy (curl -c writes the
 jar); a redirect is reported as an expired session, never followed.
@@ -112,6 +119,31 @@ def parse_citations(text: str) -> dict[str, str]:
     return out
 
 
+def shadow(history: dict[int, list[tuple[str, set[str]]]], since: str = "") -> dict:
+    """history: MR -> [(when, verified defect ids)] of its judged runs. What blocking on a defect
+    the previous judged run also reported would have blocked, beside blocking on any defect."""
+    out = {"runs": 0, "block_any": 0, "block_persistent": 0, "mrs": 0, "last_any": 0, "last_persistent": 0, "hits": []}
+    for mr, runs in sorted(history.items()):
+        runs = sorted(runs)
+        counted = False
+        last = (False, False)
+        for i, (when, ids) in enumerate(runs):
+            hit = sorted(ids & runs[i - 1][1]) if i else []
+            if when < since:
+                continue
+            counted = True
+            out["runs"] += 1
+            out["block_any"] += bool(ids)
+            out["block_persistent"] += bool(hit)
+            out["hits"] += [{"mr": mr, "when": when, "id": fid} for fid in hit]
+            last = (bool(ids), bool(hit))
+        if counted:
+            out["mrs"] += 1
+            out["last_any"] += last[0]
+            out["last_persistent"] += last[1]
+    return out
+
+
 def resolve_citations(first_seen: dict[tuple[int, str], str], citations: list[tuple[str, int, str, str]]) -> dict[int, dict[str, str]]:
     """citations (when, citing MR, id, accept|reject), in any order -> MR -> id -> verdict.
     Each citation lands on one finding: the citing MR's own, else the latest one seen before it."""
@@ -185,7 +217,8 @@ class Api:
             page += 1
 
 
-def collect(api: Api, cache: Path | None) -> tuple[dict, dict, dict, dict]:
+def collect(api: Api, cache: Path | None, history: dict | None = None) -> tuple[dict, dict, dict, dict]:
+    """history, when given, is filled with MR -> [(when, verified defect ids)] of every judged run."""
     findings: dict[int, dict[str, dict]] = {}
     first_seen: dict[tuple[int, str], str] = {}
     last_run: dict[int, tuple[str, set[str]]] = {}
@@ -216,6 +249,9 @@ def collect(api: Api, cache: Path | None) -> tuple[dict, dict, dict, dict]:
         # SKIPPED run judged nothing and must not make every earlier finding look resolved
         if verdict.get("status") in ("PASS", "FAIL") and (mr not in last_run or when > last_run[mr][0]):
             last_run[mr] = (when, ids)
+        if history is not None and verdict.get("status") in ("PASS", "FAIL"):
+            history.setdefault(mr, []).append(
+                (when, {f["id"] for f in verdict.get("findings", []) if f.get("id") and kind_of(f["title"]) == "defect"}))
     labels = {}
     for mr in findings:
         notes = [n["body"] for n in sorted(api.pages(f"merge_requests/{mr}/notes?sort=asc"), key=lambda n: n["created_at"])]
@@ -231,6 +267,10 @@ def collect(api: Api, cache: Path | None) -> tuple[dict, dict, dict, dict]:
             for c in api.pages(f"merge_requests/{mrd['iid']}/commits"):
                 for fid, v in parse_citations(c.get("message") or "").items():
                     citations.append((utc(c.get("committed_date") or c["created_at"]), mrd["iid"], fid, v))
+    if history is not None and first_seen:  # runs from before the label ids carry none: not part of the record
+        era = min(first_seen.values())
+        for mr in list(history):
+            history[mr] = [r for r in history[mr] if r[0] >= era]
     return findings, labels, resolve_citations(first_seen, citations), {mr: ids for mr, (_, ids) in last_run.items() if mr in findings}
 
 
@@ -241,21 +281,32 @@ def main() -> int:
     ap.add_argument("--cookie", help="Netscape cookie jar for a sign-on proxy")
     ap.add_argument("--cache", help="directory to keep downloaded artifacts in")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--shadow", action="store_true", help="report what blocking on a persistent defect would have blocked")
+    ap.add_argument("--since", default="", help="with --shadow: count runs from this date (YYYY-MM-DD, UTC)")
     a = ap.parse_args()
     token = os.environ.get("GITLAB_TOKEN") or sys.exit("GITLAB_TOKEN is required")
     cache = Path(a.cache) if a.cache else None
     if cache:
         cache.mkdir(parents=True, exist_ok=True)
-    findings, labels, cited, last_ids = collect(Api(a.api, a.project, token, a.cookie), cache)
+    history: dict = {}
+    findings, labels, cited, last_ids = collect(Api(a.api, a.project, token, a.cookie), cache, history)
     rows = tally(findings, labels, cited, last_ids)
+    trial = shadow(history, utc(a.since + "T00:00:00Z") if a.since else "") if a.shadow else None
     if a.json:
-        print(json.dumps({"merge_requests": len(findings), "kinds": rows}, indent=2))
+        print(json.dumps({"merge_requests": len(findings), "kinds": rows, **({"shadow": trial} if trial else {})}, indent=2))
         return 0
     print(f"{len(findings)} merge request(s) with labelled-format findings")
     print(f"{'kind':<20}{'findings':>9}{'accept':>8}{'(cited)':>8}{'reject':>8}{'resolved':>9}{'open':>6}{'precision':>11}")
     for k, r in sorted(rows.items(), key=lambda kv: -kv[1]["findings"]):
         p = "-" if r["precision"] is None else f"{r['precision']:.2f}"
         print(f"{k:<20}{r['findings']:>9}{r['accept']:>8}{r['cited']:>8}{r['reject']:>8}{r['resolved']:>9}{r['unlabelled']:>6}{p:>11}")
+    if trial:
+        print(f"\nshadow{' since ' + a.since if a.since else ''}: a verified defect blocks only when the MR's previous judged run had it too")
+        print(f"  judged runs {trial['runs']}: blocking on any defect stops {trial['block_any']}, on a persistent one {trial['block_persistent']}")
+        print(f"  merge requests {trial['mrs']}: last run stopped on any defect {trial['last_any']}, on a persistent one {trial['last_persistent']}")
+        for h in trial["hits"]:
+            f = findings.get(h["mr"], {}).get(h["id"], {})
+            print(f"  !{h['mr']} {h['when'][:16]}Z {h['id']} {f.get('location', '')}")
     return 0
 
 

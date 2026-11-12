@@ -185,7 +185,11 @@ executes only the tool calls the model makes, through allowlists (one tool
 here: read a tracked file). Advisory until the record shows which finding
 kinds hold up: every finding carries a label id, a reviewer labels it in a
 merge request note (`judge <id> accept|reject <why>`) or names it in the
-commit that fixes it, and `scripts/judge_pr_ledger.py` counts both per kind. Findings reach the
+commit that fixes it, and `scripts/judge_pr_ledger.py` counts both per kind.
+Its `--shadow` report is the trial of blocking on defects: a verified defect
+would stop a run only when the merge request's previous run reported it too,
+since the judge finds new ones on most pushes and a gate on any defect would
+not converge. Findings reach the
 merge request as code-quality annotations.
 
 The **staging plan** runs in CodeBuild on the allowlist role. Its report is

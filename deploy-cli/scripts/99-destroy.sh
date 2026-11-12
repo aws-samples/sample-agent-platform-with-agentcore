@@ -80,24 +80,35 @@ done
 [ -n "${POOL_ID:-}" ] && t aws cognito-idp delete-user-pool --user-pool-id "$POOL_ID"
 
 # ---- buckets (must be emptied first; versioned buckets need versions purged) ----
+# Only a bucket this account owns is emptied or deleted. The names are
+# predictable, so after an earlier delete another account may hold the name;
+# every call pins the expected owner, and `aws s3 rm` (which cannot) is not used:
+# list-object-versions returns the objects of an unversioned bucket too.
 for b in "${FRONTEND_BUCKET:-}" "${LOGS_BUCKET:-}" "${WORKSPACE_BUCKET:-}"; do
   [ -z "$b" ] && continue
+  st="$(bucket_state "$b")"
+  case "$st" in
+    owned)  ;;
+    absent) log "skip: bucket $b already gone"; continue ;;
+    *)      warn "not touching bucket $b: not owned by this account (${st#foreign:})"; continue ;;
+  esac
   log "emptying $b"
-  aws s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
-  python3 - "$b" <<'PY' 2>/dev/null || true
+  python3 - "$b" "$ACCOUNT_ID" <<'PY' 2>/dev/null || true
 import json,subprocess,sys
-b=sys.argv[1]
+b,owner=sys.argv[1],sys.argv[2]
 for key in ("Versions","DeleteMarkers"):
     out=subprocess.run(["aws","s3api","list-object-versions","--bucket",b,
+        "--expected-bucket-owner",owner,
         "--query",f"{key}[].{{Key:Key,VersionId:VersionId}}","--output","json"],
         capture_output=True,text=True).stdout or "[]"
     items=json.loads(out) or []
     for i in range(0,len(items),900):
         batch={"Objects":items[i:i+900],"Quiet":True}
         subprocess.run(["aws","s3api","delete-objects","--bucket",b,
+            "--expected-bucket-owner",owner,
             "--delete",json.dumps(batch)],capture_output=True)
 PY
-  t aws s3api delete-bucket --bucket "$b"
+  t s3_owned delete-bucket --bucket "$b"
 done
 
 # ---- table / ecr ----
