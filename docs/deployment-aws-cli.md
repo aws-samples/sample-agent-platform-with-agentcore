@@ -151,9 +151,24 @@ leave it empty if one of those is already deployed in this account and region** 
 the names collide. Set something like `SUFFIX=-cli` to coexist.
 
 Whatever you choose, keep it constant: the suffix is part of resource names,
-globally-unique bucket names and AgentCore runtime names, so changing it
-mid-deployment orphans everything already built. It also names the state file, so
-every command below picks it up from there.
+bucket names and AgentCore runtime names, so changing it mid-deployment orphans
+everything already built. It also names the state file, so every command below
+picks it up from there.
+
+**Buckets live in the account's regional namespace.** The three buckets are
+named `agent-platform-<purpose><suffix>-<account>-<region>-an` and created with
+`--bucket-namespace account-regional`. S3 rejects a `CreateBucket` for a name
+with this suffix from any other account, so nobody can create one of these
+buckets ahead of you. Each name must fit in 63 characters; phase 2 refuses a
+`SUFFIX` that makes one longer. (In me-south-1 and me-central-1, which do not
+offer the regional namespace, the names drop the `-an` and live in the global one.)
+
+Phase 2 reuses a bucket only when it is owned by this account: every bucket call
+in these scripts passes `--expected-bucket-owner`, which S3 answers with 403 when
+the owner differs. A name that exists elsewhere, or that the caller cannot
+check, stops the deployment with the bucket named in the error rather than
+being written to. A deployment created before the regional namespace keeps the
+global-namespace names its state file recorded and is checked the same way.
 
 ---
 

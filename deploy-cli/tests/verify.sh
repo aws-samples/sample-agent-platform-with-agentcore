@@ -200,10 +200,14 @@ PITR="$(aws dynamodb describe-continuous-backups --table-name "$TABLE" \
   --query 'ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus' --output text 2>/dev/null)"
 check "dynamodb PITR enabled" ENABLED "$PITR"
 
-VERS="$(aws s3api get-bucket-versioning --bucket "$WORKSPACE_BUCKET" --query Status --output text 2>/dev/null)"
+# The name is derived from the account id and region, so it alone does not say
+# whose bucket this is; S3 answers 403 to an expected-owner mismatch.
+check "workspace bucket owned by this account" owned "$(bucket_state "$WORKSPACE_BUCKET")"
+
+VERS="$(s3_owned get-bucket-versioning --bucket "$WORKSPACE_BUCKET" --query Status --output text 2>/dev/null)"
 check "workspace bucket versioned" Enabled "$VERS"
 
-PAB="$(aws s3api get-public-access-block --bucket "$WORKSPACE_BUCKET" \
+PAB="$(s3_owned get-public-access-block --bucket "$WORKSPACE_BUCKET" \
   --query 'PublicAccessBlockConfiguration.BlockPublicAcls' --output text 2>/dev/null)"
 check "workspace bucket blocks public acls" True "$PAB"
 

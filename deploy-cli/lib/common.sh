@@ -42,9 +42,25 @@ if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then
 fi
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-WORKSPACE_BUCKET="agent-platform-workspaces${SUFFIX}-${ACCOUNT_ID}-${AWS_REGION}"
-FRONTEND_BUCKET="agent-platform-frontend${SUFFIX}-${ACCOUNT_ID}-${AWS_REGION}"
-LOGS_BUCKET="agent-platform-logs${SUFFIX}-${ACCOUNT_ID}-${AWS_REGION}"
+# Bucket names. A name built from the account id and region is predictable, and
+# in S3's shared global namespace anyone can create it first in their own
+# account. New buckets therefore go in this account's regional namespace: the
+# "-<account>-<region>-an" suffix is reserved, and CreateBucket for it from any
+# other account is rejected. The two regions without account regional namespaces
+# fall back to the global namespace; there the owner checks below still keep
+# data out of a bucket someone else created, but such a bucket blocks the deploy.
+#
+# A deployment made before this change recorded its global-namespace names in
+# the state file; `load` restores those over these defaults, so it keeps its
+# buckets. Every bucket call, old names or new, pins the expected owner
+# (s3_owned below), so a bucket another account holds is never written to.
+case "$AWS_REGION" in
+  me-south-1|me-central-1) BUCKET_NAMESPACE=global; BUCKET_NS_SUFFIX="-${ACCOUNT_ID}-${AWS_REGION}" ;;
+  *)                       BUCKET_NAMESPACE=account-regional; BUCKET_NS_SUFFIX="-${ACCOUNT_ID}-${AWS_REGION}-an" ;;
+esac
+WORKSPACE_BUCKET="agent-platform-workspaces${SUFFIX}${BUCKET_NS_SUFFIX}"
+FRONTEND_BUCKET="agent-platform-frontend${SUFFIX}${BUCKET_NS_SUFFIX}"
+LOGS_BUCKET="agent-platform-logs${SUFFIX}${BUCKET_NS_SUFFIX}"
 TABLE="agent-platform${SUFFIX}"
 LLM_SECRET="agent-platform${SUFFIX}/llm-gateway-key"
 ENTRY_SECRET="agent-platform${SUFFIX}/service-entry"
@@ -93,6 +109,26 @@ log()  { printf '  %s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 warn() { printf '  !! %s\n' "$*" >&2; }
 die()  { printf '  XX %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- buckets
+# s3_owned OP --bucket NAME ARGS...: an s3api call that S3 refuses (403) when
+# the bucket belongs to any account but this one. Every bucket-level call goes
+# through it: a predictable bucket name proves nothing about who owns it.
+s3_owned() { local op="$1"; shift; aws s3api "$op" --expected-bucket-owner "$ACCOUNT_ID" "$@"; }
+
+# bucket_state NAME: prints "owned", "absent" or "foreign:<error>".
+# Only a 404 means the name is free; a 403 (someone else's bucket, or one this
+# caller may not see) and anything else are reported, never treated as absent.
+bucket_state() {
+  local err
+  if err="$(s3_owned head-bucket --bucket "$1" 2>&1 >/dev/null)"; then
+    echo owned
+  elif printf '%s' "$err" | grep -qE '\((404|NoSuchBucket|NotFound)\)'; then
+    echo absent
+  else
+    echo "foreign:$(printf '%s' "$err" | tr '\n' ' ')"
+  fi
+}
 
 # ---------------------------------------------------------------- state
 # save KEY VALUE — record an id so re-runs and later phases can find it

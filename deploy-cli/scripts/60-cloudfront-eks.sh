@@ -135,7 +135,7 @@ cat > /tmp/fe-pol.json <<JSON
   "Resource":["arn:aws:s3:::$FRONTEND_BUCKET","arn:aws:s3:::$FRONTEND_BUCKET/*"],
   "Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}
 JSON
-aws s3api put-bucket-policy --bucket "$FRONTEND_BUCKET" --policy file:///tmp/fe-pol.json
+s3_owned put-bucket-policy --bucket "$FRONTEND_BUCKET" --policy file:///tmp/fe-pol.json
 log "frontend bucket policy pinned to $DIST_ID"
 
 # ------------------------------------------------------------------ EKS backend
