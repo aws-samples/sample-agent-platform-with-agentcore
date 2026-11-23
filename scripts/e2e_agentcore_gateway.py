@@ -314,9 +314,9 @@ class Fixture:
             for _ in range(40):
                 if self.acc.get_gateway(gatewayIdentifier=gid)["status"] != "CREATING":
                     break
-                time.sleep(4)
+                time.sleep(4)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         # IAM propagation before the gateway's first outbound.
-        time.sleep(15)
+        time.sleep(15)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         for gid in self.gateways:
             t = self.acc.create_gateway_target(
                 gatewayIdentifier=gid,
@@ -398,7 +398,7 @@ class Fixture:
                 )
                 if st["status"] != "CREATING":
                     break
-                time.sleep(4)
+                time.sleep(4)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
             print(f"  target  {gid} -> {st['status']} {st.get('statusReasons', '')}")
             for r in st.get("privateEndpointManagedResources") or []:
                 print(f"          private endpoint {r.get('domain')} via {r.get('resourceGatewayArn')}")
@@ -435,7 +435,7 @@ class Fixture:
         # The role policy deliberately allows BOTH gateways; the narrowing to
         # one is the session policy the service attaches at mint time, so the
         # scoping assertion tests the session policy and not this role.
-        time.sleep(12)
+        time.sleep(12)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
 
     def _private_endpoint(self) -> dict:
         """Top-level privateEndpoint kwarg for create_gateway_target, if any.
@@ -483,7 +483,7 @@ class Fixture:
                         gatewayIdentifier=gid
                     ).get("items"):
                         break
-                    time.sleep(5)
+                    time.sleep(5)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
                 self.acc.delete_gateway(gatewayIdentifier=gid)
                 print(f"  deleted gateway {gid}")
             except Exception as e:  # noqa: BLE001

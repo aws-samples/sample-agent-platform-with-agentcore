@@ -269,6 +269,29 @@ IRSA sessions are named by the SDK. `require_user_token: false` allows
 application-only calls. Its `verify.sh` asserts the positive path and the
 refusals from inside the pods.
 
+### The hub behind AgentCore Gateway instead
+
+When the hub should be reached through Amazon Bedrock AgentCore Gateway
+rather than replace it, [`services/mcp-hub-demo/deploy/agentcore-gateway-entry`](../services/mcp-hub-demo/deploy/agentcore-gateway-entry/)
+puts the same hub pod behind two gateways: one with a JWT authorizer for
+signed-in users (Claude Code in a Coder pod), one with `AWS_IAM` for an
+application with no user (a pod signing with its IRSA role). A gateway takes
+one inbound authorizer type, hence two. Cedar policies decide per tool, by
+the user's team claim on the first and by the caller's role on the second.
+
+What that buys and what it costs, against the API Gateway entry above:
+
+| | API Gateway entry | AgentCore Gateway |
+|---|---|---|
+| Per-tool authorization | in the hub | Cedar, at the gateway, default-deny |
+| The user reaches the hub | yes (`X-MCPHUB-SSO-TOKEN`) | yes (the gateway exchanges the user's token) |
+| The hub knows which application called | yes (`x-caller-arn`) | **no**: an MCP server target cannot be given the caller's IAM identity |
+
+So with AgentCore Gateway, authorization by application lives entirely in
+the gateway's policy, and the hub knows only that the gateway admitted the
+call (`hub/gateway_entry.py`). If the hub itself must tell applications
+apart, keep the API Gateway entry for them.
+
 ## Deploying the demo
 
 ```bash

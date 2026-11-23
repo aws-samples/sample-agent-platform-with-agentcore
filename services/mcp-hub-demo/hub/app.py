@@ -32,6 +32,7 @@ import uvicorn
 import yaml
 from jwt import PyJWKClient
 from entry_identity import entry_actor, is_entry_request, load_entry_identity
+from gateway_entry import gateway_request, load_gateway_entry, user_may_call
 from mcphub_hmac import (
     DEFAULT_CLOCK_SKEW_S,
     HmacVerificationError,
@@ -68,6 +69,13 @@ with open(CONFIG_PATH) as fh:
 
 RESOURCE_URL = os.environ.get("RESOURCE_URL", CONFIG["resource_url"])
 ISSUER = os.environ.get("ISSUER", CONFIG["issuer"])
+# The audience a user token must carry. Defaults to the resource URL (what an
+# MCP client that ran the SSO flow against this hub is issued); set it apart
+# when the tokens reaching the hub were issued for another audience, such as
+# the ones an AgentCore gateway exchanges on the user's behalf.
+AUDIENCE = os.environ.get("AUDIENCE", CONFIG.get("audience") or RESOURCE_URL)
+# The claim that carries the caller's departments (a string or a list).
+DEPARTMENT_CLAIM = str(CONFIG.get("department_claim") or "department")
 JWKS_URL = os.environ.get(
     "JWKS_URL", CONFIG.get("jwks_url") or f"{ISSUER}/protocol/openid-connect/certs"
 )
@@ -110,6 +118,13 @@ ACTOR_SECRETS = _load_actor_secrets()
 # identity plus a shared secret; the actor is the caller role's session name.
 ENTRY = load_entry_identity(CONFIG.get("entry_identity"), os.environ, log)
 
+
+# AgentCore gateway entry (optional): see gateway_entry.py. The whole
+# listener sits behind an Amazon Bedrock AgentCore gateway that has already
+# authenticated the caller and authorized the tool call; a Bearer is the
+# exchanged user token, no credentials is the application the gateway admitted.
+GATEWAY = load_gateway_entry(CONFIG.get("gateway_entry"), bool(CONFIG.get("entry_identity")))
+
 _parsed = urlparse(RESOURCE_URL)
 ORIGIN = f"{_parsed.scheme}://{_parsed.netloc}"
 # RFC 9728: metadata for <origin>/mcp lives at <origin>/.well-known/oauth-protected-resource/mcp
@@ -133,7 +148,7 @@ WHOAMI_TOOL = "hub__whoami"
 
 def caller_departments() -> set[str]:
     claims = current_claims.get() or {}
-    value = claims.get("department") or []
+    value = claims.get(DEPARTMENT_CLAIM) or []
     if isinstance(value, str):
         value = [value]
     return set(value)
@@ -169,7 +184,7 @@ async def on_list_tools(
     if current_app.get() is not None:
         tools.append(Tool(
             name=WHOAMI_TOOL,
-            description="The application identity the hub resolved for this call (IAM entry), and the user if one was presented.",
+            description="The application identity the hub resolved for this call (IAM entry or AgentCore gateway), and the user if one was presented.",
             input_schema={"type": "object", "properties": {}},
         ))
     for cfg in allowed_servers():
@@ -195,6 +210,15 @@ def _tool_error(text: str) -> CallToolResult:
 async def on_call_tool(
     ctx: ServerRequestContext, params: CallToolRequestParams
 ) -> CallToolResult:
+    if GATEWAY is not None:
+        # The hub's own rule behind the gateway (gateway_entry.py): a user the
+        # gateway admitted may still be refused here, on every tool.
+        refusal = user_may_call(GATEWAY, caller_departments(), current_claims.get() is not None)
+        if refusal:
+            claims = current_claims.get() or {}
+            log.warning("gateway entry refused tool %s: user=%s %s", params.name,
+                        claims.get("preferred_username") or claims.get("sub"), refusal)
+            return _tool_error(refusal)
     if params.name == WHOAMI_TOOL:
         app_identity = current_app.get()
         if app_identity is None:
@@ -264,7 +288,18 @@ class HubAuthMiddleware:
 
         downstream_receive = receive
         app_identity = None
-        if ENTRY is not None and is_entry_request(headers, ENTRY):
+        if GATEWAY is not None:
+            # Behind an AgentCore gateway (gateway_entry.py decides): a Bearer
+            # is the exchanged user token, verified below; no Authorization is
+            # the application alone; anything else is refused.
+            reason, raw, app_identity = gateway_request(headers, GATEWAY)
+            if reason:
+                # The one path in without a credential, so a refusal on it is
+                # worth a record: what was refused (never the header values).
+                log.warning("gateway entry refused: %s", reason)
+                await self._unauthorized(send, reason)
+                return
+        elif ENTRY is not None and is_entry_request(headers, ENTRY):
             # Through the IAM entry: the gateway already authenticated the
             # application and says which in x-caller-arn; the shared secret
             # (trust: secret) or the network path (trust: network) is what
@@ -335,6 +370,13 @@ class HubAuthMiddleware:
             except jwt.PyJWTError as exc:
                 await self._unauthorized(send, f"invalid token: {exc}")
                 return
+        if GATEWAY is not None:
+            # The audit record of this path, as the IAM entry and HMAC paths
+            # have theirs: which actor the call is attributed to, and whether a
+            # verified user stands behind it. Written once the token (if any)
+            # has verified, so a rejected token never reads as an admitted call.
+            user = (claims or {}).get("preferred_username") or (claims or {}).get("sub")
+            log.info("gateway entry admitted: actor=%s user=%s", app_identity["actor"], user if claims else "none (application only)")
         t1 = current_claims.set(claims)
         t2 = current_token.set(raw or None)
         t3 = current_app.set(app_identity)
@@ -352,7 +394,7 @@ class HubAuthMiddleware:
             signing_key.key,
             algorithms=["RS256"],
             issuer=ISSUER,
-            audience=RESOURCE_URL,
+            audience=AUDIENCE,
             options={"require": ["exp", "iat", "iss", "aud"]},
         )
 

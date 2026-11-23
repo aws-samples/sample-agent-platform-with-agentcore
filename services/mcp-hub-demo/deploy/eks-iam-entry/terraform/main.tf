@@ -37,6 +37,12 @@ module "frontend" {
   kubernetes_version  = var.kubernetes_version
   public_access_cidrs = var.eks_public_access_cidrs
   node_instance_type  = var.node_instance_type
+
+  # Used by ../agentcore-gateway-entry: the Coder workspaces and the two
+  # application pods each get a node group and a subnet of their own, the
+  # range one VPC endpoint admits (one per gateway). Nothing in this stack
+  # schedules onto them.
+  dedicated_node_groups = var.frontend_dedicated_node_groups
 }
 
 module "hub" {

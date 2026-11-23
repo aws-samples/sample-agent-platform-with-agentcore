@@ -35,6 +35,27 @@ variable "node_instance_type" {
   type = string
 }
 
+# Extra node groups, each in a subnet of its own and tainted, so that a pod
+# lands there only when it tolerates the taint and selects the node by label.
+# What a dedicated subnet buys: its address range holds that group's pods and
+# nothing else, so a security group that admits the range admits those pods
+# only (the agentcore-gateway-entry demo fronts each of its gateways with a
+# VPC endpoint open to one such range). Empty for the hub VPC.
+variable "dedicated_node_groups" {
+  description = "name => { cidr, az_index } of an extra, tainted node group in a subnet of its own (az_index into the two AZs the module uses)."
+  type = map(object({
+    cidr     = string
+    az_index = number
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([for k, v in var.dedicated_node_groups :
+    can(regex("^[a-z][a-z0-9-]{0,15}$", k)) && can(cidrhost(v.cidr, 0)) && contains([0, 1], v.az_index)])
+    error_message = "dedicated_node_groups: names of 1-16 [a-z0-9-] starting with a letter, a valid cidr, az_index 0 or 1."
+  }
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
   filter {
@@ -77,6 +98,15 @@ resource "aws_subnet" "public" {
   availability_zone = local.azs[0]
   cidr_block        = cidrsubnet(var.cidr, 8, 250) # a /24 clear of the node and lb subnets
   tags              = { Name = "${var.name}-public" }
+}
+
+# One per dedicated node group: routed like the private subnets (NAT out).
+resource "aws_subnet" "dedicated" {
+  for_each          = var.dedicated_node_groups
+  vpc_id            = aws_vpc.this.id
+  availability_zone = local.azs[each.value.az_index]
+  cidr_block        = each.value.cidr
+  tags              = { Name = "${var.name}-${each.key}" }
 }
 
 resource "aws_internet_gateway" "this" {
@@ -122,6 +152,12 @@ resource "aws_route_table" "private" {
 resource "aws_route_table_association" "private" {
   count          = 2
   subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "dedicated" {
+  for_each       = aws_subnet.dedicated
+  subnet_id      = each.value.id
   route_table_id = aws_route_table.private.id
 }
 
@@ -264,6 +300,41 @@ resource "aws_eks_node_group" "this" {
   depends_on = [aws_iam_role_policy_attachment.node]
 }
 
+# The dedicated node groups: same node role, launch template and AMI as the
+# main group. The taint keeps every pod that does not ask for the group away
+# from it (system DaemonSets such as aws-node and kube-proxy tolerate all
+# taints and still run there); the label is what a pod selects it by.
+resource "aws_eks_node_group" "dedicated" {
+  for_each        = var.dedicated_node_groups
+  cluster_name    = aws_eks_cluster.this.name
+  node_group_name = "${var.name}-${each.key}"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = [aws_subnet.dedicated[each.key].id]
+  ami_type        = "AL2023_ARM_64_STANDARD"
+  instance_types  = [var.node_instance_type]
+
+  launch_template {
+    id      = aws_launch_template.node.id
+    version = aws_launch_template.node.latest_version
+  }
+
+  labels = { "mcp-hub-demo/pool" = each.key }
+
+  taint {
+    key    = "mcp-hub-demo/pool"
+    value  = each.key
+    effect = "NO_SCHEDULE"
+  }
+
+  scaling_config {
+    desired_size = 1
+    min_size     = 1
+    max_size     = 1
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.node]
+}
+
 # EKS bootstraps vpc-cni, kube-proxy and coredns itself; vpc-cni is then
 # taken over as a managed add-on only to switch its network policy agent on,
 # which is what enforces the hub's NetworkPolicy.
@@ -319,6 +390,15 @@ output "lb_subnet_ids" {
 
 output "lb_subnet_cidrs" {
   value = aws_subnet.lb[*].cidr_block
+}
+
+output "dedicated_subnets" {
+  description = "name => { id, cidr, az } of each dedicated node group's subnet."
+  value = { for k, s in aws_subnet.dedicated : k => {
+    id   = s.id
+    cidr = s.cidr_block
+    az   = s.availability_zone
+  } }
 }
 
 output "node_autoscaling_group_name" {

@@ -5,8 +5,10 @@ works, so a client that says ok=true after a failed step makes the whole
 verification green for a broken deployment. This test runs the client against
 a local fake hub that fails one step at a time, every way a step can fail
 (HTTP status, JSON-RPC error, wrong id, missing result, malformed body, tool
-error, unparsable tool output), and requires ok=false, a nonzero exit and the
-failing step named - plus the one fully successful exchange that must pass.
+error, unparsable tool output, no answer at all: refused, timed out, reset, no
+DNS, and over a real socket a body cut short or a status line that is not
+HTTP), and requires ok=false, a nonzero exit and the failing step named - plus
+the one fully successful exchange that must pass.
 
 No AWS: the default credential chain is fed static dummy credentials through
 the environment, which is all the signer needs to produce a signature the
@@ -161,6 +163,80 @@ for method, how, response in cases:
     check(f"{method}: {how} -> not ok, exit 1, step named",
           rc == 1 and res.get("ok") is False and res.get("failed_step") == STEP[method],
           f"rc={rc} {res}")
+
+# A step that gets no HTTP answer at all (refused, timed out, reset, no DNS) still ends in a
+# RESULT line with the step named, never a traceback: verify.sh reads only that line.
+import socket  # noqa: E402
+import urllib.error  # noqa: E402
+
+TRANSPORT = {
+    "connection refused": urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+    "a timeout": urllib.error.URLError(socket.timeout("timed out")),
+    "a bare socket timeout": TimeoutError("timed out"),
+    "a reset while reading": ConnectionResetError(104, "Connection reset by peer"),
+    "no DNS": urllib.error.URLError(socket.gaierror(-2, "Name or service not known")),
+}
+for method in ("initialize", "notifications/initialized", "tools/list", "tools/call"):
+    for how, exc in TRANSPORT.items():
+        def broken(url, body, headers, timeout=30.0, _m=method, _e=exc):
+            if json.loads(body).get("method") == _m:
+                raise _e
+            return _post(LOCAL if url == URL else url, body, headers, timeout)
+        client.post = broken
+        rc, res = run(GOOD)
+        check(f"{method}: {how} -> RESULT not ok, exit 1, step named, status 0, the error kept",
+              rc == 1 and res.get("ok") is False and res.get("failed_step") == STEP[method] and res.get("status") == 0
+              and type(getattr(exc, "reason", exc)).__name__ in res.get("transport_error", ""),
+              f"rc={rc} {res}")
+client.post = lambda url, body, headers, timeout=30.0: _post(LOCAL if url == URL else url, body, headers, timeout)
+
+# The same over a real socket, not an injected exception: a hub that answers one step with a
+# body cut short of its Content-Length, or with a status line that is not HTTP, then closes.
+class BrokenHub(BaseHTTPRequestHandler):
+    target, how = "", ""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))) or b"{}")
+        method = body.get("method")
+        status, payload = GOOD[method]
+        if method == BrokenHub.target and BrokenHub.how == "garbage":
+            self.wfile.write(b"NOT-HTTP\r\n\r\n")
+            self.close_connection = True
+            return
+        raw = b"" if payload is None else json.dumps(payload).encode()
+        self.send_response(status)
+        if method == BrokenHub.target:  # truncated: promise more than is sent
+            self.send_header("content-length", str(len(raw) + 50))
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(raw[: len(raw) // 2])
+            self.close_connection = True
+            return
+        self.send_header("content-length", str(len(raw)))
+        if raw:
+            self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+broken = ThreadingHTTPServer(("127.0.0.1", 0), BrokenHub)
+threading.Thread(target=broken.serve_forever, daemon=True).start()
+BROKEN = f"http://127.0.0.1:{broken.server_address[1]}/mcp/mcp"
+client.post = lambda url, body, headers, timeout=30.0: _post(BROKEN if url == URL else url, body, headers, timeout)
+for method in ("initialize", "notifications/initialized", "tools/list", "tools/call"):
+    for how in ("truncated", "garbage"):
+        BrokenHub.target, BrokenHub.how = method, how
+        rc, res = run(GOOD)
+        check(f"{method}: a real {'body cut short of its Content-Length' if how == 'truncated' else 'non-HTTP status line'} -> RESULT not ok, exit 1, step named",
+              rc == 1 and res.get("ok") is False and res.get("failed_step") == STEP[method] and res.get("transport_error"),
+              f"rc={rc} {res}")
+broken.shutdown()
+client.post = lambda url, body, headers, timeout=30.0: _post(LOCAL if url == URL else url, body, headers, timeout)
+rc, res = run(GOOD)
+check("after the transport cases a complete exchange is ok again, with no transport_error", rc == 0 and res.get("ok") is True and "transport_error" not in res, str(res))
 
 server.shutdown()
 print(f"\n{'FAILED: ' + ', '.join(failures) if failures else 'all passed'}")

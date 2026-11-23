@@ -46,3 +46,14 @@ actors:
 #   callers:
 #     - role_arn: arn:aws:iam::<account>:role/my-frontend
 #       actor: frontend-app
+#
+# Behind an Amazon Bedrock AgentCore gateway (see gateway_entry.py and
+# deploy/agentcore-gateway-entry). The gateway has authenticated and authorized
+# the caller; a Bearer is the exchanged user token, no credentials is an
+# application the gateway admitted. No secret: the listener must be reachable
+# only from the gateway's private endpoint. Not combinable with entry_identity.
+# gateway_entry:
+#   trust: network
+#   actor: agentcore-gateway    # what an application-only call is attributed to
+# audience: agent-platform      # what exchanged user tokens are issued for (default: resource_url)
+# department_claim: team        # the claim holding the user's departments (default: department)

@@ -51,7 +51,7 @@ NOT_IMPORTABLE = {"terraform_data"}
 
 
 def run(argv, cwd=None, env=None):
-    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)  # nosec B603
+    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)  # nosec B603 # nosemgrep: dangerous-subprocess-use-audit  (fixed aws/terraform argv, no shell)
 
 
 def aws_json(*args):
@@ -101,7 +101,7 @@ def _s3_get_version(bucket, obj, version_id):
     """the object body of one version (get-object also prints metadata to stdout, so write to a file)"""
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".tfstate", delete=False) as fh:
-        path = fh.name
+        path = fh.name  # nosemgrep: tempfile-without-flush  (file is closed when the with-block exits, before the path is used)
     try:
         p = run(["aws", "s3api", "get-object", "--bucket", bucket, "--key", obj, "--version-id", version_id, path])
         if p.returncode != 0:

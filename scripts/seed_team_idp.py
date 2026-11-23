@@ -193,7 +193,7 @@ def main() -> int:
             break
         except Exception as exc:  # noqa: BLE001
             print(f"  waiting for Keycloak ({exc}) ...")
-            time.sleep(10)
+            time.sleep(10)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     else:
         print("Keycloak did not come up", file=sys.stderr)
         return 1

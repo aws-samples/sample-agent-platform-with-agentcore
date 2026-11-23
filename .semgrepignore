@@ -9,6 +9,17 @@
 # runtime kernels, which are still scanned.
 frontend/
 
+# Test code. The adversarial suites deliberately build hostile inputs: fake
+# credentials, shell commands assembled from variables, sleeps that race a
+# timeout, unauthenticated cipher modes to forge payloads. semgrep's audit rules
+# fire on exactly those patterns, so test files produced most of the findings
+# and none of them were defects. Production code under backend/, runtimes/,
+# services/, scripts/ and terraform/ is still scanned; the few by-design hits
+# there carry an inline `nosemgrep: <rule>  (reason)`.
+tests/
+test_*.py
+*_adversarial.py
+
 # Standard build / dependency output (not committed, listed for completeness).
 node_modules/
 dist/

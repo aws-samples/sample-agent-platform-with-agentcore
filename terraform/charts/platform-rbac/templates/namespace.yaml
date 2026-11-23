@@ -1,0 +1,28 @@
+# The release namespace itself, so its Pod Security Admission labels ship with
+# the RoleBinding. The application pipeline may create Deployments here, and a
+# namespace without an enforce label admits any pod spec: a privileged or
+# hostPath pod is root on a node it shares with the production namespaces and
+# kube-system, and reads their projected IRSA tokens (Continuum C110).
+# enforce=baseline rejects privileged, hostPath, hostNetwork/PID/IPC, host ports
+# and added capabilities; restricted is audited and warned until the workload
+# chart's securityContext meets it. PSA does not cover nodeName: picking a node
+# gains nothing once the pod cannot leave its container.
+#
+# Existing clusters: the namespaces were created by create_namespace = true
+# before this template, and helm_release.take_ownership adopts them. keep:
+# uninstalling the release must never delete the namespace and its workloads.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: platform-rbac
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    pod-security.kubernetes.io/enforce: {{ required "podSecurity.enforce is required" .Values.podSecurity.enforce }}
+    pod-security.kubernetes.io/enforce-version: {{ required "podSecurity.version is required" .Values.podSecurity.version | quote }}
+    pod-security.kubernetes.io/audit: {{ required "podSecurity.audit is required" .Values.podSecurity.audit }}
+    pod-security.kubernetes.io/audit-version: {{ .Values.podSecurity.version | quote }}
+    pod-security.kubernetes.io/warn: {{ required "podSecurity.warn is required" .Values.podSecurity.warn }}
+    pod-security.kubernetes.io/warn-version: {{ .Values.podSecurity.version | quote }}
+  annotations:
+    helm.sh/resource-policy: keep

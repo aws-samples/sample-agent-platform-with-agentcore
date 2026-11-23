@@ -178,7 +178,7 @@ def _ensure_role(iam, account: str) -> str:
             Description="Service role for the agent-platform team-auth demo gateway",
         )["Role"]
         print(f"created role {ROLE_NAME}")
-        time.sleep(10)  # IAM propagation
+        time.sleep(10)  # IAM propagation  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     return role["Arn"]
 
 
@@ -266,7 +266,7 @@ def _ensure_interceptor_lambda(lam, iam, account: str) -> str:
             PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
         )
         print(f"created role {INTERCEPTOR_ROLE}")
-        time.sleep(10)  # IAM propagation
+        time.sleep(10)  # IAM propagation  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -298,7 +298,7 @@ def _ensure_interceptor_lambda(lam, iam, account: str) -> str:
             # freshly created role may not be assumable yet
             if "assume" not in str(exc).lower() or attempt == 5:
                 raise
-            time.sleep(10)
+            time.sleep(10)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     raise RuntimeError("unreachable")
 
 
@@ -385,7 +385,7 @@ def _wait(desc, fetch, ready_status="READY", timeout=300):
             return
         if status.startswith(("FAILED", "DELETE")):
             raise RuntimeError(f"{desc} entered {status}")
-        time.sleep(5)
+        time.sleep(5)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     raise TimeoutError(f"{desc} not {ready_status} after {timeout}s")
 
 
@@ -415,7 +415,7 @@ def main() -> int:
             for t in control.list_gateway_targets(gatewayIdentifier=gid).get("items", []):
                 control.delete_gateway_target(gatewayIdentifier=gid, targetId=t["targetId"])
                 print(f"deleted target {t['name']}")
-            time.sleep(10)
+            time.sleep(10)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
             control.delete_gateway(gatewayIdentifier=gid)
             print(f"deleted gateway {gid}")
         for p in control.list_oauth2_credential_providers(maxResults=20).get(

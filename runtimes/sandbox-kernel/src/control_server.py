@@ -182,7 +182,7 @@ def _limits(memory_limit_mib: int | None):
 
 def _popen(cmd: str, args: dict, stdout, stderr) -> subprocess.Popen:
     preexec = _limits(args.get("memory_limit_mib"))
-    return subprocess.Popen(  # noqa: S603 - the sandbox exists to run caller commands
+    return subprocess.Popen(  # noqa: S603 - the sandbox exists to run caller commands # nosemgrep: dangerous-subprocess-use-audit  (the sandbox exists to run caller commands, inside an isolated microVM)
         ["/bin/sh", "-c", cmd],
         cwd=str(_resolve(args.get("cwd") or str(WORKSPACE_ROOT))),
         env=_env(args.get("env")),
@@ -843,7 +843,7 @@ def _watchdog() -> None:
             if task["proc"].poll() is None and now > task["deadline"]:
                 task["end_reason"] = "timeout"
                 _kill_group(task["proc"])
-        time.sleep(1)
+        time.sleep(1)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
 
 
 def _busy() -> bool:

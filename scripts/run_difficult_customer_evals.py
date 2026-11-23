@@ -414,7 +414,7 @@ def wait_for_run(base: str, token: str, run_id: str, deadline: float) -> dict:
         run = call(base, token, "GET", f"/api/v1/evals/runs/{run_id}")
         if run["status"] in ("completed", "failed"):
             return run
-        time.sleep(10)
+        time.sleep(10)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     raise TimeoutError(f"evaluation {run_id} did not finish within the time limit")
 
 

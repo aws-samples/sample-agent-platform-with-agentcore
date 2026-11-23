@@ -1,3 +1,15 @@
 # Kubernetes group the workloads deploy role is mapped to by its EKS access
 # entry (ci/infra: agent-platform-workloads<suffix>).
 group: ""
+
+# Pod Security Admission levels for the namespace (templates/namespace.yaml).
+# enforce stays at baseline until the platform-workload chart sets a
+# restricted-compliant securityContext and the backend image runs as non-root;
+# audit/warn at restricted show what still has to change. The version is
+# pinned so a cluster upgrade does not tighten the policy under running pods;
+# move it with the cluster's minor version (eks_kubernetes_version).
+podSecurity:
+  enforce: baseline
+  audit: restricted
+  warn: restricted
+  version: "v1.36"
