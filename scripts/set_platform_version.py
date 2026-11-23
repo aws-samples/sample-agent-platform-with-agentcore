@@ -34,7 +34,7 @@ def _wait_terminal(ctl, runtime_id: str, label: str) -> dict:
         if time.time() - t0 > TIMEOUT_S:
             raise TimeoutError(f"{label}: still {status} after {TIMEOUT_S}s")
         print(f"  {label}: {time.time() - t0:5.0f}s {status}", flush=True)
-        time.sleep(10)
+        time.sleep(10)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
 
 
 def main() -> int:

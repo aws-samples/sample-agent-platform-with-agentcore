@@ -333,7 +333,7 @@ class ScheduleService:
         run_id = run["id"]
         deadline = _now() + timedelta(seconds=480)  # leave headroom inside the 10-min budget
         while _now() < deadline:
-            time.sleep(15)
+            time.sleep(15)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
             run = http("GET", f"{prefix}/pipeline-runs/{run_id}", None)
             if run.get("status") != "running":
                 break

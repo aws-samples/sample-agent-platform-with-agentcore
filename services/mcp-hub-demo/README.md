@@ -5,8 +5,9 @@
 > deploys and that [`docs/mcp-hub-integration.md`](../../docs/mcp-hub-integration.md)
 > describes. It stands in for *your* hub, so everything below runs on its own
 > (`docker compose up`, no AWS needed) and the platform-facing pieces are
-> confined to two files: `hub/mcphub_hmac.py` (the HMAC key-pair scheme) and
-> `hub/entry_identity.py` (the IAM entry). Licensed with the repository (MIT-0).
+> confined to three files: `hub/mcphub_hmac.py` (the HMAC key-pair scheme),
+> `hub/entry_identity.py` (the IAM entry) and `hub/gateway_entry.py` (the hub
+> behind an AgentCore gateway). Licensed with the repository (MIT-0).
 
 A runnable sample that replaces static per-user API keys with **enterprise SSO
 login** for Claude Code's access to internal MCP servers — using nothing but
@@ -200,6 +201,18 @@ application it is, both carrying the acting user's token in
   the same entry serves an EKS pod that calls the hub with its own IRSA role:
   see [`deploy/eks-iam-entry`](deploy/eks-iam-entry/) for a two-VPC, pod-to-pod
   deployment with no static key anywhere.
+
+- **Behind an Amazon Bedrock AgentCore gateway** (`gateway_entry: {trust:
+  network}`): the gateway authenticates the caller (a user's JWT, or an
+  application's SigV4 signature) and authorizes the tool call with Cedar
+  before the request reaches the hub. A `Bearer` is the user's token as the
+  gateway exchanged it, verified as on the browser path; a request with no
+  credentials is an application the gateway admitted. The hub cannot tell
+  which application: a gateway does not forward a caller's IAM identity to an
+  MCP server target, so authorization by application lives in the gateway's
+  policy. See [`deploy/agentcore-gateway-entry`](deploy/agentcore-gateway-entry/)
+  for one hub behind two gateways (signed-in users from Claude Code, and an
+  application with no user), again with no static key held by a caller.
 
 Either way the department routing follows the token's claims; the
 application scheme only adds "and we know which app sent it".

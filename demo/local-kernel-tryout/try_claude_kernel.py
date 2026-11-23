@@ -208,7 +208,7 @@ def main() -> None:
     while resp.get("status") != "ready" and waited < args.ready_timeout:
         import time
 
-        time.sleep(3)
+        time.sleep(3)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         waited += 3
         resp = invoke(client, arn, args.qualifier, session_id, {"action": "status"})
         print(f"status  : {json.dumps(resp)} ({waited}s)", file=sys.stderr)

@@ -97,7 +97,7 @@ def main() -> int:
             return finish()
         run_id = run["id"]
         for _ in range(60):
-            time.sleep(2)
+            time.sleep(2)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
             st, run = api(admin, "GET", f"/api/v1/pipeline-runs/{run_id}")
             if isinstance(run, dict) and run.get("status") not in ("running", "pending", ""):
                 break

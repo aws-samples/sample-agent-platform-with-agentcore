@@ -1,0 +1,16 @@
+region = "ap-northeast-1"
+
+# The realm your users sign in to. The JWT gateway and the hub both verify
+# tokens against it.
+oidc_issuer_url = "https://idp.example.com/realms/your-realm"
+
+# Everything else has a default; see variables.tf.
+
+# Who may open the Coder demo (WAF on its CloudFront distribution). Your
+# operator egress, /32s.
+coder_allowed_cidrs = ["203.0.113.10/32"]
+
+# Teams the JWT gateway's Cedar policy admits, and (optional) the hub's own
+# rule on top: a user the gateway admitted runs a tool only in these teams.
+# allowed_teams     = ["team-a"]
+# hub_allowed_teams = ["team-a"]

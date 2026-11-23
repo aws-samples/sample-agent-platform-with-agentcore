@@ -1,0 +1,20 @@
+# gitleaks fingerprints (commit:file:rule:line) to ignore. Every entry is a
+# deliberately fake credential inside an adversarial test: the suites check
+# that redaction, the sentinel and the judge scrubber catch credential-shaped
+# strings, so they have to contain some. Values are placeholders such as
+# AKIAABCD... and the AWS documentation example key; none was ever a real secret.
+#
+# gitleaks scans the whole history of every branch, so a fingerprint stays
+# valid after the file changes. A new fake credential in a test needs its own
+# line here; a finding outside a test is never added, it is rotated and removed.
+33ab50502085addde5792a53d861120ffbcc9f9b:ci/tests/test_sentinel_adversarial.py:aws-access-token:268
+33ab50502085addde5792a53d861120ffbcc9f9b:ci/tests/test_sentinel_adversarial.py:generic-api-key:270
+33ab50502085addde5792a53d861120ffbcc9f9b:ci/tests/test_sentinel_adversarial.py:generic-api-key:273
+33ab50502085addde5792a53d861120ffbcc9f9b:ci/tests/test_sentinel_adversarial.py:jwt:274
+b5cd6a4135acd449f5f7adf2178b1443822b7983:ci/tests/test_model_judge_adversarial.py:aws-access-token:344
+b5cd6a4135acd449f5f7adf2178b1443822b7983:ci/tests/test_model_judge_adversarial.py:aws-access-token:345
+12affd9894040833b6add155b3948cd3472339e8:ci/tests/test_model_judge_adversarial.py:aws-access-token:396
+a35d32f427d3319825dd80135f7ca956c9a606ed:ci/tests/test_mcp_hub_iam_adversarial.py:aws-access-token:46
+ee7c12b7903bb7b30ffa8c3c878256e5e42c5694:backend/tests/test_lark_ambient_adversarial.py:aws-access-token:135
+adf583eeaccd0207b7e2f3cfcf8ad9d854dba2b1:backend/tests/test_lark_playbooks_adversarial.py:aws-access-token:100
+3e562bf5870b83bc3ab290e7f0dbd7f4ca131b1d:ci/tests/test_verify_runner_identity_adversarial.py:generic-api-key:134

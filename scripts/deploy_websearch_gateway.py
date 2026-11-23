@@ -114,7 +114,7 @@ def _wait(label: str, get_status, ok=("READY",), bad=("FAILED",), timeout=300) -
             return
         if status in bad:
             raise SystemExit(f"{label} entered {status}")
-        time.sleep(5)
+        time.sleep(5)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     raise SystemExit(f"{label} did not become ready within {timeout}s")
 
 
@@ -168,7 +168,7 @@ def _ensure_role(iam, account: str) -> str:
             Description="Service role for the agent-platform Web Search gateway",
         )["Role"]
         print(f"created role {ROLE_NAME}")
-        time.sleep(10)  # IAM propagation
+        time.sleep(10)  # IAM propagation  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
     # Always (re)put the inline policy so a permission fix lands on re-run.
     iam.put_role_policy(
         RoleName=ROLE_NAME,

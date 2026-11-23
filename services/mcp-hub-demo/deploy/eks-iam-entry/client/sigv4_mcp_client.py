@@ -21,6 +21,7 @@ Exit code 0 only when the whole exchange succeeded.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
@@ -104,7 +105,15 @@ def main(url: str) -> int:
                 "MCP-Protocol-Version": PROTOCOL_VERSION}
         if session_id:
             base["Mcp-Session-Id"] = session_id
-        resp = post(url, body, signer.headers("POST", url, body, base))
+        try:
+            resp = post(url, body, signer.headers("POST", url, body, base))
+        # no HTTP answer, or a broken one: URLError, timeout, reset (OSError, j-7ca41846), a body
+        # cut short of its Content-Length or a malformed status line (HTTPException, j-b8c44d8d)
+        except (OSError, http.client.HTTPException) as e:
+            raw_body["last"] = b""
+            result["transport_error"] = f"{type(getattr(e, 'reason', e)).__name__}: {getattr(e, 'reason', e)}"[:300]
+            print(json.dumps({"step": msg.get("method"), "status": 0, "transport_error": result["transport_error"]}))
+            return 0, None
         raw_body["last"] = resp.body
         session_id = resp.headers.get("mcp-session-id", session_id)
         out = None
@@ -115,7 +124,7 @@ def main(url: str) -> int:
         print(json.dumps({"step": msg.get("method"), "status": resp.status, "body": out})[:2000])
         return resp.status, out
 
-    def fail(step: str, status: int) -> int:
+    def fail(step: str, status: int) -> int:  # status 0: the request got no HTTP answer
         # Every step must succeed for ok=true: the first failing one is
         # reported and ends the exchange.
         result.update(ok=False, failed_step=step, status=status)

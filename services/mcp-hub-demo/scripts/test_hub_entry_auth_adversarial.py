@@ -56,11 +56,12 @@ def token(key=KEY, **over) -> str:
     return jwt.encode(claims, key, algorithm="RS256")
 
 
-def load_hub(entry_block: dict | None, env: dict[str, str], name: str):
+def load_hub(entry_block: dict | None, env: dict[str, str], name: str, extra: dict | None = None):
     cfg = {"resource_url": RESOURCE, "issuer": ISSUER,
            "servers": [{"name": "order", "url": "http://127.0.0.1:9/mcp", "allowed_departments": ["sales"]}]}
     if entry_block is not None:
         cfg["entry_identity"] = entry_block
+    cfg.update(extra or {})
     fh = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
     json.dump(cfg, fh)  # JSON is YAML
     fh.close()
@@ -186,6 +187,109 @@ async def main() -> None:
     r = await net.on_call_tool(None, net.CallToolRequestParams(name="order__list_orders", arguments={}))
     check("an app-only call is refused by a department-gated backend (no user, no department)",
           r.is_error and "may not access" in r.content[0].text)
+
+    await gateway_entry_checks(tools)
+
+
+GW_AUD = "agent-platform"
+GW_ENTRY = {"trust": "network", "actor": "agentcore-gateway"}
+GW_APP = {"actor": "agentcore-gateway", "trust": "network", "via": "agentcore-gateway", "caller_arn": None}
+
+
+async def gateway_entry_checks(tools) -> None:
+    """Behind an AgentCore gateway: a Bearer is the exchanged user token, no
+    Authorization is the application alone, and nothing else gets in."""
+    gw = load_hub(None, {}, "hub_gw", {"gateway_entry": GW_ENTRY, "audience": GW_AUD, "department_claim": "team"})
+
+    status, seen = await call(gw, {})
+    check("gateway entry: a call with no credentials is the application alone",
+          status == 200 and bool(seen) and seen["app"] == GW_APP and seen["claims"] is None and seen["token"] is None, str(seen))
+
+    good = token(aud=GW_AUD, team=["team-a"])
+    status, seen = await call(gw, {"authorization": f"Bearer {good}"})
+    check("gateway entry: an exchanged user token is verified and attached next to the application",
+          status == 200 and bool(seen) and seen["app"] == GW_APP and seen["claims"]["preferred_username"] == "alice"
+          and seen["token"] == good, str(status))
+
+    for name, hdrs in (
+        ("user token for the resource URL, not the configured audience", {"authorization": f"Bearer {token()}"}),
+        ("user token signed by another key", {"authorization": f"Bearer {token(OTHER_KEY, aud=GW_AUD)}"}),
+        ("expired user token", {"authorization": f"Bearer {token(aud=GW_AUD, exp=int(time.time()) - 600)}"}),
+        ("empty Bearer is not an application-only call", {"authorization": "Bearer "}),
+        ("blank Bearer is not an application-only call", {"authorization": "Bearer    "}),
+        ("another scheme", {"authorization": "Basic dXNlcjpwYXNz"}),
+        ("HMAC scheme", {"authorization": "MCPHUB-HMAC-SHA256 Credential=x"}),
+        ("an identity header from the IAM entry", {"x-caller-arn": IRSA_ARN}),
+        ("an identity header next to a valid Bearer", {"x-caller-arn": IRSA_ARN, "authorization": f"Bearer {good}"}),
+        ("an entry secret header", {"x-mcp-hub-entry-secret": "s3cret"}),
+        ("a user token in the application header", {"x-mcphub-sso-token": good}),
+    ):
+        status, seen = await call(gw, hdrs)
+        check(f"gateway entry refused: {name}", status == 401 and seen is None, str(status))
+
+    names, called = await tools(gw, GW_APP, None)
+    body = json.loads(called.content[0].text) if not called.is_error else {}
+    check("gateway entry, application alone: hub__whoami only, and no caller ARN to report",
+          names == [gw.WHOAMI_TOOL] and body.get("actor") == "agentcore-gateway" and body.get("caller_arn") is None
+          and body.get("user") is None and body.get("via") == "agentcore-gateway", str(body))
+    names, called = await tools(gw, GW_APP, {"preferred_username": "alice", "team": ["team-a"]})
+    body = json.loads(called.content[0].text) if not called.is_error else {}
+    check("gateway entry with a user: hub__whoami names the user and reads departments from the configured claim",
+          body.get("user") == "alice" and body.get("departments") == ["team-a"], str(body))
+
+    for name, extra in (
+        ("trust other than network", {"gateway_entry": {"trust": "secret", "actor": "x"}}),
+        ("no trust", {"gateway_entry": {"actor": "x"}}),
+        ("an empty actor", {"gateway_entry": {"trust": "network", "actor": ""}}),
+        ("an actor with a space", {"gateway_entry": {"trust": "network", "actor": "a b"}}),
+        ("a block that is not a mapping", {"gateway_entry": ["network"]}),
+    ):
+        try:
+            load_hub(None, {}, "hub_gw_bad", extra)
+            refused = False
+        except SystemExit:
+            refused = True
+        check(f"gateway entry configuration refused: {name}", refused)
+    try:
+        load_hub({"trust": "network", "require_user_token": False,
+                  "callers": [{"role_arn": f"arn:aws:iam::{ACCOUNT}:role/{FRONT}", "actor": "frontend-app"}]},
+                 {}, "hub_gw_both", {"gateway_entry": GW_ENTRY})
+        refused = False
+    except SystemExit:
+        refused = True
+    check("gateway entry configuration refused: combined with entry_identity", refused)
+
+    # The audit record, through the real middleware: who each call is attributed to.
+    import io
+    import logging
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    gw.log.addHandler(handler)
+    try:
+        await call(gw, {})
+        await call(gw, {"authorization": f"Bearer {good}"})
+        await call(gw, {"authorization": f"Bearer {token(OTHER_KEY, aud=GW_AUD)}"})
+        await call(gw, {"authorization": "Bearer "})
+        await call(gw, {"x-caller-arn": IRSA_ARN})
+    finally:
+        gw.log.removeHandler(handler)
+    lines = buf.getvalue().splitlines()
+    check("an application-only call is logged with its actor and no user",
+          "gateway entry admitted: actor=agentcore-gateway user=none (application only)" in lines, str(lines))
+    check("a user's call is logged with the actor and the verified user",
+          "gateway entry admitted: actor=agentcore-gateway user=alice" in lines, str(lines))
+    check("a token that fails verification is never logged as admitted, and the two refusals are logged as refused",
+          sum("admitted" in ln for ln in lines) == 2
+          and "gateway entry refused: gateway entry: unsupported credentials" in lines
+          and "gateway entry refused: gateway entry: unexpected identity header" in lines, str(lines))
+    check("no log line carries a token or a header value", not any(good in ln or IRSA_ARN in ln or "Bearer" in ln for ln in lines), str(lines))
+
+    # Off by default: the same unauthenticated request is refused.
+    off = load_hub(None, {}, "hub_gw_off")
+    status, seen = await call(off, {})
+    check("no gateway_entry block: a call with no credentials is refused", status == 401 and seen is None, str(status))
+    status, seen = await call(off, {"authorization": f"Bearer {good}"})
+    check("no audience configured: a token for another audience is refused", status == 401 and seen is None, str(status))
 
 
 asyncio.run(main())

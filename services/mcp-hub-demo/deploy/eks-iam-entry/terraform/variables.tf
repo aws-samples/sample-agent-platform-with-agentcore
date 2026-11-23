@@ -72,3 +72,15 @@ variable "intruder_service_account" {
   type        = string
   default     = "intruder"
 }
+
+variable "frontend_dedicated_node_groups" {
+  description = "Extra tainted node groups in VPC-A, each in a subnet of its own (see modules/cluster). Default: the gateway entry demo's workspace and application pools."
+  type = map(object({
+    cidr     = string
+    az_index = number
+  }))
+  default = {
+    workspace = { cidr = "10.61.32.0/24", az_index = 0 }
+    app       = { cidr = "10.61.33.0/24", az_index = 0 }
+  }
+}

@@ -83,7 +83,7 @@ class WorkflowEngine:
             found = None
             for flag in NODE_PERMISSION_FLAGS:
                 try:
-                    rc = subprocess.run(  # noqa: S603 — fixed argv
+                    rc = subprocess.run(  # noqa: S603 — fixed argv # nosemgrep: dangerous-subprocess-use-audit  (fixed argv: node binary + a flag from a constant list)
                         [node, flag, "--version"], capture_output=True, timeout=15,
                     ).returncode
                 except (OSError, subprocess.TimeoutExpired):
@@ -184,7 +184,7 @@ class WorkflowEngine:
 
         with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False, encoding="utf-8") as f:
             f.write(script)
-            script_path = f.name
+            script_path = f.name  # nosemgrep: tempfile-without-flush  (file is closed when the with-block exits, before the path is used)
         # the unprivileged runner account has to be able to read it
         os.chmod(script_path, 0o644)
 
@@ -197,7 +197,7 @@ class WorkflowEngine:
             cmd.append(json.dumps(args, ensure_ascii=False))
         env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
         env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
-        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell # nosemgrep: dangerous-subprocess-use-audit, python36-compatibility-Popen2  (fixed argv: node runner + temp script path, no shell)
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", env=env, **self._runner_identity(),
         )

@@ -699,7 +699,7 @@ def invoke_async_and_wait(
         else:
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
-                time.sleep(poll_s)
+                time.sleep(poll_s)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
                 # the task keeps its microVM busy; keep the live row fresh
                 live_session_service.heartbeat(out["runtime_session_id"])
                 try:

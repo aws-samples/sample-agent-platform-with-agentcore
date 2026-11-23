@@ -48,3 +48,7 @@ output "frontend_service_account" {
 output "intruder_service_account" {
   value = var.intruder_service_account
 }
+
+output "frontend_dedicated_subnets" {
+  value = module.frontend.dedicated_subnets
+}
