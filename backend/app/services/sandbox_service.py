@@ -108,22 +108,30 @@ class SandboxError(Exception):
 # V1) boots each sandbox from the image; a Fast Runtime (platform V2)
 # restores it from a snapshot: ~2 s to create at any concurrency, but the
 # image's files are read back on first use (a plain python command runs in
-# the kernel's preloaded forkserver instead). Standard unless asked.
-STANDARD, FAST = "standard", "fast"
-PLATFORM_VERSION = {STANDARD: "V1", FAST: "V2"}
+# the kernel's preloaded forkserver instead). A baseline Runtime is a Fast
+# Runtime with a committed baseline: it starts the same way, but each sandbox
+# is billed for the baseline (sandbox_baseline_memory_mib) from start to end,
+# idle or not, at the lower committed rate, and can burst to 4x. Standard
+# unless asked. A load-test Runtime is a baseline Runtime with its own
+# baseline and an up to 8-hour lifecycle: only the portal's administrator load
+# tests (sandbox_loadtest_service) reach it, through create(loadtest=True); it
+# is not a kind a caller can name, so no other path gets its long life.
+STANDARD, FAST, BASELINE, LOADTEST = "standard", "fast", "baseline", "loadtest"
+PLATFORM_VERSION = {STANDARD: "V1", FAST: "V2", BASELINE: "V2", LOADTEST: "V2"}
 # AgentCore's own names, accepted for the kinds (a caller following the AWS
-# docs sends V1 / V2); the stored and returned value is always the kind
-_RUNTIME_ALIASES = {"standard": STANDARD, "v1": STANDARD, "fast": FAST, "v2": FAST}
+# docs sends V1 / V2, and V2 means the plain Fast Runtime); the stored and
+# returned value is always the kind
+_RUNTIME_ALIASES = {"standard": STANDARD, "v1": STANDARD, "fast": FAST, "v2": FAST, "baseline": BASELINE}
 
 
 def normalize_runtime(value: object) -> str:
-    """"standard" | "fast" for a caller's runtime (V1 / V2 accepted, any
-    case), "" for none; anything else is refused."""
+    """"standard" | "fast" | "baseline" for a caller's runtime (V1 / V2
+    accepted, any case), "" for none; anything else is refused."""
     if value is None or value == "":
         return ""
     kind = _RUNTIME_ALIASES.get(str(value).strip().lower())
     if kind is None:
-        raise SandboxError("unknown_runtime", f"runtime must be {STANDARD!r} or {FAST!r} (or AgentCore's V1 / V2), got {value!r}")
+        raise SandboxError("unknown_runtime", f"runtime must be {STANDARD!r}, {FAST!r} or {BASELINE!r} (or AgentCore's V1 / V2), got {value!r}")
     return kind
 
 
@@ -131,6 +139,10 @@ def requested_runtime(runtime: object = "", platform_version: object = "") -> st
     """The kind a request asks for through ``runtime`` and/or AgentCore's
     ``platform_version``: "" for neither, refused when the two disagree."""
     a, b = normalize_runtime(runtime), normalize_runtime(platform_version)
+    # a baseline Runtime is on platform V2 too: runtime "baseline" with
+    # platform_version "V2" names the baseline Runtime, not a conflict
+    if a == BASELINE and b == FAST and str(platform_version).strip().lower() == "v2":
+        return BASELINE
     if a and b and a != b:
         raise SandboxError("runtime_conflict", f"runtime {runtime!r} and platform_version {platform_version!r} name different runtimes")
     return a or b
@@ -184,27 +196,56 @@ class SandboxService:
         offered = self.versions()
         return {v: arn for v, arn in (settings.sandbox_fast_versions or {}).items() if v in offered and arn}
 
+    def baseline_versions(self) -> dict[str, str]:
+        """Baseline Runtime by image version, for the offered versions that have one."""
+        offered = self.versions()
+        return {v: arn for v, arn in (settings.sandbox_baseline_versions or {}).items() if v in offered and arn}
+
+    def baseline(self) -> dict:
+        """The committed baseline every baseline Runtime runs with (vCPU
+        follows memory: 1 per 4096 MiB), or {} when none is deployed."""
+        mib = settings.sandbox_baseline_memory_mib
+        if not self.baseline_versions() or mib <= 0:
+            return {}
+        return {"memory_mib": mib, "vcpu": mib / 4096}
+
+    def loadtest_versions(self) -> dict[str, str]:
+        """Load-test Runtime by image version, for the offered versions that have one."""
+        offered = self.versions()
+        return {v: arn for v, arn in (settings.sandbox_loadtest_versions or {}).items() if v in offered and arn}
+
     def runtimes(self, version: str) -> list[str]:
         """Runtime kinds an offered image version runs on: Standard always."""
-        return [STANDARD, FAST] if version in self.fast_versions() else [STANDARD]
+        kinds = [STANDARD]
+        if version in self.fast_versions():
+            kinds.append(FAST)
+        if version in self.baseline_versions():
+            kinds.append(BASELINE)
+        return kinds
 
-    def _target(self, version: str, runtime: str = "") -> tuple[str, str, str, str]:
+    def _target(self, version: str, runtime: str = "", *, loadtest: bool = False) -> tuple[str, str, str, str]:
         """(version, runtime kind, runtime ARN, qualifier) for a request. An
         image version without the requested kind is refused, never served on
-        the other one: a caller asks for Fast to get its start-up."""
+        the other one: a caller asks for Fast to get its start-up. loadtest
+        (the load-test service only) picks the version's load-test Runtime."""
         versions = self.versions()
         version = version or self.default_version()
         if version not in versions:
             raise SandboxError("unknown_version", f"no sandbox image version {version!r} (offered: {', '.join(versions) or 'none'})")
+        if loadtest:
+            arn = self.loadtest_versions().get(version)
+            if not arn:
+                raise SandboxError("runtime_unavailable", f"image version {version!r} has no load-test runtime here")
+            return version, LOADTEST, arn, settings.sandbox_default_qualifier
         runtime = normalize_runtime(runtime) or STANDARD
-        if runtime == FAST:
-            arn = self.fast_versions().get(version)
+        if runtime in (FAST, BASELINE):
+            arn = (self.fast_versions() if runtime == FAST else self.baseline_versions()).get(version)
             if not arn:
                 raise SandboxError(
                     "runtime_unavailable",
-                    f"image version {version!r} has no {FAST} runtime here (it runs on: {', '.join(self.runtimes(version))})",
+                    f"image version {version!r} has no {runtime} runtime here (it runs on: {', '.join(self.runtimes(version))})",
                 )
-            return version, FAST, arn, settings.sandbox_default_qualifier
+            return version, runtime, arn, settings.sandbox_default_qualifier
         return version, STANDARD, versions[version], settings.sandbox_default_qualifier
 
     def _require_enabled(self) -> None:
@@ -331,10 +372,16 @@ class SandboxService:
         run_id: str = "",
         owner_session: str = "",
         labels: dict | None = None,
+        loadtest: bool = False,
     ) -> dict:
-        """Record, boot and claim a fresh sandbox. Returns its public row."""
+        """Record, boot and claim a fresh sandbox. Returns its public row.
+        loadtest (sandbox_loadtest_service only): on the version's load-test
+        Runtime, its row stamped with that runtime's long lifecycle, which the
+        reaper then holds it to."""
         self._require_enabled()
-        version, runtime, arn, qualifier = self._target(version, runtime)
+        version, runtime, arn, qualifier = self._target(version, runtime, loadtest=loadtest)
+        idle_s, life_s = ((settings.sandbox_loadtest_idle_timeout_s, settings.sandbox_loadtest_max_lifetime_s) if loadtest
+                          else (settings.sandbox_idle_timeout_s, settings.sandbox_max_lifetime_s))
         if owner_session and settings.sandbox_max_per_owner_session:
             open_rows = live_session_service.list_rows(kind=KIND, owner=owner)
             mine = [r for r in open_rows if r.get("owner_session") == owner_session]
@@ -355,8 +402,8 @@ class SandboxService:
                 target=f"sandbox:{version}:{runtime}",
                 source=source,
                 status="creating",
-                idle_timeout_s=settings.sandbox_idle_timeout_s,
-                max_lifetime_s=settings.sandbox_max_lifetime_s,
+                idle_timeout_s=idle_s,
+                max_lifetime_s=life_s,
                 attrs={
                     "runtime_arn": arn,
                     "qualifier": qualifier,
@@ -692,6 +739,14 @@ class SandboxService:
                         logger.info("sandbox reaper: %s", acted)
                 except Exception:  # noqa: BLE001 - keep reaping
                     logger.exception("sandbox reaper pass failed")
+                # load tests ride the same tick: keep their sandboxes polled
+                # (within the load-test idle timeout) and stop them on time
+                try:
+                    from app.services.sandbox_loadtest_service import loadtest_service
+
+                    loadtest_service.tick()
+                except Exception:  # noqa: BLE001 - keep ticking
+                    logger.exception("sandbox load-test tick failed")
 
         self._reaper = threading.Thread(target=loop, name="sandbox-reaper", daemon=True)
         self._reaper.start()

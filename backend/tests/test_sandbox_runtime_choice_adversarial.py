@@ -1,7 +1,9 @@
-"""Sandbox runtime choice: Standard Runtime (AgentCore V1) or Fast Runtime (V2).
+"""Sandbox runtime choice: Standard Runtime (AgentCore V1), Fast Runtime (V2)
+or a Fast Runtime with a committed baseline (V2, billed for the baseline for
+each sandbox's whole life).
 
-Each image version has a Standard Runtime and may have a Fast one; the caller
-picks per sandbox. These tests pin what the caller can send and what it gets:
+Each image version has a Standard Runtime and may have a Fast and/or a
+baseline one; the caller picks per sandbox. These tests pin what the caller can send and what it gets:
 Standard unless asked, AgentCore's own V1 / V2 accepted for the two, never a
 silent fall back from Fast to Standard (a caller asks for Fast to get its
 start-up), and every later operation on the runtime recorded in the row.
@@ -18,6 +20,7 @@ from test_sandbox_service_adversarial import ARN, OWNER, Base, load
 
 STD_V1, STD_V2 = ARN.replace("-abc", "_v1-std"), ARN.replace("-abc", "_v2-std")
 FAST_V2 = ARN.replace("-abc", "_v2_fast-f")
+BASE_V2 = ARN.replace("-abc", "_v2_baseline-b")
 
 
 class RuntimeBase(Base):
@@ -211,7 +214,8 @@ class McpTests(unittest.TestCase):
         tools = {t["name"]: t for t in self.mod.TOOLS}
         for name in ("sandbox_create", "sandbox_run"):
             prop = tools[name]["inputSchema"]["properties"]["runtime"]
-            self.assertEqual(prop["enum"], ["standard", "fast"], name)
+            self.assertEqual(prop["enum"], ["standard", "fast", "baseline"], name)
+            self.assertIn("whole life", prop["description"], f"{name}: the baseline's billing is stated to the model")
 
     def test_tool_runtime_is_normalized_and_bad_values_are_tool_errors(self):
         self.svc.create.return_value = {"runtime_session_id": "sbx-1", "status": "running", "runtime": "fast"}
@@ -224,6 +228,84 @@ class McpTests(unittest.TestCase):
         self.svc.run_submit.return_value = {"run_ref": "srun-1", "status": "running"}
         self.call("sandbox_run", files={"main.py": "1"}, runtime="standard")
         self.assertEqual(self.svc.run_submit.call_args.kwargs["runtime"], "standard")
+
+
+class BaselineTests(RuntimeBase):
+    """The baseline kind: only where deployed, never in place of Fast (V2
+    alone still means the plain Fast Runtime), never a silent fall back."""
+
+    def setUp(self):
+        super().setUp()
+        patch.object(self.mod.settings, "sandbox_baseline_versions", {"v2": BASE_V2}).start()
+        patch.object(self.mod.settings, "sandbox_baseline_memory_mib", 8192).start()
+
+    def test_baseline_is_its_own_kind_and_v2_alone_stays_fast(self):
+        n = self.mod.normalize_runtime
+        self.assertEqual((n("baseline"), n(" Baseline "), n("V2")), ("baseline", "baseline", "fast"))
+        r = self.mod.requested_runtime
+        self.assertEqual(r("baseline", ""), "baseline")
+        self.assertEqual(r("baseline", "V2"), "baseline", "a baseline Runtime is on V2: no conflict")
+        for runtime, pv in (("baseline", "V1"), ("baseline", "fast"), ("fast", "baseline"), ("standard", "baseline")):
+            with self.assertRaises(self.mod.SandboxError) as cm:
+                r(runtime, pv)
+            self.assertEqual(cm.exception.code, "runtime_conflict", (runtime, pv))
+
+    def test_baseline_lands_on_the_baseline_runtime_and_is_recorded(self):
+        row = self.create(version="v2", runtime="baseline")
+        self.assertEqual(self.invoked_arn(), BASE_V2)
+        raw = self.ledger.rows[row["runtime_session_id"]]
+        self.assertEqual((raw["runtime"], raw["platform_version"], raw["runtime_arn"], raw["target"]),
+                         ("baseline", "V2", BASE_V2, "sandbox:v2:baseline"))
+        self.create(version="v2", runtime="fast")
+        self.assertEqual(self.invoked_arn(), FAST_V2, "Fast still lands on the plain Fast Runtime")
+        self.create(version="v2")
+        self.assertEqual(self.invoked_arn(), STD_V2, "Standard unless asked, even where a baseline exists")
+
+    def test_baseline_where_none_is_deployed_is_refused_before_anything_boots(self):
+        with self.assertRaises(self.mod.SandboxError) as cm:
+            self.create(version="v1", runtime="baseline")
+        self.assertEqual((cm.exception.code, cm.exception.status), ("runtime_unavailable", 400))
+        with patch.object(self.mod.settings, "sandbox_baseline_versions", {}):
+            self.assertEqual(self.svc.runtimes("v2"), ["standard", "fast"])
+            self.assertEqual(self.svc.baseline(), {})
+            with self.assertRaises(self.mod.SandboxError):
+                self.create(version="v2", runtime="baseline")
+        with patch.object(self.mod.settings, "sandbox_baseline_versions", {"v9": BASE_V2}):
+            self.assertEqual(self.svc.baseline_versions(), {}, "a baseline of a version not offered is ignored")
+        self.svc.agentcore.invoke_agent_runtime.assert_not_called()
+        self.assertEqual(self.ledger.rows, {})
+
+    def test_later_ops_follow_the_row_when_the_baseline_runtime_is_withdrawn(self):
+        sid = self.create(version="v2", runtime="baseline")["runtime_session_id"]
+        with patch.object(self.mod.settings, "sandbox_baseline_versions", {}):
+            self.svc.stop(sid, OWNER)
+        self.assertEqual(self.svc.agentcore.stop_runtime_session.call_args.kwargs["agentRuntimeArn"], BASE_V2)
+
+    def test_runs_carry_the_baseline_runtime(self):
+        report = self.svc.run(owner=OWNER, source="mcp", version="v2", runtime="baseline", files={"main.py": b"1"})
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(self.invoked_arn(), BASE_V2)
+
+    def test_config_lists_the_baseline_and_its_size_and_no_arn(self):
+        api = load("app.api.sandboxes")
+        with patch.object(api, "sandbox_service", self.svc):
+            cfg = api.portal_config(user="admin")
+        self.assertEqual(cfg["runtimes"], {"v1": ["standard"], "v2": ["standard", "fast", "baseline"]})
+        self.assertEqual(cfg["baseline_versions"], {"v2": BASE_V2.rsplit("/", 1)[-1]})
+        self.assertEqual(cfg["baseline"], {"memory_mib": 8192, "vcpu": 2.0})
+        self.assertEqual(cfg["default_runtime"], "standard")
+        self.assertNotIn("arn:aws", json.dumps(cfg))
+
+    def test_api_accepts_baseline_alone_or_with_v2(self):
+        api = load("app.api.sandboxes")
+        from app.models.schemas import SandboxCreateRequest
+        with patch.object(api, "sandbox_service", self.svc), patch.object(api, "audit_service", MagicMock()):
+            for body in ({"version": "v2", "runtime": "baseline"}, {"version": "v2", "runtime": "baseline", "platform_version": "V2"}):
+                row = api._create(SandboxCreateRequest(**body), owner=OWNER, source="service", actor=OWNER)
+                self.assertEqual((row["runtime"], self.invoked_arn()), ("baseline", BASE_V2), body)
+            with self.assertRaises(HTTPException) as cm:
+                api._create(SandboxCreateRequest(version="v1", runtime="baseline"), owner=OWNER, source="service", actor=OWNER)
+            self.assertEqual((cm.exception.status_code, cm.exception.detail["code"]), (400, "runtime_unavailable"))
 
 
 if __name__ == "__main__":

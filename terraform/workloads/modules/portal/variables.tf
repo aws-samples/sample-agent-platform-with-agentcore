@@ -128,14 +128,21 @@ variable "mcp_hub_caller_role_arn" {
 }
 
 variable "sandbox" {
-  description = "One-shot code sandboxes: Standard Runtime ARN by image version ({} = feature off), Fast Runtime ARN by version for those that have one, the default version, the lifecycle the runtimes run with, and the IAM callers allowed on the service API."
+  description = "One-shot code sandboxes: Standard Runtime ARN by image version ({} = feature off), Fast Runtime ARN and baseline Runtime ARN by version for those that have one, the baseline's minimumMemoryInMiB, the load-test runtime ARN by version with its baseline and lifecycle, the default version, the lifecycle the runtimes run with, and the IAM callers allowed on the service API."
   type = object({
-    versions        = map(string)
-    fast_versions   = optional(map(string), {})
-    default_version = string
-    idle_timeout_s  = number
-    max_lifetime_s  = number
-    service_callers = list(string)
+    versions            = map(string)
+    fast_versions       = optional(map(string), {})
+    baseline_versions   = optional(map(string), {})
+    baseline_memory_mib = optional(number, 0)
+    # load-test runtimes by version ({} = no load tests) and their settings
+    loadtest_versions       = optional(map(string), {})
+    loadtest_memory_mib     = optional(number, 0)
+    loadtest_idle_timeout_s = optional(number, 0)
+    loadtest_max_lifetime_s = optional(number, 0)
+    default_version         = string
+    idle_timeout_s          = number
+    max_lifetime_s          = number
+    service_callers         = list(string)
   })
   default = {
     versions        = {}

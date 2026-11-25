@@ -262,6 +262,72 @@ does (its tests check module scope for start-up randomness and time).
 runtime. A new Fast Runtime is created once by an administrator, like any new
 runtime, and takes minutes to snapshot before it is `READY`.
 
+### Fast Runtime with a committed baseline
+
+A third form, for versions whose sandboxes hold most of their memory for
+their whole life: `baseline = true` on a `sandbox_images` entry adds a Fast
+Runtime with a committed baseline (`sandbox_runtime_v<N>_baseline`), picked
+with `runtime: "baseline"` (with or without `platform_version: "V2"`; `V2`
+alone still means the plain Fast Runtime). It starts and runs exactly like the
+Fast Runtime, image rule included, and differs in billing only:
+
+| | Fast Runtime | Fast Runtime with a baseline |
+|---|---|---|
+| Billed | the vCPU and memory a sandbox actually uses, per second | the baseline from the sandbox's start to its end, idle or not, plus any use above it, per second |
+| Rate | consumption | committed baseline (lower) |
+| Size | up to 2 vCPU / 8 GB | baseline `sandbox_baseline_memory_mib` (1024, 2048, 4096 or 8192 MiB, 1 vCPU per 4 GB; default 8192), bursting to 4x it |
+
+The provider has no argument for the baseline, so
+`scripts/set_platform_version.py --baseline-mib` sets it after Terraform
+creates the runtime, as it sets the platform version. Unlike the platform
+version, the service replaces the baseline on every update, and an update
+that omits it (every provider update does) puts the runtime back on
+consumption pricing. The hook therefore triggers on a hash of every argument
+Terraform sends, re-applying the baseline after each update, and fails the
+apply if the runtime ends `READY` without it. The interpreter it runs
+(`platform_version_python`) needs botocore >= 1.44.0. The portal's **Try a
+run** offers the form where it is deployed and shows the baseline it bills.
+
+### Load tests
+
+`loadtest = true` on a `sandbox_images` entry adds a load-test runtime
+(`sandbox_runtime_v<N>_loadtest`): the baseline runtime's shape with its own
+baseline (`sandbox_loadtest_memory_mib`, default 8192, so a sandbox bursts to
+8 vCPU / 32 GB, the largest microVM) and its own lifecycle
+(`sandbox_loadtest_idle_timeout_s`, default 900, and
+`sandbox_loadtest_max_lifetime_s`, default 28800: AgentCore's 8 hours for a
+microVM). No caller can name it as a runtime: only the portal's **Load test**
+tab (administrators) starts sandboxes on it, so no other sandbox gets its
+long life.
+
+A load test starts `count` sandboxes, 10 at a time (`sandbox_loadtest_launch_parallel`;
+AgentCore admits 50 new sessions a second in this account), each running the
+built-in load (one busy process per requested CPU and the requested memory
+held, a status line a minute) or a custom command for the duration, at most
+the lifetime less two minutes. The rows of its sandboxes carry the load-test
+lifecycle, so the reaper holds them to it. On the reaper's tick (every 60 s)
+the backend polls every running sandbox once, which keeps it within the idle
+timeout, and stops each as soon as its job ends or its own deadline passes;
+the load test closes when none is left. A load test whose launching backend
+went away is taken over by the next tick with the sandboxes it had started.
+**Stop all** stops every sandbox at once; a sandbox that was still starting
+when it was pressed is stopped by its launcher as soon as it is up. Every
+change to the ledger row is conditional, so several backend replicas can run
+the tick together and a sandbox one of them ended is never shown running
+again. A load test is at most
+`sandbox_loadtest_max_count` sandboxes (default 200; the account allows 2500
+active sessions) and never more than 400: all of a load test's sandboxes are
+kept in its one ledger item, which DynamoDB holds to 400 KB, so each keeps
+only the last 200 bytes of its output.
+
+Every sandbox of a load test is billed for the baseline from start to end,
+idle or not: at the ap-northeast-1 list prices, 2 x $0.0997 + 8 x $0.0132 =
+$0.305 per sandbox-hour for the 8192 MiB baseline, so 50 sandboxes for 8
+hours cost about $122 before any burst. What a sandbox uses above the
+baseline is billed on top; the AWS pricing page does not say at which rate,
+so the page's upper estimate assumes the consumption rate and the first
+bill is the reference.
+
 ## Deploying it
 
 The feature is off by default.
@@ -278,10 +344,12 @@ The feature is off by default.
    image build pushes to both environments.
 2. **Workloads** (`terraform/workloads/`): `sandbox_images` (default
    `{ v1 = {} }`: the reference image at `sandbox_image_tag`; set `tag` or
-   `uri` per version, and `fast = true` for a Fast Runtime next to its
-   Standard one), `sandbox_default_version`, `sandbox_idle_timeout_s`
+   `uri` per version, `fast = true` for a Fast Runtime next to its
+   Standard one, `baseline = true` for a Fast Runtime with a committed
+   baseline of `sandbox_baseline_memory_mib`, and `loadtest = true` for a
+   load-test runtime, see Load tests), `sandbox_default_version`, `sandbox_idle_timeout_s`
    (300), `sandbox_max_lifetime_s` (2400) and `sandbox_service_callers` (the
-   host roles' ARNs). Adding a version or a Fast Runtime adds a runtime, which
+   host roles' ARNs). Adding a version, a Fast, baseline or load-test Runtime adds a runtime, which
    an administrator applies once; after that, image updates are ordinary
    updates.
 3. Check the deployment from the Sandbox page (**Try a run**), or create, exec
@@ -305,8 +373,9 @@ The feature is off by default.
 | Data-plane calls per second | 1000 per account, adjustable | invoke, command and stop together |
 | Service API front door | `service_api_throttle` (foundation), default 50 requests per second, burst 100, for all callers together | the API Gateway stage throttle; job polling counts: 200 jobs polled every second plus creates is about 300 requests per second (staging runs 500 / 1000) |
 | Service entry replicas | `entry_desired_count` (workloads), default 1 | one replica answered API Gateway late enough for 504s at 200 concurrent; staging runs 3 |
-| Active sessions | 2500 in ap-northeast-1, adjustable | |
-| Per sandbox | 2 vCPU, 8 GB | not adjustable; the job memory limit sits below it |
+| Active sessions | 2500 in ap-northeast-1, adjustable | a load test counts each of its sandboxes |
+| Session lifetime | 8 hours for a microVM | `maxLifetime`'s ceiling; a load test runs at most this less two minutes |
+| Per sandbox | 2 vCPU, 8 GB on a Standard or Fast Runtime; 4x the baseline on a baseline or load-test Runtime (8 vCPU, 32 GB at 8192 MiB) | the largest microVM is 8 vCPU / 32 GB; the job memory limit sits below the runtime's ceiling |
 | Image size | 2 GB | not adjustable |
 | A misdirected invocation | still boots a microVM | the claim makes it fail closed and the service stops it, but AgentCore has already started it; never invoke an id to check on it |
 

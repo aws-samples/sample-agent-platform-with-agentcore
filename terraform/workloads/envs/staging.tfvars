@@ -36,8 +36,13 @@ llm_edge_desired_count = 1
 # control_server-v2.patch): on a Fast Runtime a value computed at start-up is
 # the snapshot's, the same in every sandbox, and fails the customer's own F11.
 # cust-v1 still computes it at start-up, so v1 has no Fast Runtime.
+# v2 also has a Fast Runtime with a committed baseline (sandbox_baseline_memory_mib,
+# default 8192 = 8 GB / 2 vCPU): the same V2 image, every sandbox on it billed
+# for the baseline from start to end.
+# v2 also has a load-test runtime (sandbox_loadtest_*: the same baseline with a
+# lifecycle of up to 8 hours) for the portal's administrator load tests.
 sandbox_images = {
   v1 = { tag = "cust-v1" }
-  v2 = { tag = "cust-v2b", fast = true }
+  v2 = { tag = "cust-v2b", fast = true, baseline = true, loadtest = true }
 }
 sandbox_service_caller_role_names = ["agent-platform-sandbox-host-sim"]
