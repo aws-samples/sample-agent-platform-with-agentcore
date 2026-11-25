@@ -19,6 +19,11 @@ What a load test may not undo, and what these tests pin:
   is stopped by its launcher (a closed test never holds a running member), a
   stale poll never revives a member another replica ended, and an open test
   past the first page of the ledger partition is still kept and ended
+- every replica runs the tick, and a member is still polled once a tick, by
+  one replica; one whose sandbox someone else is stopping is left to that
+  stopper, so its exit code is recorded, never overwritten by "lost" (the
+  production race of 2026-11-25: 11 of 50 members that had run to their end
+  were recorded lost); one that nobody records is lost after a grace
 - the largest load test the service accepts, with the widest output, keeps
   its one ledger item within DynamoDB's 400 KB, so it stays writable to its end
 - only the portal's administrator router serves it: a non-admin and an
@@ -66,7 +71,7 @@ class FakeTable:
     page needs LastEvaluatedKey), and the update shapes the service writes
     with the conditions DynamoDB would hold them to (``#s IN (...)``,
     ``members.#sid.#st = :v``, ``attribute_not_exists(members.#sid)``,
-    joined by AND). A condition this fake does not know fails the test."""
+    joined by AND, and the tick lease's ``attribute_not_exists(a) OR a <= :v``). A condition this fake does not know fails the test."""
 
     def __init__(self, page: int = 1000):
         self.items: dict[str, dict] = {}
@@ -95,6 +100,11 @@ class FakeTable:
             m = re.fullmatch(r"members\.(#\w+)\.(#\w+) = (:\w+)", clause)
             if m:
                 if ((item.get("members") or {}).get(names[m[1]]) or {}).get(names[m[2]]) != vals[m[3]]:
+                    return False
+                continue
+            m = re.fullmatch(r"attribute_not_exists\((\w+)\) OR (\w+) <= (:\w+)", clause)
+            if m and m[1] == m[2]:
+                if m[1] in item and not item[m[1]] <= vals[m[3]]:
                     return False
                 continue
             m = re.fullmatch(r"attribute_not_exists\(members\.(#\w+)\)", clause)
@@ -196,6 +206,17 @@ class KindTests(Base):
             self.create(version="v2", loadtest=True)
         self.assertEqual(cm.exception.code, "runtime_unavailable")
         self.svc.agentcore.invoke_agent_runtime.assert_not_called()
+
+    def test_an_operation_refused_by_the_row_says_which_status_refused_it(self):
+        # the load-test tick tells "someone is stopping it" from "it is gone" by this
+        sid = self.create(version="v2", loadtest=True)["runtime_session_id"]
+        for status in ("stopping", "stopped", "lost"):
+            self.ledger.rows[sid]["status"] = status
+            invoked = self.svc.agentcore.invoke_agent_runtime.call_count
+            with self.assertRaises(self.mod.SandboxGone) as cm:
+                self.svc.exec_poll(sid, OWNER, "t1")
+            self.assertEqual((cm.exception.code, cm.exception.row_status), ("sandbox_gone", status))
+            self.assertEqual(self.svc.agentcore.invoke_agent_runtime.call_count, invoked, "a refused id is never invoked")
 
     def test_the_reaper_holds_each_row_to_its_own_lifecycle(self):
         lt = self.create(version="v2", loadtest=True)["runtime_session_id"]
@@ -475,6 +496,91 @@ class RaceTests(ServiceBase):
         acted = self.svc.tick(now=int(m["deadline_ts"]) + 1)
         self.assertIn(lt, acted["closed"])
         self.assertEqual(self.stopped, [(sid, "loadtest_deadline")])
+
+
+class ReplicaTests(ServiceBase):
+    """Every replica of the management deployment runs the tick."""
+
+    def gone(self, status):
+        e = self.mod.SandboxError("sandbox_gone", f"sandbox is {status}", status=410)
+        e.row_status = status  # as sandbox_service.SandboxGone carries it
+        return e
+
+    def test_two_replicas_ticking_at_once_poll_each_member_once(self):
+        lt = self.submit(count=3)["loadtest_id"]
+        other = self.mod.LoadTestService()
+        now = int(max(m["started_ts"] for m in self.item(lt)["members"].values())) + 60
+        kept = self.svc.tick(now=now)["kept"] + other.tick(now=now)["kept"]
+        self.assertEqual(kept, 3)
+        self.assertEqual(self.sbx.exec_poll.call_count, 3, "one poll per member per tick, not one per replica")
+        # the replica that ticked is gone: the other one holds the next tick
+        self.assertEqual(other.tick(now=now + 60)["kept"], 3)
+        self.assertEqual(self.sbx.exec_poll.call_count, 6)
+        # and a tick that claimed nothing acted on nothing
+        self.assertEqual(self.svc.tick(now=now + 61)["kept"], 0)
+        self.assertEqual(self.stopped, [])
+
+    def test_a_job_that_ends_while_another_replica_polls_keeps_its_exit_code(self):
+        # the 2026-11-25 interleaving: replica A sees the job end and stops the
+        # sandbox; replica B (acting past its lease) polls it mid-stop, finds
+        # the row "stopping", and used to win the member's terminal write with "lost"
+        lt = self.submit(count=1)["loadtest_id"]
+        sid, m = next(iter(self.item(lt)["members"].items()))
+        other = self.mod.LoadTestService()
+        now = int(m["started_ts"]) + 60
+        self.sbx.exec_poll.side_effect = lambda *a, **k: {"state": "exited", "exit_code": 0, "stdout_tail": "done"}
+
+        def stop_mid_poll(sid_, owner, reason=""):
+            self.stopped.append((sid_, reason))
+            self.sbx.exec_poll.side_effect = self.gone("stopping")
+            other._keep(lt, sid_, self.item(lt)["members"][sid_], now)
+            return {"status": "stopped"}
+
+        self.sbx.stop.side_effect = stop_mid_poll
+        self.svc.tick(now=now)
+        member = self.item(lt)["members"][sid]
+        self.assertEqual((member["state"], member.get("exit_code")), ("exited", 0))
+        self.assertEqual(self.stopped, [(sid, "loadtest_job_ended")], "the polling replica stopped nothing")
+        self.assertEqual(self.svc.get(lt)["counts"], {"exited": 1})
+        self.assertEqual(self.item(lt)["status"], "done")
+
+    def test_an_administrators_stop_mid_poll_records_stopped_not_lost(self):
+        lt = self.submit(count=2)["loadtest_id"]
+        m = next(iter(self.item(lt)["members"].values()))
+        stopper = self.mod.LoadTestService()
+
+        def poll(sid_, owner, task_id, tail_bytes=8192):
+            if not self.stopped:
+                stopper.stop(lt)
+            raise self.gone("stopped")
+
+        self.sbx.exec_poll.side_effect = poll
+        self.svc.tick(now=int(m["started_ts"]) + 60)
+        self.assertEqual(self.svc.get(lt)["counts"], {"stopped": 2})
+        self.assertEqual(self.item(lt)["status"], "done")
+
+    def test_a_sandbox_left_stopping_with_nobody_to_record_it_is_lost_after_the_grace(self):
+        lt = self.submit(count=1)["loadtest_id"]
+        sid, m = next(iter(self.item(lt)["members"].items()))
+        self.sbx.exec_poll.side_effect = self.gone("stopping")
+        t0 = int(m["started_ts"])
+        self.svc.tick(now=t0 + 60)
+        self.assertEqual(self.item(lt)["members"][sid]["state"], "running", "left to its stopper for now")
+        self.assertEqual(self.stopped, [])
+        self.svc.tick(now=t0 + self.mod.STOPPER_GRACE_S)
+        self.assertEqual(self.item(lt)["members"][sid]["state"], "running")
+        self.svc.tick(now=t0 + self.mod.STOPPER_GRACE_S + 60)
+        self.assertEqual(self.item(lt)["members"][sid]["state"], "lost")
+        self.assertEqual(self.stopped, [(sid, "loadtest_lost")])
+        self.assertEqual(self.item(lt)["status"], "done")
+
+    def test_a_sandbox_the_reaper_closed_is_lost_at_once(self):
+        # "lost" on the row: nobody else will record this member
+        lt = self.submit(count=1)["loadtest_id"]
+        sid, m = next(iter(self.item(lt)["members"].items()))
+        self.sbx.exec_poll.side_effect = self.gone("lost")
+        self.svc.tick(now=int(m["started_ts"]) + 60)
+        self.assertEqual(self.item(lt)["members"][sid]["state"], "lost")
 
 
 class ItemSizeTests(ServiceBase):

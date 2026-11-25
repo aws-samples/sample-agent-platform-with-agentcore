@@ -151,8 +151,11 @@ def requested_runtime(runtime: object = "", platform_version: object = "") -> st
 class SandboxGone(SandboxError):
     """The sandbox's microVM is not the one this platform created (or it was stopped)."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, row_status: str = "") -> None:
         super().__init__("sandbox_gone", message, status=410)
+        # the ledger status that refused the operation ("stopping", "lost", ...),
+        # empty when the microVM answered but was not ours
+        self.row_status = row_status
 
 
 def _new_sandbox_id(run_id: str) -> str:
@@ -315,7 +318,7 @@ class SandboxService:
         row = self._row(sandbox_id, owner)
         if row.get("status") not in ("running",):
             # never invoke an id that is not running: that would boot a microVM
-            raise SandboxGone(f"sandbox is {row.get('status')}")
+            raise SandboxGone(f"sandbox is {row.get('status')}", row_status=str(row.get("status") or ""))
         body = self._invoke_raw(sandbox_id, row["runtime_arn"], row["qualifier"], op, {**args, "nonce": row["nonce"]})
         live_session_service.heartbeat(sandbox_id)
         if body.get("ok"):

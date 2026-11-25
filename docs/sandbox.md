@@ -312,9 +312,13 @@ the load test closes when none is left. A load test whose launching backend
 went away is taken over by the next tick with the sandboxes it had started.
 **Stop all** stops every sandbox at once; a sandbox that was still starting
 when it was pressed is stopped by its launcher as soon as it is up. Every
-change to the ledger row is conditional, so several backend replicas can run
-the tick together and a sandbox one of them ended is never shown running
-again. A load test is at most
+backend replica runs the tick, so each tick first claims the load test (a
+conditional write held 45 s): one replica polls its sandboxes per tick, the
+next one takes over within a minute of it going away. Every change to the
+ledger row is conditional too, so a sandbox one replica ended is never shown
+running again, and a sandbox found stopping (an administrator's stop) is left
+to its stopper, which records how it ended; one nobody records is marked lost
+three minutes after its last poll. A load test is at most
 `sandbox_loadtest_max_count` sandboxes (default 200; the account allows 2500
 active sessions) and never more than 400: all of a load test's sandboxes are
 kept in its one ledger item, which DynamoDB holds to 400 KB, so each keeps

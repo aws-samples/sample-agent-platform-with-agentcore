@@ -19,8 +19,12 @@ reaper holds them to it and to nothing shorter.
   session busy, records what each job is doing, stops a member whose job
   ended or whose own deadline passed, and closes the load test when no member
   is left running. A load test whose launching backend went away (no launch
-  heartbeat for 5 minutes) is taken over as it stands. Every transition is
-  conditional, so several replicas ticking at once agree.
+  heartbeat for 5 minutes) is taken over as it stands. Every replica of the
+  management deployment runs the loop, so each tick first claims the load
+  test (a conditional write of ``tick_ts``, held TICK_LEASE_S): one replica
+  polls a load test's members per tick, not every replica, and two replicas
+  never act on the same member at once. Every transition is conditional too,
+  so a replica that acts past its lease still agrees with the others.
 - stop() asks every member to stop now.
 
 Billing: a sandbox on the load-test Runtime is billed for the baseline from
@@ -49,6 +53,15 @@ OPEN = ("launching", "running", "stopping")
 STRESS_PATH = "loadtest/stress.py"
 LAUNCH_STALE_S = 300  # a launch heartbeat older than this: the launching backend is gone
 MEMBER_GRACE_S = 120  # a member still running this long past its duration is stopped
+# One replica a tick: a tick claims a load test for this long (the loop runs
+# every 60 s, so the replica that claimed it last claims it again next tick,
+# and another takes over within a minute of it going away).
+TICK_LEASE_S = 45
+# A member whose sandbox someone else is stopping (an administrator's stop,
+# or a replica acting past its lease) is left to that stopper, which records
+# how it ended; one still unrecorded this long after its last poll is lost.
+STOPPER_GRACE_S = 180
+STOPPING_ROWS = ("stopping", "stopped", "stop_failed")
 MAX_COMMAND = 4000
 # Every member of a load test lives in its one ledger item, and DynamoDB
 # holds an item to 400 KB: a member's text (its output tail, an error) is
@@ -254,6 +267,22 @@ class LoadTestService:
                 return False
             raise
 
+    def _claim(self, lt_id: str, now: int) -> bool:
+        """This tick's turn at the load test, for TICK_LEASE_S: False when
+        another replica claimed it within the lease."""
+        try:
+            self._table().update_item(
+                Key={"PK": LT_PK, "SK": lt_id},
+                UpdateExpression="SET tick_ts = :now",
+                ConditionExpression="attribute_not_exists(tick_ts) OR tick_ts <= :due",
+                ExpressionAttributeValues={":now": now, ":due": now - TICK_LEASE_S},
+            )
+            return True
+        except Exception as e:  # noqa: BLE001 - a failed condition is a lost race
+            if self._lost_race(e):
+                return False
+            raise
+
     def _open_items(self) -> list[dict]:
         """Every open load test, across every page of the partition: finished
         rows stay until their TTL, so an open one can sit past the first page."""
@@ -412,6 +441,12 @@ class LoadTestService:
         try:
             st = sandbox_service.exec_poll(sid, None, member.get("task_id", ""), tail_bytes=MEMBER_TEXT_BYTES * 4)
         except SandboxError as e:
+            last = int(member.get("polled_ts") or member.get("started_ts") or 0)
+            if getattr(e, "row_status", "") in STOPPING_ROWS and now - last <= STOPPER_GRACE_S:
+                # someone else is stopping it and records how it ended (its
+                # exit code, or "stopped"): writing "lost" first would win the
+                # member's one terminal write and drop theirs
+                return
             # gone (reaped, or AgentCore ended it): nothing left to keep
             self._stop_member(lt_id, sid, member, state="lost", reason="loadtest_lost", error=_clip(str(e)))
             return
@@ -437,6 +472,9 @@ class LoadTestService:
                                     note="the launching backend went away; continued with the sandboxes it had started"):
                     acted["taken_over"].append(lt_id)
                 item = self._get(lt_id)
+            if not self._claim(lt_id, now):
+                continue  # another replica has this tick
+            item = self._get(lt_id)  # as it stands now that this tick holds it
             if item.get("status") == "stopping":
                 self._stop_members(lt_id, item, reason="loadtest_stopped")
             else:
