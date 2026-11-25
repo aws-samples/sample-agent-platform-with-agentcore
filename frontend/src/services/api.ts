@@ -479,7 +479,7 @@ export interface LiveSession {
   ended_at?: string
   // sandbox rows
   version?: string
-  runtime?: 'standard' | 'fast'
+  runtime?: 'standard' | 'fast' | 'baseline' | 'loadtest'
   run_id?: string
   owner_session?: string
   create_ms?: number
@@ -500,7 +500,7 @@ export interface LiveSessionSummary {
   kinds: LiveSessionKind[]
 }
 
-export type SandboxRuntime = 'standard' | 'fast'
+export type SandboxRuntime = 'standard' | 'fast' | 'baseline'
 
 export interface SandboxConfig {
   enabled: boolean
@@ -508,6 +508,11 @@ export interface SandboxConfig {
   versions: Record<string, string>
   // image version -> its Fast Runtime's name, for the versions that have one
   fast_versions?: Record<string, string>
+  // image version -> its baseline Runtime's name (a Fast Runtime with a
+  // committed baseline), for the versions that have one
+  baseline_versions?: Record<string, string>
+  // the committed baseline every baseline Runtime runs with ({} when none)
+  baseline?: { memory_mib?: number; vcpu?: number }
   runtimes?: Record<string, SandboxRuntime[]>
   default_version: string
   default_runtime?: SandboxRuntime
@@ -515,6 +520,55 @@ export interface SandboxConfig {
   max_lifetime_s: number
   job_memory_mib: number
   max_per_owner_session: number
+  // load tests on the load-test Runtime ({} when none is deployed)
+  loadtest?: SandboxLoadTestConfig | Record<string, never>
+}
+
+export interface SandboxLoadTestConfig {
+  // image version -> its load-test Runtime's name
+  versions: Record<string, string>
+  memory_mib: number
+  vcpu_baseline: number
+  // a baseline Runtime bursts to 4x its baseline
+  max_vcpu: number
+  max_memory_gb: number
+  max_stress_memory_gb: number
+  max_count: number
+  max_duration_s: number
+  idle_timeout_s: number
+  max_lifetime_s: number
+}
+
+export interface SandboxLoadTestMember {
+  sandbox_id: string
+  state: 'running' | 'exited' | 'stopped' | 'lost' | 'failed' | string
+  started_ts?: number
+  deadline_ts?: number
+  polled_ts?: number
+  ended_ts?: number
+  exit_code?: number | null
+  tail?: string
+  error?: string
+  code?: string
+}
+
+export interface SandboxLoadTest {
+  loadtest_id: string
+  status: 'launching' | 'running' | 'stopping' | 'done' | string
+  owner: string
+  version: string
+  count: number
+  duration_s: number
+  cpu: number
+  memory_gb: number
+  command: string
+  memory_mib: number
+  submitted_ts: number
+  launched_ts: number
+  finished_ts: number
+  note: string
+  counts: Record<string, number>
+  members: SandboxLoadTestMember[]
 }
 
 export interface SandboxRunStep {
@@ -922,6 +976,19 @@ export const api = {
     request<{ run_ref: string; status: string }>('/api/v1/sandboxes/run', { method: 'POST', body: JSON.stringify(body) }),
   getSandboxRun: (ref: string) =>
     request<{ run_ref: string; status: string; report?: SandboxRunReport }>(`/api/v1/sandboxes/runs/${encodeURIComponent(ref)}`),
+  // load tests (administrators): many sandboxes on the load-test Runtime for a set time
+  submitSandboxLoadTest: (body: {
+    version: string
+    count: number
+    duration_s: number
+    cpu?: number
+    memory_gb?: number
+    command?: string
+  }) =>
+    request<{ loadtest_id: string; status: string }>('/api/v1/sandboxes/loadtests', { method: 'POST', body: JSON.stringify(body) }),
+  listSandboxLoadTests: () => request<SandboxLoadTest[]>('/api/v1/sandboxes/loadtests'),
+  stopSandboxLoadTest: (id: string) =>
+    request<SandboxLoadTest>(`/api/v1/sandboxes/loadtests/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   reapSandboxes: () => request<{ enabled: boolean; lost?: string[]; restopped?: string[] }>('/api/v1/sandboxes/reap', { method: 'POST' }),
 
   // Model backend control plane

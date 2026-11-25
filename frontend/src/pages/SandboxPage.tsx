@@ -3,15 +3,19 @@ import { CheckCircle2, Play, Plus, Trash2, XCircle } from 'lucide-react'
 import { SectionTitle } from '@/components/common/ui'
 import { Tabs, useUrlTab, type TabDef } from '@/components/common/Tabs'
 import LiveSessionsPanel from '@/components/observability/LiveSessionsPanel'
-import { api, type SandboxConfig, type SandboxRunReport, type SandboxRuntime } from '@/services/api'
+import LoadTest from '@/pages/SandboxLoadTest'
+import { api, type SandboxConfig, type SandboxLoadTestConfig, type SandboxRunReport, type SandboxRuntime } from '@/services/api'
 
-type SbxTab = 'running' | 'try' | 'versions' | 'access'
+type SbxTab = 'running' | 'try' | 'loadtest' | 'versions' | 'access'
 const TABS: TabDef<SbxTab>[] = [
   { id: 'running', label: 'Running' },
   { id: 'try', label: 'Try a run' },
+  { id: 'loadtest', label: 'Load test' },
   { id: 'versions', label: 'Image versions' },
   { id: 'access', label: 'How to call it' },
 ]
+// the Load test tab only where a load-test Runtime is deployed
+const hasLoadTest = (config: SandboxConfig | null) => Object.keys(config?.loadtest?.versions ?? {}).length > 0
 
 const SAMPLE_MAIN = `import json, os, platform, sys
 
@@ -25,9 +29,19 @@ os.makedirs("output", exist_ok=True)
 json.dump({"ok": True}, open("output/signal.json", "w"))
 `
 
-// Two ways a sandbox can run (AgentCore platform V1 / V2), chosen per run
-const RUNTIME_LABEL: Record<SandboxRuntime, string> = { standard: 'Standard', fast: 'Fast' }
-const RUNTIME_HINT: Record<SandboxRuntime, string> = {
+// Three ways a sandbox can run (AgentCore platform V1, V2, V2 with a committed
+// baseline), chosen per run
+const RUNTIME_KINDS: SandboxRuntime[] = ['standard', 'fast', 'baseline']
+const RUNTIME_LABEL: Record<SandboxRuntime, string> = { standard: 'Standard', fast: 'Fast', baseline: 'Fast (baseline)' }
+const baselineSize = (config: SandboxConfig) => {
+  const mib = config.baseline?.memory_mib
+  return mib ? `${mib / 1024} GB / ${config.baseline?.vcpu ?? mib / 4096} vCPU` : 'the deployed baseline'
+}
+const runtimeHint = (config: SandboxConfig, r: SandboxRuntime) =>
+  r === 'baseline'
+    ? `Fast Runtime with a committed baseline (${baselineSize(config)}): starts like Fast, but the baseline is billed for the sandbox's whole life, idle or not, at the lower committed rate, and the sandbox can burst to 4x it.`
+    : RUNTIME_HINT[r]
+const RUNTIME_HINT: Record<'standard' | 'fast', string> = {
   standard:
     'Standard Runtime (AgentCore platform V1): each sandbox boots from the image. Creating one takes longer under load (5-8 s at 200 concurrent), every file reads at full speed.',
   fast:
@@ -110,7 +124,7 @@ function TryRun({ config }: { config: SandboxConfig }) {
               value={effectiveRuntime}
               onChange={(e) => setRuntime(e.target.value as SandboxRuntime)}
             >
-              {(['standard', 'fast'] as SandboxRuntime[]).map((r) => (
+              {RUNTIME_KINDS.filter((r) => r !== 'baseline' || Object.keys(config.baseline_versions ?? {}).length > 0).map((r) => (
                 <option key={r} value={r} disabled={!offered.includes(r)}>
                   {RUNTIME_LABEL[r]}
                   {r === (config.default_runtime ?? 'standard') ? ' · default' : ''}
@@ -120,7 +134,7 @@ function TryRun({ config }: { config: SandboxConfig }) {
             </select>
           </label>
         </div>
-        <p className="mb-3 text-xs text-slate-400">{RUNTIME_HINT[effectiveRuntime]}</p>
+        <p className="mb-3 text-xs text-slate-400">{runtimeHint(config, effectiveRuntime)}</p>
         <div className="mb-3">
           <label className="text-xs text-slate-500">
             Command (cwd = /workspace)
@@ -250,6 +264,12 @@ function Versions({ config }: { config: SandboxConfig }) {
                       <span className="font-mono">{config.fast_versions[v]}</span>
                     </div>
                   )}
+                  {config.baseline_versions?.[v] && (
+                    <div>
+                      <span className="mr-2 font-medium text-amber-700">Fast (baseline)</span>
+                      <span className="font-mono">{config.baseline_versions[v]}</span>
+                    </div>
+                  )}
                 </td>
                 <td className="py-2 text-right">
                   {(config.default_version || Object.keys(config.versions)[0]) === v && <span className="badge bg-brand-50 text-brand-700">default</span>}
@@ -261,8 +281,9 @@ function Versions({ config }: { config: SandboxConfig }) {
         <p className="mt-3 text-xs text-slate-400">
           Each image version is pinned by its own runtime endpoint, so old and new versions serve side by side for canaries and
           rollbacks. A sandbox reports the image it actually runs (build_info) when it is claimed. Every version runs on a Standard
-          Runtime; a version may also run on a Fast Runtime, picked per sandbox with <code>runtime: "fast"</code> (Standard when
-          none is given).
+          Runtime; a version may also run on a Fast Runtime, picked per sandbox with <code>runtime: "fast"</code>, and on a Fast
+          Runtime with a committed baseline ({baselineSize(config)}, billed for each sandbox's whole life), picked with{' '}
+          <code>runtime: "baseline"</code> (Standard when none is given).
         </p>
       </div>
       <div className="card p-5">
@@ -354,9 +375,12 @@ export default function SandboxPage() {
           The sandbox runtime is not deployed in this environment. The pages below show the configuration only.
         </div>
       )}
-      <Tabs tabs={TABS} value={tab} onChange={setTab} />
+      <Tabs tabs={TABS.filter((t) => t.id !== 'loadtest' || hasLoadTest(config))} value={tab} onChange={setTab} />
       {tab === 'running' && <LiveSessionsPanel kind="sandbox" />}
       {tab === 'try' && config && <TryRun config={config} />}
+      {tab === 'loadtest' && config && hasLoadTest(config) && (
+        <LoadTest config={config.loadtest as SandboxLoadTestConfig} enabled={config.enabled} />
+      )}
       {tab === 'versions' && config && <Versions config={config} />}
       {tab === 'access' && <Access />}
     </div>

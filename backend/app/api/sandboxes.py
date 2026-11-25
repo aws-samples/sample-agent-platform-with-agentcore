@@ -30,9 +30,11 @@ from app.models.schemas import (
     SandboxCreateRequest,
     SandboxExecRequest,
     SandboxFileWriteRequest,
+    SandboxLoadTestRequest,
     SandboxRunRequest,
 )
 from app.services.audit_service import audit_service
+from app.services.sandbox_loadtest_service import loadtest_service
 from app.services.sandbox_mcp_service import handle_jsonrpc, sandbox_mcp_tokens
 from app.services.sandbox_service import STANDARD, SandboxError, requested_runtime, sandbox_service
 
@@ -107,6 +109,10 @@ def portal_config(user: str = Depends(require_admin)):
         "versions": {v: arn.rsplit("/", 1)[-1] for v, arn in sandbox_service.versions().items()},
         # Fast Runtime name by version, for the versions that have one
         "fast_versions": {v: arn.rsplit("/", 1)[-1] for v, arn in sandbox_service.fast_versions().items()},
+        # Fast Runtime with a committed baseline, by version, and that baseline
+        # ({memory_mib, vcpu}; {} when none is deployed)
+        "baseline_versions": {v: arn.rsplit("/", 1)[-1] for v, arn in sandbox_service.baseline_versions().items()},
+        "baseline": sandbox_service.baseline(),
         "runtimes": {v: sandbox_service.runtimes(v) for v in sandbox_service.versions()},
         "default_version": sandbox_service.default_version(),
         "default_runtime": STANDARD,
@@ -114,6 +120,9 @@ def portal_config(user: str = Depends(require_admin)):
         "max_lifetime_s": settings.sandbox_max_lifetime_s,
         "job_memory_mib": settings.sandbox_job_memory_mib,
         "max_per_owner_session": settings.sandbox_max_per_owner_session,
+        # load tests on the load-test Runtime ({} when none is deployed): its
+        # runtime names, baseline, burst ceiling and the request bounds
+        "loadtest": loadtest_service.config(),
     }
 
 
@@ -140,6 +149,34 @@ def portal_run_get(run_ref: str, user: str = Depends(require_admin)):
 @portal.post("/reap")
 def portal_reap(user: str = Depends(require_admin)):
     return _call(sandbox_service.reap)
+
+
+# load tests (administrators only, like every portal route): declared before
+# /{sandbox_id} so "loadtests" is never read as a sandbox id
+@portal.post("/loadtests")
+def portal_loadtest_submit(req: SandboxLoadTestRequest, user: str = Depends(require_admin)):
+    sub = _call(loadtest_service.submit, owner=str(user), version=req.version, count=req.count, duration_s=req.duration_s,
+                cpu=req.cpu, memory_gb=req.memory_gb, command=req.command)
+    audit_service.record(str(user), "sandbox.loadtest", f"loadtest:{sub['loadtest_id']}",
+                         f"{req.version}:{req.count}x{req.duration_s}s")
+    return sub
+
+
+@portal.get("/loadtests")
+def portal_loadtest_list(user: str = Depends(require_admin)):
+    return _call(loadtest_service.list)
+
+
+@portal.get("/loadtests/{loadtest_id}")
+def portal_loadtest_get(loadtest_id: str, user: str = Depends(require_admin)):
+    return _call(loadtest_service.get, loadtest_id)
+
+
+@portal.post("/loadtests/{loadtest_id}/stop")
+def portal_loadtest_stop(loadtest_id: str, user: str = Depends(require_admin)):
+    out = _call(loadtest_service.stop, loadtest_id)
+    audit_service.record(str(user), "sandbox.loadtest.stop", f"loadtest:{loadtest_id}", out.get("status", ""))
+    return out
 
 
 @portal.get("/{sandbox_id}")

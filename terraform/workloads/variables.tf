@@ -184,7 +184,7 @@ variable "runtime_log_retention_days" {
 }
 
 variable "platform_version_python" {
-  description = "Python interpreter Terraform uses to run scripts/set_platform_version.py (needs botocore >= 1.43.98)."
+  description = "Python interpreter Terraform uses to run scripts/set_platform_version.py (needs botocore >= 1.43.98, >= 1.44.0 when a sandbox image has baseline = true or loadtest = true)."
   type        = string
   default     = "python3"
 }
@@ -214,11 +214,13 @@ variable "sample_platform_version" {
 # Deployed only when the foundation publishes features.sandbox.
 
 variable "sandbox_images" {
-  description = "Sandbox image versions to serve (named v<N>). Each sets tag (in the platform's sandbox-kernel repository), uri (another repository the foundation's sandbox_network.extra_image_repository_arns allows), or neither (= sandbox_image_tag). Every version gets a Standard Runtime (AgentCore platform V1); fast = true adds a Fast Runtime (platform V2: each sandbox restored from one snapshot of the started image, so the image must draw per-sandbox values per request, never at start-up). The caller picks per sandbox. Each new runtime is applied once by an administrator (C15)."
+  description = "Sandbox image versions to serve (named v<N>). Each sets tag (in the platform's sandbox-kernel repository), uri (another repository the foundation's sandbox_network.extra_image_repository_arns allows), or neither (= sandbox_image_tag). Every version gets a Standard Runtime (AgentCore platform V1); fast = true adds a Fast Runtime (platform V2: each sandbox restored from one snapshot of the started image, so the image must draw per-sandbox values per request, never at start-up). baseline = true adds a Fast Runtime with a committed baseline (sandbox_baseline_memory_mib, billed for each sandbox's whole life, idle or not; the same V2 rule on the image applies, and platform_version_python needs botocore >= 1.44.0). The caller picks per sandbox. loadtest = true adds a load-test runtime (sandbox_loadtest_*: a committed baseline and a lifecycle of up to 8 hours) that only the portal's administrator load tests use; the same V2 rule on the image applies. Each new runtime is applied once by an administrator (C15)."
   type = map(object({
-    tag  = optional(string, "")
-    uri  = optional(string, "")
-    fast = optional(bool, false)
+    tag      = optional(string, "")
+    uri      = optional(string, "")
+    fast     = optional(bool, false)
+    baseline = optional(bool, false)
+    loadtest = optional(bool, false)
     # replaced by fast (a version now has a Standard Runtime and optionally a
     # Fast one): kept only so an old setting fails here instead of being dropped
     platform_version = optional(string)
@@ -228,6 +230,30 @@ variable "sandbox_images" {
     condition     = alltrue([for img in values(var.sandbox_images) : img.platform_version == null])
     error_message = "sandbox_images: platform_version is gone. Every version has a Standard Runtime (V1); set fast = true for a Fast Runtime (V2) besides it."
   }
+}
+
+variable "sandbox_baseline_memory_mib" {
+  description = "Committed baseline of the baseline sandbox runtimes (images with baseline = true), as minimumMemoryInMiB: 1024 (0.25 vCPU), 2048 (0.5), 4096 (1) or 8192 (2). Each sandbox on one is billed for it from start to end and can burst to 4x."
+  type        = number
+  default     = 8192
+}
+
+variable "sandbox_loadtest_memory_mib" {
+  description = "Committed baseline of the load-test sandbox runtimes (images with loadtest = true), as minimumMemoryInMiB. A session can burst to 4x, so 8192 reaches 8 vCPU / 32 GB, the largest microVM; it is billed for the baseline from start to end."
+  type        = number
+  default     = 8192
+}
+
+variable "sandbox_loadtest_idle_timeout_s" {
+  description = "AgentCore idle timeout of a load-test sandbox microVM; the backend polls every load-test sandbox about once a minute, well within it."
+  type        = number
+  default     = 900
+}
+
+variable "sandbox_loadtest_max_lifetime_s" {
+  description = "Longest a load-test sandbox microVM lives, at most AgentCore's 8 hours for a microVM; a load test runs up to it less two minutes."
+  type        = number
+  default     = 28800
 }
 
 variable "sandbox_default_version" {

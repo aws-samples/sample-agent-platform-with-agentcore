@@ -320,6 +320,19 @@ class SandboxFileWriteRequest(BaseModel):
     mode: int = Field(default=0, ge=0, le=0o777)
 
 
+class SandboxLoadTestRequest(BaseModel):
+    """A load test: count sandboxes on the version's load-test Runtime, each
+    running the stress script (cpu busy processes, memory_gb held) or command
+    for duration_s, then stopped. Bounds beyond these are the deployment's
+    (sandbox_loadtest_service.config: count, duration, cpu and memory)."""
+    version: str = Field(min_length=1, max_length=64)
+    count: int = Field(ge=1, le=2500)
+    duration_s: int = Field(ge=60, le=28800)
+    cpu: int = Field(default=0, ge=0, le=64)
+    memory_gb: float = Field(default=0, ge=0, le=256)
+    command: str = Field(default="", max_length=4000)
+
+
 class SandboxRunRequest(BaseModel):
     version: str = Field(default="", max_length=64)
     runtime: str = Field(default="", max_length=16)
