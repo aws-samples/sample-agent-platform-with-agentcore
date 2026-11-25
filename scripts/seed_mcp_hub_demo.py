@@ -456,7 +456,7 @@ def main() -> int:
             ]},
         )["Command"]["CommandId"]
         for _ in range(30):
-            time.sleep(2)
+            time.sleep(2)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
             result = ssm.get_command_invocation(CommandId=command_id, InstanceId=hub_instance_id)
             if result["Status"] in ("Success", "Failed", "Cancelled", "TimedOut"):
                 break

@@ -101,7 +101,7 @@ def run_on(ssm, instance_id: str, script: str, timeout_s: int = 900) -> tuple[bo
     )["Command"]["CommandId"]
     deadline = time.time() + timeout_s + 60
     while time.time() < deadline:
-        time.sleep(5)
+        time.sleep(5)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         result = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
         if result["Status"] in ("Success", "Failed", "Cancelled", "TimedOut"):
             return (

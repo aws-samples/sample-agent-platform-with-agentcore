@@ -124,7 +124,7 @@ def main(argv: list[str]) -> int:
     os.replace(tmp, ready)
     # the mappings live as long as this process: never return
     while True:
-        time.sleep(3600)
+        time.sleep(3600)  # nosemgrep: arbitrary-sleep  (keeps the process alive so the page mappings stay pinned)
 
 
 if __name__ == "__main__":

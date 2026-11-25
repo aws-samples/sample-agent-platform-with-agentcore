@@ -1,5 +1,5 @@
 apiVersion: v2
 name: platform-rbac
-description: What the application pipeline may do inside one platform namespace. Installed by the foundation into each workload namespace; binds the pipeline's Kubernetes group to a namespaced Role that covers exactly what the platform-workload and pod-security-group charts create, plus what Helm needs to install, wait for and roll back a release.
+description: What the application pipeline may do inside one platform namespace, and what pods it may run there. Installed by the foundation into each workload namespace; renders the namespace with its Pod Security Admission labels and binds the pipeline's Kubernetes group to a namespaced Role that covers exactly what the platform-workload and pod-security-group charts create, plus what Helm needs to install, wait for and roll back a release.
 type: application
-version: 0.1.0
+version: 0.2.0

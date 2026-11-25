@@ -472,14 +472,19 @@ resource "aws_lb_listener" "service_entry" {
 
 # ------------------------------- namespace ---------------------------------
 # The foundation owns the namespace and what the application pipeline may do
-# in it: this release creates the namespace and binds the pipeline's group
-# (ci/infra, access entry kubernetes_groups) to a namespaced Role covering the
-# workload charts' kinds. The Deployments themselves are terraform/workloads'.
+# in it: this release renders the namespace with its Pod Security Admission
+# labels (enforce=baseline: no privileged, hostPath or host-namespace pods) and
+# binds the pipeline's group (ci/infra, access entry kubernetes_groups) to a
+# namespaced Role covering the workload charts' kinds. The Deployments
+# themselves are terraform/workloads'.
 resource "helm_release" "rbac" {
   name             = "platform-rbac"
   chart            = "${path.module}/../../charts/platform-rbac"
   namespace        = local.namespace
-  create_namespace = true
+  create_namespace = false # the chart renders the namespace with its Pod Security labels
+  # the namespace predates the chart's Namespace template (create_namespace =
+  # true until 2026-11); adopting it is how existing clusters get the labels
+  take_ownership = true
 
   values = [yamlencode({
     group = "agent-platform-workloads${var.name_suffix}"

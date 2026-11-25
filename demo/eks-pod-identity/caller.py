@@ -97,7 +97,7 @@ def run_once(n: int) -> None:
 
     deadline = time.time() + 600
     while time.time() < deadline:
-        time.sleep(10)
+        time.sleep(10)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         record = sigv4("GET", f"{BASE}/service/v1/invocations/{inv}").json()
         if record.get("status") in ("succeeded", "failed"):
             print(f"[{n}] {record['status']}: "

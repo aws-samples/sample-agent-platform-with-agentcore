@@ -208,7 +208,7 @@ def main() -> int:
     record: dict = {}
     deadline = time.time() + 420
     while time.time() < deadline:
-        time.sleep(8)
+        time.sleep(8)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         status, record = sigv4("GET", f"{signed_base}/service/v1/invocations/{inv_id}")
         if record.get("status") in ("succeeded", "failed"):
             break
@@ -230,7 +230,7 @@ def main() -> int:
     record2: dict = {}
     deadline = time.time() + 420
     while time.time() < deadline:
-        time.sleep(8)
+        time.sleep(8)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
         status, record2 = sigv4("GET", f"{signed_base}/service/v1/invocations/{inv2}")
         if record2.get("status") in ("succeeded", "failed"):
             break

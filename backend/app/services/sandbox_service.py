@@ -545,7 +545,7 @@ class SandboxService:
                     if time.monotonic() > deadline:
                         self.exec_cancel(sid, owner, task["task_id"])
                         raise SandboxError("timeout", f"job still running {timeout_s + 60}s after start; cancelled")
-                    time.sleep(poll_s)
+                    time.sleep(poll_s)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
 
             status = step("wait", wait)
             report.update({
@@ -646,7 +646,7 @@ class SandboxService:
                 max_life = int(r.get("max_lifetime_s") or settings.sandbox_max_lifetime_s)
                 idle_limit = int(r.get("idle_timeout_s") or settings.sandbox_idle_timeout_s)
                 reason = "max_lifetime" if lifetime > max_life else ("idle_timeout" if idle > idle_limit else "")
-                if reason and live_session_service.set_status(sid, "lost", expect=("running",), attrs={"lost_reason": reason}):
+                if reason and live_session_service.set_status(sid, "lost", expect=("running",), attrs={"lost_reason": reason}):  # nosemgrep: no-strings-as-booleans  (false positive: `reason` is a variable, not a string literal)
                     self._stop_compute(sid, r["runtime_arn"], r["qualifier"])
                     acted["lost"].append(sid)
         return {"enabled": True, **acted}
@@ -685,7 +685,7 @@ class SandboxService:
 
         def loop():
             while True:
-                time.sleep(interval_s)
+                time.sleep(interval_s)  # nosemgrep: arbitrary-sleep  (intentional poll/backoff interval)
                 try:
                     acted = self.reap()
                     if acted.get("lost") or acted.get("restopped"):

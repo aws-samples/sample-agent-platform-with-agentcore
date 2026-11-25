@@ -54,6 +54,7 @@ echo "== cluster B ($HUB_CLUSTER): hub"
 kubectl --context "$HUB_CLUSTER" apply -f "$OUT/hub.yaml"
 kubectl --context "$HUB_CLUSTER" -n mcp-hub create configmap hub-code \
   --from-file="$HUB_SRC/app.py" --from-file="$HUB_SRC/entry_identity.py" \
+  --from-file="$HUB_SRC/gateway_entry.py" \
   --from-file="$HUB_SRC/mcphub_hmac.py" --from-file="$HUB_SRC/requirements.txt" \
   --dry-run=client -o yaml | kubectl --context "$HUB_CLUSTER" apply -f -
 kubectl --context "$HUB_CLUSTER" -n mcp-hub rollout restart deployment/hub

@@ -1,0 +1,9 @@
+# Local state of a test deployment: never commit.
+.kubeconfig
+.rendered/
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.plan

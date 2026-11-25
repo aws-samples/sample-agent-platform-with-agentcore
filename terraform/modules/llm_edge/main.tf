@@ -208,7 +208,10 @@ resource "helm_release" "rbac" {
   name             = "platform-rbac"
   chart            = "${path.module}/../../charts/platform-rbac"
   namespace        = local.namespace
-  create_namespace = true
+  create_namespace = false # the chart renders the namespace with its Pod Security labels
+  # the namespace predates the chart's Namespace template (create_namespace =
+  # true until 2026-11); adopting it is how existing clusters get the labels
+  take_ownership = true
 
   values = [yamlencode({
     group = "agent-platform-workloads${var.name_suffix}"

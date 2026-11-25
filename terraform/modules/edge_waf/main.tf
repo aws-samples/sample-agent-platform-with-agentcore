@@ -27,12 +27,90 @@ locals {
   # skill markdown and READMEs link ../../docs (LFI), prompts and skills carry
   # HTML/JSX (XSS). Counted in the group, then blocked again by label
   # everywhere except the authenticated /api/v1/ routes (ContentLabelBlock).
-  # Log4J, Java deserialization and metadata SSRF stay blocking everywhere:
-  # nothing the platform sends legitimately carries those payloads.
+  # Log4J and Java deserialization stay blocking everywhere: nothing the
+  # platform sends legitimately carries those payloads.
   content_label = [
     "GenericLFI_BODY",
     "CrossSiteScripting_BODY",
   ]
+
+  # Metadata SSRF, query arguments and body only (cookie and URI path keep
+  # their managed Block). The rules match a URL that points at the local host
+  # as well as one that points at the metadata address, and an OAuth native
+  # client sends exactly that: RFC 8252 loopback redirection,
+  # redirect_uri=http://localhost:<port>/callback, in the query of Keycloak's
+  # authorization request and in the body of its token request. Without an
+  # exemption no CLI or desktop client can sign in (Claude Code's MCP login,
+  # for one).
+  #
+  # Counted in the group, then blocked again by label (SsrfQueryLabelBlock,
+  # SsrfBodyLabelBlock) unless the request is, positively, a loopback sign-in.
+  # OAuthLoopbackAuthorize / OAuthLoopbackToken label a request only when all
+  # of this holds - an allowlist of one request shape, not of an endpoint:
+  #   - it is on the one endpoint (authorization: query; token: body);
+  #   - its redirect_uri is http://localhost or http://127.0.0.1, an optional
+  #     port and a plain path (no userinfo, no query, nothing else);
+  #   - the WHOLE parameter string, decoded once, is a list of parameters each
+  #     of which is that redirect_uri, a resource indicator (RFC 8707, which
+  #     MCP clients send) that is an https URL with a DNS host name, or a
+  #     name and a value of letters, digits and . _ ~ - + space. So no other
+  #     parameter can hold a slash, a colon, a backslash, an at sign or a
+  #     percent sign: no URL, with or without a scheme, no path, nothing left
+  #     encoded;
+  #   - no parameter holds a second "=" (see oauth_param_list below for why
+  #     this is a statement of its own);
+  #   - no character outside the few those forms use appears anywhere in it.
+  #     Stated separately from the grammar on purpose: it does not depend on
+  #     how the regex engine anchors "$" (PCRE lets it match before a final
+  #     line break);
+  #   - it holds no dotted quad other than the 127.0.0.1 of its own
+  #     redirect_uri (the one address notation the value alphabet admits);
+  #   - the body, for the token request, was inspected in full.
+  #
+  # Every parameter is matched, so how a host is spelled does not matter and
+  # neither does where it is put: a second redirect_uri, a request_uri, an
+  # address in any other parameter all leave the request unlabelled and
+  # blocked. What a value may still hold is a bare word or number
+  # (a host name without scheme or path, an integer): nothing resolves those.
+  #
+  # Two properties follow from the shape of the rules, whatever the regexes:
+  # a request that passed before still passes (both block rules need a label
+  # the managed group blocked on), and nothing newly passes off the two
+  # endpoints.
+  #
+  # Keycloak fetches neither redirect_uri (it compares it with the client's
+  # registered URIs) nor the resource indicator. What it would fetch
+  # (request_uri, a URL client_id under the cimd feature) is off today and
+  # stays blocked here if that changes.
+  ssrf_label = [
+    "EC2MetaDataSSRF_QUERYARGUMENTS",
+    "EC2MetaDataSSRF_BODY",
+  ]
+
+  oauth_loopback_uri    = "http://(localhost|127\\.0\\.0\\.1)(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?"
+  oauth_loopback_ip_uri = "http://127\\.0\\.0\\.1(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?"
+  # https, DNS labels, an alphabetic top-level domain: never an IP literal.
+  oauth_resource_uri = "https://([a-z0-9-]+\\.)+[a-z]{2,}(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?"
+  # Any other parameter: no / : \ @ % = & and no control character.
+  oauth_param = "[a-z_]+=[A-Za-z0-9._~ +-]*"
+  # The whole string as a list of the three forms. Written with an optional
+  # "&" before each, not as "(^|&)form": AWS WAF refuses an anchor inside a
+  # repeated group (UpdateWebACL answers WAFInvalidParameterException, which
+  # neither terraform plan nor wafv2 check-capacity shows beforehand; see
+  # terraform/tests/check_waf_regex_syntax.py). On its own this form would
+  # also accept two parameters run together without the "&" - which the
+  # origin reads as ONE parameter whose value holds the second. Every form
+  # holds exactly one "=", so oauth_second_equals closes that: with it, the
+  # two statements accept exactly the "&"-separated lists of the three forms.
+  oauth_param_list    = "^(&?(redirect_uri=${local.oauth_loopback_uri}|resource=${local.oauth_resource_uri}|${local.oauth_param}))+$"
+  oauth_second_equals = "=[^&]*="
+  # Anything but the characters the three forms above are made of.
+  oauth_stray_char = "[^A-Za-z0-9._~ +&=:/-]"
+  ipv4_quad        = "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+"
+  # Decode once, as the origin does, then fold line breaks into spaces so the
+  # quad count spans them.
+  decode_transforms = ["URL_DECODE", "COMPRESS_WHITE_SPACE"]
+
   # The artifacts route ends in the workspace file's name (*.log, *.ini),
   # which RestrictedExtensions blocks; exempted on that one route only.
   extension_label = "RestrictedExtensions_URIPATH"
@@ -105,7 +183,7 @@ resource "aws_wafv2_web_acl" "edge" {
         name        = "AWSManagedRulesCommonRuleSet"
 
         dynamic "rule_action_override" {
-          for_each = concat(local.crs_count, local.content_label, [local.extension_label])
+          for_each = concat(local.crs_count, local.content_label, [local.extension_label], local.ssrf_label)
           content {
             name = rule_action_override.value
             action_to_use {
@@ -296,6 +374,410 @@ resource "aws_wafv2_web_acl" "edge" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "${local.name}-extension-label"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # An OAuth native client's authorization request, labelled for
+  # SsrfQueryLabelBlock to skip (the conditions are listed at ssrf_label).
+  # In order: the endpoint; a loopback redirect_uri; the whole query string
+  # made of allowed parameters only, one "=" each; no stray character; at most one dotted quad; and none at
+  # all, unless the redirect_uri is the 127.0.0.1 form. Count: tags only,
+  # never blocks or allows.
+  rule {
+    name     = "OAuthLoopbackAuthorize"
+    priority = 31
+
+    action {
+      count {}
+    }
+
+    rule_label {
+      name = "agent-platform:oauth-loopback-authorize"
+    }
+
+    statement {
+      and_statement {
+        statement {
+          regex_match_statement {
+            regex_string = "^/realms/[^/]+/protocol/openid-connect/auth$"
+            field_to_match {
+              uri_path {}
+            }
+            dynamic "text_transformation" {
+              for_each = local.path_transforms
+              content {
+                priority = text_transformation.key
+                type     = text_transformation.value
+              }
+            }
+          }
+        }
+        statement {
+          regex_match_statement {
+            regex_string = "^${local.oauth_loopback_uri}$"
+            field_to_match {
+              single_query_argument {
+                name = "redirect_uri"
+              }
+            }
+            text_transformation {
+              priority = 0
+              type     = "URL_DECODE"
+            }
+          }
+        }
+        statement {
+          regex_match_statement {
+            regex_string = local.oauth_param_list
+            field_to_match {
+              query_string {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "URL_DECODE"
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_match_statement {
+                regex_string = local.oauth_second_equals
+                field_to_match {
+                  query_string {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+              }
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_match_statement {
+                regex_string = local.oauth_stray_char
+                field_to_match {
+                  query_string {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+              }
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_match_statement {
+                regex_string = "${local.ipv4_quad}.*${local.ipv4_quad}"
+                field_to_match {
+                  query_string {}
+                }
+                dynamic "text_transformation" {
+                  for_each = local.decode_transforms
+                  content {
+                    priority = text_transformation.key
+                    type     = text_transformation.value
+                  }
+                }
+              }
+            }
+          }
+        }
+        statement {
+          or_statement {
+            statement {
+              not_statement {
+                statement {
+                  regex_match_statement {
+                    regex_string = local.ipv4_quad
+                    field_to_match {
+                      query_string {}
+                    }
+                    dynamic "text_transformation" {
+                      for_each = local.decode_transforms
+                      content {
+                        priority = text_transformation.key
+                        type     = text_transformation.value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            statement {
+              regex_match_statement {
+                regex_string = "^${local.oauth_loopback_ip_uri}$"
+                field_to_match {
+                  single_query_argument {
+                    name = "redirect_uri"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name}-oauth-loopback-authorize"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # The same for the code exchange, which repeats the redirect_uri in a form
+  # body on the token endpoint. Oversize handling fails closed on every
+  # statement: a body WAF cannot inspect in full matches no positive pattern
+  # (NO_MATCH) and counts as holding dotted quads (MATCH, under the NOT), so
+  # it is never labelled.
+  rule {
+    name     = "OAuthLoopbackToken"
+    priority = 32
+
+    action {
+      count {}
+    }
+
+    rule_label {
+      name = "agent-platform:oauth-loopback-token"
+    }
+
+    statement {
+      and_statement {
+        statement {
+          regex_match_statement {
+            regex_string = "^/realms/[^/]+/protocol/openid-connect/token$"
+            field_to_match {
+              uri_path {}
+            }
+            dynamic "text_transformation" {
+              for_each = local.path_transforms
+              content {
+                priority = text_transformation.key
+                type     = text_transformation.value
+              }
+            }
+          }
+        }
+        statement {
+          regex_match_statement {
+            regex_string = "(^|&)redirect_uri=${local.oauth_loopback_uri}(&|$)"
+            field_to_match {
+              body {
+                oversize_handling = "NO_MATCH"
+              }
+            }
+            text_transformation {
+              priority = 0
+              type     = "URL_DECODE"
+            }
+          }
+        }
+        statement {
+          regex_match_statement {
+            regex_string = local.oauth_param_list
+            field_to_match {
+              body {
+                oversize_handling = "NO_MATCH"
+              }
+            }
+            text_transformation {
+              priority = 0
+              type     = "URL_DECODE"
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_match_statement {
+                regex_string = local.oauth_second_equals
+                field_to_match {
+                  body {
+                    oversize_handling = "MATCH"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+              }
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_match_statement {
+                regex_string = local.oauth_stray_char
+                field_to_match {
+                  body {
+                    oversize_handling = "MATCH"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+              }
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              regex_match_statement {
+                regex_string = "${local.ipv4_quad}.*${local.ipv4_quad}"
+                field_to_match {
+                  body {
+                    oversize_handling = "MATCH"
+                  }
+                }
+                dynamic "text_transformation" {
+                  for_each = local.decode_transforms
+                  content {
+                    priority = text_transformation.key
+                    type     = text_transformation.value
+                  }
+                }
+              }
+            }
+          }
+        }
+        statement {
+          or_statement {
+            statement {
+              not_statement {
+                statement {
+                  regex_match_statement {
+                    regex_string = local.ipv4_quad
+                    field_to_match {
+                      body {
+                        oversize_handling = "MATCH"
+                      }
+                    }
+                    dynamic "text_transformation" {
+                      for_each = local.decode_transforms
+                      content {
+                        priority = text_transformation.key
+                        type     = text_transformation.value
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            statement {
+              regex_match_statement {
+                regex_string = "(^|&)redirect_uri=${local.oauth_loopback_ip_uri}(&|$)"
+                field_to_match {
+                  body {
+                    oversize_handling = "NO_MATCH"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name}-oauth-loopback-token"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Metadata SSRF in the query arguments (counted above) blocked again on
+  # every path, unless the request was labelled a loopback authorization
+  # request (OAuthLoopbackAuthorize).
+  rule {
+    name     = "SsrfQueryLabelBlock"
+    priority = 37
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          label_match_statement {
+            scope = "LABEL"
+            key   = "${local.crs_label}:EC2MetaDataSSRF_QueryArguments"
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              label_match_statement {
+                scope = "LABEL"
+                key   = "agent-platform:oauth-loopback-authorize"
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name}-ssrf-query-label"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # The same for the body, unless labelled a loopback code exchange
+  # (OAuthLoopbackToken).
+  rule {
+    name     = "SsrfBodyLabelBlock"
+    priority = 38
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          label_match_statement {
+            scope = "LABEL"
+            key   = "${local.crs_label}:EC2MetaDataSSRF_Body"
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              label_match_statement {
+                scope = "LABEL"
+                key   = "agent-platform:oauth-loopback-token"
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.name}-ssrf-body-label"
       sampled_requests_enabled   = true
     }
   }
