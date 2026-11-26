@@ -210,6 +210,7 @@ module "eks" {
   vpc_id                   = module.network.vpc_id
   private_subnet_ids       = module.network.private_subnet_ids
   kubernetes_version       = var.eks_kubernetes_version
+  addon_versions           = var.eks_addon_versions
   node_instance_type       = var.eks_node_instance_type
   node_count               = var.eks_node_count
   node_max_count           = var.eks_node_max_count

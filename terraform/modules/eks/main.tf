@@ -111,23 +111,13 @@ locals {
 
 # --------------------------------- add-ons ---------------------------------
 
-data "aws_eks_addon_version" "vpc_cni" {
-  addon_name         = "vpc-cni"
-  kubernetes_version = aws_eks_cluster.this.version
-  most_recent        = true
-}
-
-data "aws_eks_addon_version" "coredns" {
-  addon_name         = "coredns"
-  kubernetes_version = aws_eks_cluster.this.version
-  most_recent        = true
-}
-
-data "aws_eks_addon_version" "kube_proxy" {
-  addon_name         = "kube-proxy"
-  kubernetes_version = aws_eks_cluster.this.version
-  most_recent        = true
-}
+# Versions are pinned (var.addon_versions), never resolved to the newest
+# build at plan time. Resolved that way, the three add-ons moved whenever AWS
+# published a build, inside whatever unrelated change was being deployed, and
+# only in production (staging joins this cluster and plans none of it): a
+# networking component was upgraded with no change of its own and no rehearsal.
+# An upgrade is a one-line change of the pinned version, reviewed and planned
+# like any other.
 
 # The CNI runs with its own IRSA role (the node role carries no CNI policy) and
 # with security groups for Pods on:
@@ -144,7 +134,7 @@ data "aws_eks_addon_version" "kube_proxy" {
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name             = aws_eks_cluster.this.name
   addon_name               = "vpc-cni"
-  addon_version            = data.aws_eks_addon_version.vpc_cni.version
+  addon_version            = var.addon_versions.vpc_cni
   service_account_role_arn = aws_iam_role.cni.arn
 
   configuration_values = jsonencode({
@@ -170,7 +160,7 @@ resource "aws_eks_addon" "vpc_cni" {
 resource "aws_eks_addon" "kube_proxy" {
   cluster_name  = aws_eks_cluster.this.name
   addon_name    = "kube-proxy"
-  addon_version = data.aws_eks_addon_version.kube_proxy.version
+  addon_version = var.addon_versions.kube_proxy
 
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
@@ -182,7 +172,7 @@ resource "aws_eks_addon" "kube_proxy" {
 resource "aws_eks_addon" "coredns" {
   cluster_name  = aws_eks_cluster.this.name
   addon_name    = "coredns"
-  addon_version = data.aws_eks_addon_version.coredns.version
+  addon_version = var.addon_versions.coredns
 
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
