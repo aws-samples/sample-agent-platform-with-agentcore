@@ -39,8 +39,9 @@ llm_edge_desired_count = 1
 # v2 also has a Fast Runtime with a committed baseline (sandbox_baseline_memory_mib,
 # default 8192 = 8 GB / 2 vCPU): the same V2 image, every sandbox on it billed
 # for the baseline from start to end.
-# v2 also has a load-test runtime (sandbox_loadtest_*: the same baseline with a
-# lifecycle of up to 8 hours) for the portal's administrator load tests.
+# v2 also has load-test runtimes (sandbox_loadtest_*: one per baseline in
+# sandbox_loadtest_memory_mibs, default 1, 2, 4 and 8 GB, with a lifecycle of
+# up to 8 hours) for the portal's administrator load tests.
 sandbox_images = {
   v1 = { tag = "cust-v1" }
   v2 = { tag = "cust-v2b", fast = true, baseline = true, loadtest = true }

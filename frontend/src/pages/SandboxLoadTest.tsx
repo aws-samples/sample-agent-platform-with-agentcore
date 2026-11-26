@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Gauge, Square } from 'lucide-react'
-import { api, type SandboxLoadTest, type SandboxLoadTestConfig } from '@/services/api'
+import { api, type SandboxLoadTest, type SandboxLoadTestConfig, type SandboxLoadTestSize } from '@/services/api'
 
 // AgentCore Runtime committed-baseline rates in ap-northeast-1 (USD), as
 // billed for the first production load test (2026-11-25): a sandbox is
@@ -18,7 +18,7 @@ const fmtDur = (s: number) => {
   return h ? `${h} h ${m} min` : `${m} min`
 }
 
-function estimate(cfg: SandboxLoadTestConfig, count: number, durationS: number, cpu: number, memGb: number, custom: boolean) {
+function estimate(cfg: SandboxLoadTestSize, count: number, durationS: number, cpu: number, memGb: number, custom: boolean) {
   const hours = (count * durationS) / 3600
   const baseGb = cfg.memory_mib / 1024
   const perHourBase = cfg.vcpu_baseline * PRICE.vcpuH + baseGb * PRICE.gbH
@@ -37,16 +37,23 @@ const STATE_STYLE: Record<string, string> = {
   failed: 'bg-red-50 text-red-700',
 }
 
+const fmtGb = (mib: number) => `${mib / 1024} GB`
+const sizeLabel = (s: SandboxLoadTestSize) =>
+  `${fmtGb(s.memory_mib)} / ${s.vcpu_baseline} vCPU baseline, bursts to ${s.max_vcpu} vCPU / ${s.max_memory_gb} GB`
+
 export default function LoadTest({ config, enabled }: { config: SandboxLoadTestConfig; enabled: boolean }) {
-  const versions = Object.keys(config.versions)
+  const largest = config.sizes[config.sizes.length - 1]
+  const [mib, setMib] = useState(largest.memory_mib)
+  const size = config.sizes.find((s) => s.memory_mib === mib) ?? largest
+  const versions = Object.keys(size.versions)
   const [version, setVersion] = useState(versions[0] ?? '')
   const [count, setCount] = useState(Math.min(50, config.max_count))
   const maxH = Math.floor(config.max_duration_s / 3600)
   const [hours, setHours] = useState(maxH)
   const [minutes, setMinutes] = useState(Math.floor((config.max_duration_s % 3600) / 60))
   const [workload, setWorkload] = useState<'stress' | 'command'>('stress')
-  const [cpu, setCpu] = useState(config.max_vcpu)
-  const [memGb, setMemGb] = useState(config.max_stress_memory_gb)
+  const [cpu, setCpu] = useState(size.max_vcpu)
+  const [memGb, setMemGb] = useState(size.max_stress_memory_gb)
   const [command, setCommand] = useState('')
   const [confirmText, setConfirmText] = useState('')
   const [confirming, setConfirming] = useState(false)
@@ -56,14 +63,24 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
 
   const durationS = hours * 3600 + minutes * 60
   const custom = workload === 'command'
-  const est = estimate(config, count, durationS, cpu, memGb, custom)
+  const est = estimate(size, count, durationS, cpu, memGb, custom)
   const invalid =
-    !version ||
+    !versions.includes(version) ||
     count < 1 ||
     count > config.max_count ||
     durationS < 60 ||
     durationS > config.max_duration_s ||
-    (custom ? !command.trim() : cpu < 0 || cpu > config.max_vcpu || memGb < 0 || memGb > config.max_stress_memory_gb)
+    (custom ? !command.trim() : cpu < 0 || cpu > size.max_vcpu || memGb < 0 || memGb > size.max_stress_memory_gb)
+
+  // a machine type sets the load's ceilings: start each choice at its full load,
+  // and keep the image version when this size runs it too
+  function chooseSize(m: number) {
+    const next = config.sizes.find((s) => s.memory_mib === m) ?? largest
+    setMib(next.memory_mib)
+    setCpu(next.max_vcpu)
+    setMemGb(next.max_stress_memory_gb)
+    if (!(version in next.versions)) setVersion(Object.keys(next.versions)[0] ?? '')
+  }
 
   const refresh = useCallback(() => {
     api.listSandboxLoadTests().then(setTests).catch((e) => setError(String(e)))
@@ -80,6 +97,7 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
     try {
       await api.submitSandboxLoadTest({
         version,
+        memory_mib: size.memory_mib,
         count,
         duration_s: durationS,
         ...(custom ? { command } : { cpu, memory_gb: memGb }),
@@ -109,18 +127,19 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
     <div className="grid gap-5">
       <div className="card p-5">
         <p className="mb-4 text-xs text-slate-500">
-          Starts many sandboxes at once on the load-test Runtime and keeps each one busy for the duration, then stops it. The
+          Starts many sandboxes at once on the load-test Runtime of the chosen machine type and keeps each one busy for the duration, then stops it. The
           platform polls every sandbox about once a minute and stops each one as soon as its job ends or its time is up; a
           sandbox lives at most {fmtDur(config.max_lifetime_s)} (AgentCore&apos;s limit for a microVM).
         </p>
         <div className="mb-3 grid gap-3 sm:grid-cols-3">
           <label className="text-xs text-slate-500">
             Machine
-            <select className="input mt-1 w-full" value="baseline" disabled>
-              <option value="baseline">
-                {config.memory_mib / 1024} GB / {config.vcpu_baseline} vCPU baseline, bursts to {config.max_vcpu} vCPU /{' '}
-                {config.max_memory_gb} GB
-              </option>
+            <select className="input mt-1 w-full" value={size.memory_mib} onChange={(e) => chooseSize(Number(e.target.value))}>
+              {config.sizes.map((s) => (
+                <option key={s.memory_mib} value={s.memory_mib}>
+                  {sizeLabel(s)}
+                </option>
+              ))}
             </select>
           </label>
           <label className="text-xs text-slate-500">
@@ -181,23 +200,23 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
         {!custom ? (
           <div className="mb-3 grid gap-3 sm:grid-cols-3">
             <label className="text-xs text-slate-500">
-              CPU busy processes (0-{config.max_vcpu})
+              CPU busy processes (0-{size.max_vcpu})
               <input
                 className="input mt-1 w-full"
                 type="number"
                 min={0}
-                max={config.max_vcpu}
+                max={size.max_vcpu}
                 value={cpu}
                 onChange={(e) => setCpu(Number(e.target.value))}
               />
             </label>
             <label className="text-xs text-slate-500">
-              Memory held, GB (0-{config.max_stress_memory_gb})
+              Memory held, GB (0-{size.max_stress_memory_gb})
               <input
                 className="input mt-1 w-full"
                 type="number"
                 min={0}
-                max={config.max_stress_memory_gb}
+                max={size.max_stress_memory_gb}
                 step={1}
                 value={memGb}
                 onChange={(e) => setMemGb(Number(e.target.value))}
@@ -216,8 +235,8 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
             Estimated cost: {fmtUsd(est.low)} to {fmtUsd(est.high)} ({count} sandboxes x {fmtDur(durationS)})
           </p>
           <p className="mt-1">
-            Each sandbox is billed from start to end for what it uses or for the {config.memory_mib / 1024} GB /{' '}
-            {config.vcpu_baseline} vCPU baseline, whichever is more, all at the committed rate: {fmtUsd(est.perHourBase)} per
+            Each sandbox is billed from start to end for what it uses or for the {fmtGb(size.memory_mib)} /{' '}
+            {size.vcpu_baseline} vCPU baseline, whichever is more, all at the committed rate: {fmtUsd(est.perHourBase)} per
             sandbox-hour idle, {fmtUsd(est.perHourLoad)} per sandbox-hour at this load. The lower figure is the baseline alone;
             the upper one is the load running for the whole duration.
           </p>
@@ -259,7 +278,7 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
                   <span className="font-mono text-slate-500">{t.loadtest_id}</span>
                   <span className={`badge ${open ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{t.status}</span>
                   <span className="text-slate-600">
-                    {t.version} | {t.count} x {fmtDur(t.duration_s)} | {t.command ? 'custom command' : `${t.cpu} CPU / ${t.memory_gb} GB`}
+                    {t.version} | {t.memory_mib ? `${fmtGb(t.memory_mib)} baseline | ` : ''}{t.count} x {fmtDur(t.duration_s)} | {t.command ? 'custom command' : `${t.cpu} CPU / ${t.memory_gb} GB`}
                   </span>
                   <span className="text-slate-500">
                     {fmtDur(elapsed)} elapsed{open && t.duration_s > elapsed ? `, ${fmtDur(t.duration_s - elapsed)} left` : ''}

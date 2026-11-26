@@ -76,15 +76,16 @@ resource "terraform_data" "platform_version_baseline" {
   }
 }
 
-# A load-test runtime: V2 plus its own committed baseline, re-applied after
-# every update exactly as for a baseline runtime above (same reasons).
+# A load-test runtime: V2 plus its own committed baseline (its entry in
+# local.loadtest_runtimes), re-applied after every update exactly as for a
+# baseline runtime above (same reasons).
 resource "terraform_data" "platform_version_loadtest" {
   for_each = aws_bedrockagentcore_agent_runtime.sandbox_loadtest
 
   triggers_replace = [
     each.value.agent_runtime_id,
     "V2",
-    var.loadtest_memory_mib,
+    local.loadtest_runtimes[each.key].memory_mib,
     sha1(jsonencode({
       description             = each.value.description
       role_arn                = each.value.role_arn
@@ -101,6 +102,6 @@ resource "terraform_data" "platform_version_loadtest" {
   }
 
   provisioner "local-exec" {
-    command = "${var.platform_version_python} ${local.set_platform_version} ${each.value.agent_runtime_id} V2 --baseline-mib ${var.loadtest_memory_mib} --region ${local.region}"
+    command = "${var.platform_version_python} ${local.set_platform_version} ${each.value.agent_runtime_id} V2 --baseline-mib ${local.loadtest_runtimes[each.key].memory_mib} --region ${local.region}"
   }
 }

@@ -23,8 +23,13 @@ output "baseline_runtime_arns" {
 }
 
 output "loadtest_runtime_arns" {
-  description = "Load-test runtime ARN (Fast Runtime with a committed baseline and the load-test lifecycle) by image version, for the versions that have one: the backend's PLATFORM_SANDBOX_LOADTEST_VERSIONS."
-  value       = { for v, r in aws_bedrockagentcore_agent_runtime.sandbox_loadtest : v => r.agent_runtime_arn }
+  description = "Load-test runtime ARNs (Fast Runtime with a committed baseline and the load-test lifecycle) by image version, then by baseline in MiB (as a string), for the versions that have them: the backend's PLATFORM_SANDBOX_LOADTEST_RUNTIMES."
+  value = {
+    for v, _ in local.loadtest_images : v => {
+      for k, r in aws_bedrockagentcore_agent_runtime.sandbox_loadtest :
+      tostring(local.loadtest_runtimes[k].memory_mib) => r.agent_runtime_arn if local.loadtest_runtimes[k].version == v
+    }
+  }
   # published only once the hook pinned its platform (and baseline):
   # a runtime whose hook failed is never handed to the backend
   depends_on = [terraform_data.platform_version_loadtest]

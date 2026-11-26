@@ -46,6 +46,8 @@ from fastapi import FastAPI
 from test_sandbox_service_adversarial import ARN, OWNER, Base, load
 
 LT_V2 = ARN.replace("-abc", "_v2_loadtest-l")
+LT_V2_1G = ARN.replace("-abc", "_v2_loadtest_1g-l")
+LT_V2_4G = ARN.replace("-abc", "_v2_loadtest_4g-l")
 STD_V2 = ARN.replace("-abc", "_v2-std")
 
 
@@ -162,7 +164,7 @@ class KindTests(Base):
     def setUp(self):
         super().setUp()
         patch.object(self.mod.settings, "sandbox_versions", {"v2": STD_V2}).start()
-        patch.object(self.mod.settings, "sandbox_loadtest_versions", {"v2": LT_V2}).start()
+        patch.object(self.mod.settings, "sandbox_loadtest_runtimes", {"v2": {"8192": LT_V2, "1024": LT_V2_1G}}).start()
 
     def test_no_caller_can_name_the_load_test_runtime(self):
         for value in ("loadtest", "LOADTEST", " loadtest "):
@@ -185,13 +187,32 @@ class KindTests(Base):
         self.assertNotIn("loadtest", self.svc.runtimes("v2"))
 
     def test_a_load_test_sandbox_lands_on_the_load_test_runtime_with_its_lifecycle(self):
-        row = self.create(version="v2", loadtest=True)
+        row = self.create(version="v2", loadtest=True, loadtest_mib=8192)
         self.assertEqual(self.svc.agentcore.invoke_agent_runtime.call_args.kwargs["agentRuntimeArn"], LT_V2)
         raw = self.ledger.rows[row["runtime_session_id"]]
         self.assertEqual((raw["runtime"], raw["platform_version"]), ("loadtest", "V2"))
         self.assertEqual((raw["idle_timeout_s"], raw["max_lifetime_s"]),
                          (self.mod.settings.sandbox_loadtest_idle_timeout_s, self.mod.settings.sandbox_loadtest_max_lifetime_s))
         self.assertEqual((raw["idle_timeout_s"], raw["max_lifetime_s"]), (900, 28800))
+
+    def test_each_machine_type_lands_on_its_own_runtime_and_a_missing_one_is_never_swapped(self):
+        self.create(version="v2", loadtest=True, loadtest_mib=1024)
+        self.assertEqual(self.svc.agentcore.invoke_agent_runtime.call_args.kwargs["agentRuntimeArn"], LT_V2_1G)
+        invoked = self.svc.agentcore.invoke_agent_runtime.call_count
+        for mib in (2048, 4096, 0, 3000):
+            with self.subTest(mib=mib), self.assertRaises(self.mod.SandboxError) as cm:
+                self.create(version="v2", loadtest=True, loadtest_mib=mib)
+            self.assertEqual(cm.exception.code, "runtime_unavailable")
+        self.assertEqual(self.svc.agentcore.invoke_agent_runtime.call_count, invoked, "a size not deployed boots nothing")
+
+    def test_the_runtime_map_keeps_only_offered_versions_and_real_baselines(self):
+        patch.object(self.mod.settings, "sandbox_loadtest_runtimes", {
+            "v2": {"8192": LT_V2, "1024": LT_V2_1G, "3000": "arn:x", "4096": "", "big": "arn:y"},
+            "v9": {"8192": "arn:not-offered"},
+            "v3": "not a map",
+        }).start()
+        self.assertEqual(self.svc.loadtest_runtimes(), {1024: {"v2": LT_V2_1G}, 8192: {"v2": LT_V2}})
+        self.assertEqual(list(self.svc.loadtest_runtimes()), [1024, 8192], "smallest first")
 
     def test_an_ordinary_sandbox_keeps_the_short_lifecycle(self):
         row = self.create(version="v2")
@@ -201,15 +222,15 @@ class KindTests(Base):
         self.assertLess(raw["max_lifetime_s"], 28800)
 
     def test_a_version_without_a_load_test_runtime_is_refused_before_anything_boots(self):
-        patch.object(self.mod.settings, "sandbox_loadtest_versions", {}).start()
+        patch.object(self.mod.settings, "sandbox_loadtest_runtimes", {}).start()
         with self.assertRaises(self.mod.SandboxError) as cm:
-            self.create(version="v2", loadtest=True)
+            self.create(version="v2", loadtest=True, loadtest_mib=8192)
         self.assertEqual(cm.exception.code, "runtime_unavailable")
         self.svc.agentcore.invoke_agent_runtime.assert_not_called()
 
     def test_an_operation_refused_by_the_row_says_which_status_refused_it(self):
         # the load-test tick tells "someone is stopping it" from "it is gone" by this
-        sid = self.create(version="v2", loadtest=True)["runtime_session_id"]
+        sid = self.create(version="v2", loadtest=True, loadtest_mib=8192)["runtime_session_id"]
         for status in ("stopping", "stopped", "lost"):
             self.ledger.rows[sid]["status"] = status
             invoked = self.svc.agentcore.invoke_agent_runtime.call_count
@@ -219,7 +240,7 @@ class KindTests(Base):
             self.assertEqual(self.svc.agentcore.invoke_agent_runtime.call_count, invoked, "a refused id is never invoked")
 
     def test_the_reaper_holds_each_row_to_its_own_lifecycle(self):
-        lt = self.create(version="v2", loadtest=True)["runtime_session_id"]
+        lt = self.create(version="v2", loadtest=True, loadtest_mib=8192)["runtime_session_id"]
         std = self.create(version="v2")["runtime_session_id"]
         for sid in (lt, std):
             self.ledger.rows[sid].update(created_ts=0, last_invoke_ts=0)
@@ -249,7 +270,7 @@ class ServiceBase(unittest.TestCase):
         patch.object(self.mod, "live_session_service", ledger).start()
         self.sbx = MagicMock()
         self.sbx.enabled = True
-        self.sbx.loadtest_versions.return_value = {"v2": LT_V2}
+        self.sbx.loadtest_runtimes.return_value = {8192: {"v2": LT_V2}}
         self.sbx.create.side_effect = self._create
         self.sbx.exec_start.side_effect = lambda sid, owner, **kw: {"task_id": f"task-{sid}"}
         self.sbx.exec_poll.side_effect = lambda sid, owner, task_id, tail_bytes=8192: {"state": "running", "stdout_tail": "tick"}
@@ -258,7 +279,7 @@ class ServiceBase(unittest.TestCase):
         self.stopped: list[tuple[str, str]] = []
         patch.object(self.mod, "sandbox_service", self.sbx).start()
         s = self.mod.settings
-        for k, v in (("sandbox_loadtest_memory_mib", 8192), ("sandbox_loadtest_idle_timeout_s", 900),
+        for k, v in (("sandbox_loadtest_idle_timeout_s", 900),
                      ("sandbox_loadtest_max_lifetime_s", 28800), ("sandbox_loadtest_max_count", 200),
                      ("sandbox_loadtest_launch_parallel", 4)):
             patch.object(s, k, v).start()
@@ -323,7 +344,7 @@ class ValidateTests(ServiceBase):
         self.assertEqual(len(self.created), 1)
 
     def test_not_deployed_is_503(self):
-        self.sbx.loadtest_versions.return_value = {}
+        self.sbx.loadtest_runtimes.return_value = {}
         with self.assertRaises(self.mod.SandboxError) as cm:
             self.submit()
         self.assertEqual((cm.exception.code, cm.exception.status), ("loadtest_unavailable", 503))
@@ -331,9 +352,73 @@ class ValidateTests(ServiceBase):
 
     def test_config_reports_the_burst_ceiling_of_the_baseline(self):
         cfg = self.svc.config()
-        self.assertEqual((cfg["max_vcpu"], cfg["max_memory_gb"], cfg["vcpu_baseline"]), (8, 32, 2.0))
+        [size] = cfg["sizes"]
+        self.assertEqual((size["max_vcpu"], size["max_memory_gb"], size["vcpu_baseline"]), (8, 32, 2.0))
         self.assertEqual(cfg["max_duration_s"], 28800 - 120)
         self.assertNotIn("arn:", repr(cfg), "the page gets runtime names, never ARNs")
+
+
+class SizeTests(ServiceBase):
+    """The machine types: one load-test Runtime per committed baseline."""
+
+    def setUp(self):
+        super().setUp()
+        self.sbx.loadtest_runtimes.return_value = {1024: {"v2": LT_V2_1G}, 4096: {"v2": LT_V2_4G, "v3": LT_V2_4G},
+                                                   8192: {"v2": LT_V2}}
+
+    def test_config_lists_each_size_with_its_own_ceilings_smallest_first(self):
+        sizes = self.svc.config()["sizes"]
+        got = [(s["memory_mib"], s["vcpu_baseline"], s["max_vcpu"], s["max_memory_gb"], s["max_stress_memory_gb"]) for s in sizes]
+        self.assertEqual(got, [(1024, 0.25, 1, 4, 2), (4096, 1.0, 4, 16, 14), (8192, 2.0, 8, 32, 30)])
+        self.assertEqual(sizes[1]["versions"], {"v2": LT_V2_4G.rsplit("/", 1)[-1], "v3": LT_V2_4G.rsplit("/", 1)[-1]})
+        self.assertNotIn("arn:", repr(sizes), "the page gets runtime names, never ARNs")
+
+    def test_no_size_named_is_the_largest(self):
+        out = self.submit(count=1)
+        self.assertEqual(out["memory_mib"], 8192)
+        self.assertEqual(self.created[0]["loadtest_mib"], 8192)
+
+    def test_a_chosen_size_runs_every_sandbox_on_it_with_its_own_memory_cap(self):
+        lt = self.submit(memory_mib=1024, count=3, cpu=1, memory_gb=2)["loadtest_id"]
+        self.assertEqual([c["loadtest_mib"] for c in self.created], [1024] * 3)
+        self.assertTrue(all(c["loadtest"] is True for c in self.created))
+        for call in self.sbx.exec_start.call_args_list:
+            self.assertEqual(call.kwargs["memory_limit_mib"], 4096, "the job may use what a 1 GB baseline bursts to, no more")
+        self.assertEqual(self.item(lt)["memory_mib"], 1024, "the ledger records the size the test ran on")
+        self.assertEqual(self.svc.get(lt)["memory_mib"], 1024)
+
+    def test_a_size_not_deployed_is_refused_never_swapped_for_a_neighbour(self):
+        for mib in (2048, 3000, 16384):
+            with self.subTest(mib=mib):
+                with self.assertRaises(self.mod.SandboxError) as cm:
+                    self.submit(memory_mib=mib, cpu=1, memory_gb=1)
+                self.assertEqual(cm.exception.code, "bad_size")
+        self.assertEqual((self.created, self.table.items), ([], {}), "nothing booted or recorded")
+
+    def test_a_version_without_that_size_is_refused(self):
+        with self.assertRaises(self.mod.SandboxError) as cm:
+            self.submit(version="v3", memory_mib=1024, cpu=1, memory_gb=1)
+        self.assertEqual(cm.exception.code, "runtime_unavailable")
+        self.submit(version="v3", memory_mib=4096, cpu=4, memory_gb=14, count=1)
+        self.assertEqual(self.created[-1]["loadtest_mib"], 4096)
+
+    def test_the_load_is_bounded_by_the_chosen_size_not_the_largest(self):
+        for kw, code in (({"cpu": 2, "memory_gb": 1}, "bad_cpu"), ({"cpu": 1, "memory_gb": 3}, "bad_memory")):
+            with self.subTest(**kw):
+                with self.assertRaises(self.mod.SandboxError) as cm:
+                    self.submit(memory_mib=1024, **kw)
+                self.assertEqual(cm.exception.code, code)
+        self.assertEqual(self.created, [])
+        self.submit(memory_mib=1024, cpu=1, memory_gb=2, count=1)  # the ceiling itself is accepted
+        self.assertEqual(len(self.created), 1)
+
+    def test_the_api_passes_the_size_through_and_bounds_it(self):
+        schemas = load("app.models.schemas")
+        req = schemas.SandboxLoadTestRequest(version="v2", count=1, duration_s=60)
+        self.assertEqual(req.memory_mib, 0, "no size named: the service picks the largest")
+        for bad in (-1, 8193):
+            with self.subTest(bad=bad), self.assertRaises(Exception):
+                schemas.SandboxLoadTestRequest(version="v2", count=1, duration_s=60, memory_mib=bad)
 
 
 class LaunchTests(ServiceBase):
@@ -646,7 +731,7 @@ class ApiTests(unittest.TestCase):
             def __getattr__(self, name):
                 def record(*a, **k):
                     recorder.calls.append(name)
-                    return {"loadtest_id": "lt-1", "status": "launching"}
+                    return {"loadtest_id": "lt-1", "status": "launching", "memory_mib": 8192}
                 return record
 
         patch.object(api, "loadtest_service", Recorder()).start()

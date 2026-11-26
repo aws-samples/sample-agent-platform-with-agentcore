@@ -321,7 +321,7 @@ class SandboxFileWriteRequest(BaseModel):
 
 
 class SandboxLoadTestRequest(BaseModel):
-    """A load test: count sandboxes on the version's load-test Runtime, each
+    """A load test: count sandboxes on the version's load-test Runtime of one machine type, each
     running the stress script (cpu busy processes, memory_gb held) or command
     for duration_s, then stopped. Bounds beyond these are the deployment's
     (sandbox_loadtest_service.config: count, duration, cpu and memory)."""
@@ -331,6 +331,8 @@ class SandboxLoadTestRequest(BaseModel):
     cpu: int = Field(default=0, ge=0, le=64)
     memory_gb: float = Field(default=0, ge=0, le=256)
     command: str = Field(default="", max_length=4000)
+    # the machine type: a deployed load-test baseline (sandbox_loadtest_service.config sizes); 0 = the largest
+    memory_mib: int = Field(default=0, ge=0, le=8192)
 
 
 class SandboxRunRequest(BaseModel):

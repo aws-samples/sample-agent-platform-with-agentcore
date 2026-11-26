@@ -17,7 +17,9 @@ alike:
      subnets and security group, under the foundation's sandbox role: never
      PUBLIC, never the kernels' runtime_sg / private subnets / roles
   2. names are sandbox_runtime_v<N><suffix>, sandbox_runtime_v<N>_fast<suffix>
-     sandbox_runtime_v<N>_baseline<suffix> and sandbox_runtime_v<N>_loadtest<suffix>,
+     sandbox_runtime_v<N>_baseline<suffix> and, one per load-test baseline,
+     sandbox_runtime_v<N>_loadtest[_<G>g]<suffix> (the 8192 MiB one keeps the
+     key and name it had before the smaller baselines),
      the environment suffix last: the CI roles separate staging from
      production on "*_staging-*" (the AgentCore id follows the name), so a
      suffix elsewhere puts a staging runtime inside production's allow;
@@ -253,15 +255,26 @@ def main() -> int:
     assert re.search(r"for_each\s*=\s*local\.baseline_images\b", base), "the baseline runtime: only versions with baseline = true"
     assert re.search(r"baseline_images\s*=\s*\{\s*for v, img in var\.images : v => img if img\.baseline\s*\}", mod)
     assert re.search(r"length\(local\.baseline_runtime_names\[each\.key\]\)\s*<=\s*48", base), "baseline names within AgentCore's 48 characters"
-    assert 'v => "sandbox_runtime_${v}_loadtest${var.runtime_name_suffix}"' in mod, "load-test names: sandbox_runtime_v<N>_loadtest<suffix>, suffix last"
-    assert re.search(r"for_each\s*=\s*local\.loadtest_images\b", load), "the load-test runtime: only versions with loadtest = true"
+    assert 'name       = "sandbox_runtime_${v}_loadtest${m == 8192 ? "" : "_${floor(m / 1024)}g"}${var.runtime_name_suffix}"' in mod, \
+        "load-test names: sandbox_runtime_v<N>_loadtest[_<G>g]<suffix>, suffix last"
+    assert '(m == 8192 ? v : "${v}_${floor(m / 1024)}g") =>' in mod, \
+        "the 8192 MiB load-test runtime keeps the version as its key (adding smaller baselines recreates nothing); the others are <v>_<G>g"
+    assert re.search(r"for v, _ in local\.loadtest_images : \{\s*for m in var\.loadtest_memory_mibs :", mod), \
+        "one load-test runtime per version with loadtest = true and per baseline"
+    assert re.search(r"for_each\s*=\s*local\.loadtest_runtimes\b", load), "the load-test runtimes: one per (version, baseline)"
+    assert re.search(r"agent_runtime_name\s*=\s*each\.value\.name\s*$", load, re.M)
+    assert re.search(r"container_uri\s*=\s*local\.image_uri\[each\.value\.version\]", load), "a load-test runtime runs its version's image"
     assert re.search(r"loadtest_images\s*=\s*\{\s*for v, img in var\.images : v => img if img\.loadtest\s*\}", mod)
-    assert re.search(r"length\(local\.loadtest_runtime_names\[each\.key\]\)\s*<=\s*48", load), "load-test names within AgentCore's 48 characters"
+    assert re.search(r"length\(each\.value\.name\)\s*<=\s*48", load), "load-test names within AgentCore's 48 characters"
+    for m, tier in ((1024, "_1g"), (2048, "_2g"), (4096, "_4g"), (8192, "")):
+        name = f"sandbox_runtime_v12_loadtest{tier}_staging"
+        assert len(name) <= 48 and name.endswith("_staging"), name
     for staging_name in ("sandbox_runtime_v1_staging", "sandbox_runtime_v12_staging", "sandbox_runtime_v1_fast_staging",
-                         "sandbox_runtime_v1_baseline_staging", "sandbox_runtime_v1_loadtest_staging"):
+                         "sandbox_runtime_v1_baseline_staging", "sandbox_runtime_v1_loadtest_staging",
+                         "sandbox_runtime_v1_loadtest_1g_staging"):
         assert re.fullmatch(r".*_staging", staging_name) and not re.fullmatch(r".*_staging.+", staging_name)
     assert re.search(r"runtime_name_suffix\s+= local\.facts\.runtime_suffix\s*$", wiring, re.M), "the suffix is the foundation's runtime_suffix"
-    ok("names are sandbox_runtime_v<N>[_fast|_baseline|_loadtest]<suffix> (staging ends _staging); Standard keeps its address")
+    ok("names are sandbox_runtime_v<N>[_fast|_baseline|_loadtest[_<G>g]]<suffix> (staging ends _staging); Standard and the 8192 MiB load-test runtime keep their addresses")
 
     # 3
     for kind, res in runtimes.items():
@@ -308,25 +321,32 @@ def main() -> int:
                          ("PLATFORM_SANDBOX_FAST_VERSIONS", "jsonencode(var.sandbox.fast_versions)"),
                          ("PLATFORM_SANDBOX_BASELINE_VERSIONS", "jsonencode(var.sandbox.baseline_versions)"),
                          ("PLATFORM_SANDBOX_BASELINE_MEMORY_MIB", "tostring(var.sandbox.baseline_memory_mib)"),
-                         ("PLATFORM_SANDBOX_LOADTEST_VERSIONS", "jsonencode(var.sandbox.loadtest_versions)"),
-                         ("PLATFORM_SANDBOX_LOADTEST_MEMORY_MIB", "tostring(var.sandbox.loadtest_memory_mib)"),
+                         ("PLATFORM_SANDBOX_LOADTEST_RUNTIMES", "jsonencode(var.sandbox.loadtest_runtimes)"),
                          ("PLATFORM_SANDBOX_LOADTEST_IDLE_TIMEOUT_S", "tostring(var.sandbox.loadtest_idle_timeout_s)"),
                          ("PLATFORM_SANDBOX_LOADTEST_MAX_LIFETIME_S", "tostring(var.sandbox.loadtest_max_lifetime_s)"),
                          ("PLATFORM_SANDBOX_IDLE_TIMEOUT_S", "tostring(var.sandbox.idle_timeout_s)"),
                          ("PLATFORM_SANDBOX_MAX_LIFETIME_S", "tostring(var.sandbox.max_lifetime_s)")):
         assert re.search(rf"{env_key}\s*=\s*{re.escape(val)}", portal), f"backend env {env_key} must be {val}"
+    # renamed, not reshaped: an image and an environment from either side of a
+    # deploy never meet a variable they parse wrong
+    for gone in ("PLATFORM_SANDBOX_LOADTEST_VERSIONS", "PLATFORM_SANDBOX_LOADTEST_MEMORY_MIB"):
+        assert gone not in portal, f"{gone} is replaced by PLATFORM_SANDBOX_LOADTEST_RUNTIMES"
     root_portal = block(root, 'module "portal"')
     assert re.search(r"\bversions\s+= local\.run_sandbox \? module\.sandbox\[0\]\.runtime_arns : \{\}", root_portal)
     assert re.search(r"fast_versions\s+= local\.run_sandbox \? module\.sandbox\[0\]\.fast_runtime_arns : \{\}", root_portal)
     assert re.search(r"baseline_versions\s+= local\.run_sandbox \? module\.sandbox\[0\]\.baseline_runtime_arns : \{\}", root_portal)
     assert re.search(r"baseline_memory_mib\s+= var\.sandbox_baseline_memory_mib", root_portal)
-    assert re.search(r"loadtest_versions\s+= local\.run_sandbox \? module\.sandbox\[0\]\.loadtest_runtime_arns : \{\}", root_portal)
-    for key in ("memory_mib", "idle_timeout_s", "max_lifetime_s"):
+    assert re.search(r"loadtest_runtimes\s+= local\.run_sandbox \? module\.sandbox\[0\]\.loadtest_runtime_arns : \{\}", root_portal)
+    for key in ("idle_timeout_s", "max_lifetime_s"):
         assert re.search(rf"loadtest_{key}\s+= var\.sandbox_loadtest_{key}\b", root_portal), f"the backend gets sandbox_loadtest_{key}"
     outs = read("modules", "sandbox", "outputs.tf")
     assert re.search(r'output "fast_runtime_arns".*?aws_bedrockagentcore_agent_runtime\.sandbox_fast', outs, re.S)
     assert re.search(r'output "baseline_runtime_arns".*?aws_bedrockagentcore_agent_runtime\.sandbox_baseline', outs, re.S)
     assert re.search(r'output "loadtest_runtime_arns".*?aws_bedrockagentcore_agent_runtime\.sandbox_loadtest\b', outs, re.S)
+    lt_out = block(outs, 'output "loadtest_runtime_arns" {')
+    assert re.search(r"for v, _ in local\.loadtest_images : v => \{", lt_out) and \
+        re.search(r"tostring\(local\.loadtest_runtimes\[k\]\.memory_mib\) => r\.agent_runtime_arn if local\.loadtest_runtimes\[k\]\.version == v", lt_out), \
+        "loadtest_runtime_arns is version -> baseline MiB -> ARN"
     assert re.search(r"(?<!loadtest_)idle_timeout_s\s+= var\.sandbox_idle_timeout_s", root_portal) and \
         re.search(r"(?<!loadtest_)max_lifetime_s\s+= var\.sandbox_max_lifetime_s", root_portal)
     ok("gated on features.sandbox; the backend gets the Standard, Fast, baseline and load-test version maps, the baseline sizes and the same lifecycles")
@@ -357,15 +377,16 @@ def main() -> int:
         assert re.search(rf"for_each\s*=\s*{re.escape(src)}\s*$", hook, re.M), f"{name}: every {version} runtime gets its version set"
         assert f'triggers_replace = [each.value.agent_runtime_id, "{version}"]' in hook, f"{name} triggers on (id, {version})"
         assert re.search(rf"\$\{{each\.value\.agent_runtime_id\}} {version} --region", hook), f"{name} sets {version}"
-    for kind, res, size_var in (("baseline", base, "baseline_memory_mib"), ("loadtest", load, "loadtest_memory_mib")):
+    for kind, res, size_var in (("baseline", base, "var.baseline_memory_mib"),
+                                ("loadtest", load, "local.loadtest_runtimes[each.key].memory_mib")):
         res_name = f"sandbox_{kind}"
         hook = block(pv, f'resource "terraform_data" "platform_version_{kind}" {{')
         assert re.search(rf"for_each\s*=\s*aws_bedrockagentcore_agent_runtime\.{res_name}\s*$", hook, re.M), \
             f"every {kind} runtime gets V2 + its baseline"
-        assert re.search(rf"\$\{{each\.value\.agent_runtime_id\}} V2 --baseline-mib \$\{{var\.{size_var}\}} --region", hook), \
-            f"the {kind} hook sets V2 and its baseline (var.{size_var})"
+        assert re.search(rf"\$\{{each\.value\.agent_runtime_id\}} V2 --baseline-mib \$\{{{re.escape(size_var)}\}} --region", hook), \
+            f"the {kind} hook sets V2 and its baseline ({size_var})"
         trig = block(hook, "triggers_replace")
-        for needed in ("each.value.agent_runtime_id", '"V2"', f"var.{size_var}", "sha1(jsonencode("):
+        for needed in ("each.value.agent_runtime_id", '"V2"', size_var, "sha1(jsonencode("):
             assert needed in trig, f"the {kind} trigger must carry {needed}"
         for arg in ("description", "role_arn", "agent_runtime_artifact", "network_configuration", "protocol_configuration",
                     "lifecycle_configuration", "environment_variables"):
@@ -385,9 +406,15 @@ def main() -> int:
     images_mod = block(mod_vars, 'variable "images"')
     assert re.search(r"\bfast\s+= optional\(bool, false\)", images_mod) and "platform_version" not in images_mod
     assert re.search(r"\bbaseline\s+= optional\(bool, false\)", images_mod) and re.search(r"\bloadtest\s+= optional\(bool, false\)", images_mod)
-    for size_var in ("baseline_memory_mib", "loadtest_memory_mib"):
-        size = block(mod_vars, f'variable "{size_var}"')
-        assert f"contains([1024, 2048, 4096, 8192], var.{size_var})" in size, f"{size_var} is one of the four AgentCore configurations"
+    size = block(mod_vars, 'variable "baseline_memory_mib"')
+    assert "contains([1024, 2048, 4096, 8192], var.baseline_memory_mib)" in size, "baseline_memory_mib is one of the four AgentCore configurations"
+    sizes = block(mod_vars, 'variable "loadtest_memory_mibs"')
+    assert "type        = list(number)" in sizes
+    assert "length(var.loadtest_memory_mibs) > 0 && alltrue([for m in var.loadtest_memory_mibs : contains([1024, 2048, 4096, 8192], m)])" in sizes, \
+        "loadtest_memory_mibs: at least one, each one of the four AgentCore configurations"
+    assert "length(distinct(var.loadtest_memory_mibs)) == length(var.loadtest_memory_mibs)" in sizes, "loadtest_memory_mibs: no baseline twice"
+    root_sizes = block(variables, 'variable "sandbox_loadtest_memory_mibs"')
+    assert "default     = [1024, 2048, 4096, 8192]" in root_sizes, "every environment offers the four machine types by default"
     images_var = block(variables, 'variable "sandbox_images"')
     assert re.search(r"\bfast\s+= optional\(bool, false\)", images_var) and re.search(r"\bbaseline\s+= optional\(bool, false\)", images_var) \
         and re.search(r"\bloadtest\s+= optional\(bool, false\)", images_var)
@@ -396,7 +423,7 @@ def main() -> int:
     assert re.search(r"\bfast\s+= img\.fast\b", wiring) and re.search(r"\bbaseline\s+= img\.baseline\b", wiring) \
         and re.search(r"\bloadtest\s+= img\.loadtest\b", wiring)
     assert re.search(r"(?<!loadtest_)baseline_memory_mib\s+= var\.sandbox_baseline_memory_mib", wiring)
-    assert re.search(r"loadtest_memory_mib\s+= var\.sandbox_loadtest_memory_mib", wiring)
+    assert re.search(r"loadtest_memory_mibs\s+= var\.sandbox_loadtest_memory_mibs\b", wiring)
     assert re.search(r"platform_version_python\s+= var\.platform_version_python\s*$", wiring, re.M)
     assert "platform_version" not in block(mod, "locals {"), "no platform version but the pinned ones"
     outs = read("modules", "sandbox", "outputs.tf")
