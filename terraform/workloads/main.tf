@@ -121,19 +121,26 @@ module "sandbox" {
 
   images = {
     for v, img in var.sandbox_images : v => {
-      uri  = img.uri
-      tag  = img.uri != "" ? "" : coalesce(img.tag, var.sandbox_image_tag, var.image_tag)
-      fast = img.fast
+      uri      = img.uri
+      tag      = img.uri != "" ? "" : coalesce(img.tag, var.sandbox_image_tag, var.image_tag)
+      fast     = img.fast
+      baseline = img.baseline
+      loadtest = img.loadtest
     }
   }
-  repository_url      = local.facts.sandbox.repository_url
-  role_arn            = local.facts.sandbox.role_arn
-  security_group_id   = local.facts.sandbox.security_group_id
-  subnet_ids          = local.facts.sandbox.subnet_ids
-  idle_timeout_s      = var.sandbox_idle_timeout_s
-  max_lifetime_s      = var.sandbox_max_lifetime_s
-  log_retention_days  = var.runtime_log_retention_days
-  runtime_name_suffix = local.facts.runtime_suffix
+  baseline_memory_mib = var.sandbox_baseline_memory_mib
+  # the load-test runtimes: their own baseline and lifecycle
+  loadtest_memory_mib     = var.sandbox_loadtest_memory_mib
+  loadtest_idle_timeout_s = var.sandbox_loadtest_idle_timeout_s
+  loadtest_max_lifetime_s = var.sandbox_loadtest_max_lifetime_s
+  repository_url          = local.facts.sandbox.repository_url
+  role_arn                = local.facts.sandbox.role_arn
+  security_group_id       = local.facts.sandbox.security_group_id
+  subnet_ids              = local.facts.sandbox.subnet_ids
+  idle_timeout_s          = var.sandbox_idle_timeout_s
+  max_lifetime_s          = var.sandbox_max_lifetime_s
+  log_retention_days      = var.runtime_log_retention_days
+  runtime_name_suffix     = local.facts.runtime_suffix
 
   platform_version_python = var.platform_version_python
 }
@@ -183,11 +190,19 @@ module "portal" {
   # the MCP hub IAM entry's caller role; "" when this environment runs no hub demo
   mcp_hub_caller_role_arn = try(local.facts.mcp_hub.caller_role_arn, "")
   sandbox = {
-    versions        = local.run_sandbox ? module.sandbox[0].runtime_arns : {}
-    fast_versions   = local.run_sandbox ? module.sandbox[0].fast_runtime_arns : {}
-    default_version = var.sandbox_default_version
-    idle_timeout_s  = var.sandbox_idle_timeout_s
-    max_lifetime_s  = var.sandbox_max_lifetime_s
+    versions      = local.run_sandbox ? module.sandbox[0].runtime_arns : {}
+    fast_versions = local.run_sandbox ? module.sandbox[0].fast_runtime_arns : {}
+    # Fast Runtime with a committed baseline, and the baseline the backend shows
+    baseline_versions   = local.run_sandbox ? module.sandbox[0].baseline_runtime_arns : {}
+    baseline_memory_mib = var.sandbox_baseline_memory_mib
+    # load-test runtimes, their baseline and the lifecycle their rows get
+    loadtest_versions       = local.run_sandbox ? module.sandbox[0].loadtest_runtime_arns : {}
+    loadtest_memory_mib     = var.sandbox_loadtest_memory_mib
+    loadtest_idle_timeout_s = var.sandbox_loadtest_idle_timeout_s
+    loadtest_max_lifetime_s = var.sandbox_loadtest_max_lifetime_s
+    default_version         = var.sandbox_default_version
+    idle_timeout_s          = var.sandbox_idle_timeout_s
+    max_lifetime_s          = var.sandbox_max_lifetime_s
     service_callers = concat(
       var.sandbox_service_callers,
       [for n in var.sandbox_service_caller_role_names : "arn:aws:iam::${local.facts.account_id}:role/${n}"],

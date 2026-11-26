@@ -49,12 +49,18 @@ locals {
       PLATFORM_MCP_HUB_SECRET_PREFIX     = "agent-platform/mcp-hub${var.name_suffix}"
       PLATFORM_MCP_HUB_CALLER_ROLE_ARN   = var.mcp_hub_caller_role_arn
       # one-shot code sandboxes (empty versions = feature off, APIs answer 503)
-      PLATFORM_SANDBOX_VERSIONS        = jsonencode(var.sandbox.versions)
-      PLATFORM_SANDBOX_FAST_VERSIONS   = jsonencode(var.sandbox.fast_versions)
-      PLATFORM_SANDBOX_DEFAULT_VERSION = var.sandbox.default_version
-      PLATFORM_SANDBOX_IDLE_TIMEOUT_S  = tostring(var.sandbox.idle_timeout_s)
-      PLATFORM_SANDBOX_MAX_LIFETIME_S  = tostring(var.sandbox.max_lifetime_s)
-      PLATFORM_SANDBOX_SERVICE_CALLERS = join(",", var.sandbox.service_callers)
+      PLATFORM_SANDBOX_VERSIONS                = jsonencode(var.sandbox.versions)
+      PLATFORM_SANDBOX_FAST_VERSIONS           = jsonencode(var.sandbox.fast_versions)
+      PLATFORM_SANDBOX_BASELINE_VERSIONS       = jsonencode(var.sandbox.baseline_versions)
+      PLATFORM_SANDBOX_BASELINE_MEMORY_MIB     = tostring(var.sandbox.baseline_memory_mib)
+      PLATFORM_SANDBOX_LOADTEST_VERSIONS       = jsonencode(var.sandbox.loadtest_versions)
+      PLATFORM_SANDBOX_LOADTEST_MEMORY_MIB     = tostring(var.sandbox.loadtest_memory_mib)
+      PLATFORM_SANDBOX_LOADTEST_IDLE_TIMEOUT_S = tostring(var.sandbox.loadtest_idle_timeout_s)
+      PLATFORM_SANDBOX_LOADTEST_MAX_LIFETIME_S = tostring(var.sandbox.loadtest_max_lifetime_s)
+      PLATFORM_SANDBOX_DEFAULT_VERSION         = var.sandbox.default_version
+      PLATFORM_SANDBOX_IDLE_TIMEOUT_S          = tostring(var.sandbox.idle_timeout_s)
+      PLATFORM_SANDBOX_MAX_LIFETIME_S          = tostring(var.sandbox.max_lifetime_s)
+      PLATFORM_SANDBOX_SERVICE_CALLERS         = join(",", var.sandbox.service_callers)
       # the schedule-runner fires pipeline schedules through the service entry
       # (backend/app/api/pipelines.py), signed with its own role
       PLATFORM_PIPELINE_SERVICE_CALLERS = var.portal.schedule_runner_role_arn

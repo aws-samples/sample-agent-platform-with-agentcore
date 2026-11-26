@@ -22,6 +22,21 @@ script fails closed:
      any call
   7. a botocore that does not know platformVersion exits 2 before any
      update, so an old interpreter cannot silently send a V1 replay
+  8. --baseline-mib sets resourceConfigurations on top of the same replay;
+     without it no resourceConfigurations is added to a runtime that had none
+  9. a V2 runtime whose baseline was dropped (a provider update replaces
+     resourceConfigurations) is updated again; one already on the requested
+     baseline is not; a different baseline is replaced
+ 10. an update that ends READY but without the baseline exits non-zero
+ 11. --baseline-mib off the four sizes, or with V1, is refused before any call
+ 12. a botocore that does not know resourceConfigurations exits 2 before any
+     call when a baseline is asked for (and is fine without one)
+ 13. a runtime settled in *_FAILED that already reports the requested
+     version (and baseline) is refused, not reported done: Terraform must
+     not record a failed runtime as configured
+ 14. an update that ends READY on another platform version than the one
+     asked for exits non-zero, with or without --baseline-mib (a V2 request
+     that comes back V1, or reports no platformVersion, is not done)
 
 The control client is a fake behind boto3.client; no network is used.
 
@@ -48,6 +63,7 @@ UPDATE_MEMBERS = [
     "lifecycleConfiguration", "metadataConfiguration", "environmentVariables",
     "filesystemConfigurations", "clientToken", "platformVersion",
 ]
+BASELINE_MEMBERS = UPDATE_MEMBERS + ["resourceConfigurations"]
 
 SANDBOX = {
     "agentRuntimeId": "sandbox_runtime_v2_staging-AAAAAAAAAA",
@@ -198,6 +214,77 @@ def main() -> int:
     assert code == 2 and not fake.updates and fake.gets == 0, f"old botocore must exit 2 before any call: {code}"
     assert "1.43.98" in log
     ok("a botocore without platformVersion exits 2 before any call")
+
+    # 8
+    fast = dict(copy.deepcopy(SANDBOX), platformVersion="V2")
+    with_base = dict(copy.deepcopy(fast), agentRuntimeVersion="2", resourceConfigurations=[{"minimumMemoryInMiB": 8192}])
+    fake = FakeControl([SANDBOX], after_update=with_base, members=BASELINE_MEMBERS)
+    code, log = run(fake, rid, "V2", "--baseline-mib", "8192")
+    assert code == 0 and len(fake.updates) == 1, f"V1 -> V2 with a baseline must succeed in one update: {code} {log}"
+    req = fake.updates[0]
+    assert req["resourceConfigurations"] == [{"minimumMemoryInMiB": 8192}] and req["platformVersion"] == "V2"
+    for key in ("roleArn", "agentRuntimeArtifact", "protocolConfiguration", "lifecycleConfiguration", "environmentVariables", "description"):
+        assert req.get(key) == SANDBOX[key], f"{key} changed in the baseline replay"
+    assert set(req) - {"platformVersion", "resourceConfigurations"} <= set(SANDBOX)
+    fake = FakeControl([SANDBOX], after_update=fast, members=BASELINE_MEMBERS)
+    code, _ = run(fake, rid, "V2")
+    assert code == 0 and "resourceConfigurations" not in fake.updates[0], "no baseline asked: none may be added"
+    ok("--baseline-mib adds resourceConfigurations to the same replay; without it none is added")
+
+    # 9
+    fake = FakeControl([fast], after_update=with_base, members=BASELINE_MEMBERS)
+    code, log = run(fake, rid, "V2", "--baseline-mib", "8192")
+    assert code == 0 and len(fake.updates) == 1, f"a V2 runtime that lost its baseline must be updated again: {log}"
+    fake = FakeControl([with_base], members=BASELINE_MEMBERS)
+    code, _ = run(fake, rid, "V2", "--baseline-mib", "8192")
+    assert code == 0 and not fake.updates, "a runtime already on V2 with the requested baseline must not be updated"
+    four = dict(copy.deepcopy(with_base), resourceConfigurations=[{"minimumMemoryInMiB": 4096}])
+    fake = FakeControl([four], after_update=with_base, members=BASELINE_MEMBERS)
+    code, _ = run(fake, rid, "V2", "--baseline-mib", "8192")
+    assert code == 0 and fake.updates[0]["resourceConfigurations"] == [{"minimumMemoryInMiB": 8192}], "a different baseline is replaced"
+    ok("a dropped or different baseline is re-applied; a matching one is left alone")
+
+    # 10
+    fake = FakeControl([fast], after_update=dict(copy.deepcopy(fast), agentRuntimeVersion="2"), members=BASELINE_MEMBERS)
+    code, log = run(fake, rid, "V2", "--baseline-mib", "8192")
+    assert len(fake.updates) == 1 and code != 0 and "baseline" in log, f"READY without the baseline must fail: {code} {log}"
+    ok("an update that ends READY without the baseline exits non-zero")
+
+    # 11
+    for bad in (["V2", "--baseline-mib", "3000"], ["V2", "--baseline-mib", "8192x"], ["V1", "--baseline-mib", "8192"]):
+        fake = FakeControl([SANDBOX], members=BASELINE_MEMBERS)
+        with patch.object(SPV.boto3, "client", lambda *a, **k: (_ for _ in ()).throw(AssertionError("client built for a bad baseline"))):
+            code, _ = run(fake, rid, *bad)
+        assert code not in (0, None) and not fake.updates and fake.gets == 0, f"{bad} must be refused before any call"
+    ok("a baseline off the four sizes, or on V1, is refused before any call")
+
+    # 12
+    fake = FakeControl([SANDBOX], members=UPDATE_MEMBERS)
+    code, log = run(fake, rid, "V2", "--baseline-mib", "8192")
+    assert code == 2 and not fake.updates and fake.gets == 0 and "1.44.0" in log, f"old botocore + baseline must exit 2: {code} {log}"
+    ok("a botocore without resourceConfigurations exits 2 before any call when a baseline is asked for")
+
+    # 13
+    for state, argv in ((dict(copy.deepcopy(with_base), status="UPDATE_FAILED"), ["V2", "--baseline-mib", "8192"]),
+                        (dict(copy.deepcopy(fast), status="UPDATE_FAILED"), ["V2"]),
+                        (dict(copy.deepcopy(SANDBOX), status="CREATE_FAILED"), ["V1"])):
+        fake = FakeControl([state], members=BASELINE_MEMBERS)
+        code, log = run(fake, rid, *argv)
+        assert code not in (0, None) and not fake.updates, f"a {state['status']} runtime already on {argv} must not exit 0: {code} {log}"
+    ok("a *_FAILED runtime that already reports the requested version / baseline is refused, not reported done")
+
+    # 14
+    for after, argv in ((dict(copy.deepcopy(SANDBOX), agentRuntimeVersion="2"), ["V2"]),
+                        (dict(copy.deepcopy(SANDBOX), platformVersion="V1", agentRuntimeVersion="2"), ["V2"]),
+                        (dict(copy.deepcopy(SANDBOX), platformVersion="V1", agentRuntimeVersion="2",
+                              resourceConfigurations=[{"minimumMemoryInMiB": 8192}]), ["V2", "--baseline-mib", "8192"]),
+                        (dict(copy.deepcopy(SANDBOX), platformVersion="V2", agentRuntimeVersion="2"), ["V1"])):
+        start = dict(copy.deepcopy(SANDBOX), platformVersion="V2") if argv == ["V1"] else SANDBOX
+        fake = FakeControl([start], after_update=after, members=BASELINE_MEMBERS)
+        code, log = run(fake, rid, *argv)
+        assert len(fake.updates) == 1 and code not in (0, None) and "platform" in log, \
+            f"an update to {argv} that ends READY on {after.get('platformVersion') or 'V1'} must fail: {code} {log}"
+    ok("an update that ends READY on another platform version exits non-zero, with or without a baseline")
 
     print("set_platform_version: all assertions passed")
     return 0

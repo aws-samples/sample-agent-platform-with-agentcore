@@ -179,10 +179,12 @@ TOOLS = [
         "description": "Start a fresh one-shot sandbox (a dedicated AgentCore microVM running the sandbox image). "
                        "Returns its sandbox_id. Stop it with sandbox_stop when done.",
         "inputSchema": _schema({"version": {"type": "string", "description": "image version; empty = default"},
-                                "runtime": {"type": "string", "enum": ["standard", "fast"],
+                                "runtime": {"type": "string", "enum": ["standard", "fast", "baseline"],
                         "description": "standard (default): boots from the image, reads files at full speed. "
                                        "fast: ~2 s to create at any concurrency; the first read of each image file "
-                                       "is slow, except python commands, which run preloaded"}}),
+                                       "is slow, except python commands, which run preloaded. "
+                                       "baseline (where deployed): starts like fast on a committed baseline, "
+                                       "billed for the sandbox's whole life, idle or not"}}),
     },
     {
         "name": "sandbox_status",
@@ -254,10 +256,12 @@ TOOLS = [
                        "conversation's own latency.",
         "inputSchema": _schema({
             "version": {"type": "string"},
-            "runtime": {"type": "string", "enum": ["standard", "fast"],
+            "runtime": {"type": "string", "enum": ["standard", "fast", "baseline"],
                         "description": "standard (default): boots from the image, reads files at full speed. "
                                        "fast: ~2 s to create at any concurrency; the first read of each image file "
-                                       "is slow, except python commands, which run preloaded"},
+                                       "is slow, except python commands, which run preloaded. "
+                                       "baseline (where deployed): starts like fast on a committed baseline, "
+                                       "billed for the sandbox's whole life, idle or not"},
             "files": {"type": "object", "additionalProperties": {"type": "string"},
                       "description": "path -> text content"},
             "command": {"type": "string", "description": "default: python3 main.py"},

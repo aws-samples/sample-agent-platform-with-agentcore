@@ -55,10 +55,30 @@ class Settings(BaseSettings):
     # sandbox_default_qualifier. JSON {"<version>": "<runtime ARN>"} of the
     # Standard Runtimes (AgentCore platform V1); sandbox_fast_versions, the
     # same shape, of the Fast Runtimes (platform V2) of the versions that
-    # have one. sandbox_runtime_arn alone is a one-version deployment
-    # ("default"). Neither set = the feature is not deployed (APIs answer 503).
+    # have one; sandbox_baseline_versions, the same shape again, of the Fast
+    # Runtimes with a committed baseline (platform V2 + resourceConfigurations
+    # of sandbox_baseline_memory_mib, billed for each sandbox's whole life).
+    # sandbox_runtime_arn alone is a one-version deployment ("default").
+    # Neither set = the feature is not deployed (APIs answer 503).
     sandbox_versions: dict[str, str] = {}
     sandbox_fast_versions: dict[str, str] = {}
+    sandbox_baseline_versions: dict[str, str] = {}
+    sandbox_baseline_memory_mib: int = 0
+    # Load-test Runtime by version (a baseline Runtime with its own baseline
+    # and an up to 8-hour lifecycle, for the portal's administrator load
+    # tests); {} = no load tests here. The lifecycle must match the runtime's
+    # (the rows of a load test are stamped with it, and the reaper holds them
+    # to it).
+    sandbox_loadtest_versions: dict[str, str] = {}
+    sandbox_loadtest_memory_mib: int = 0
+    sandbox_loadtest_idle_timeout_s: int = 900
+    sandbox_loadtest_max_lifetime_s: int = 28800
+    # most sandboxes one load test may start (the account allows 2500 active
+    # sessions; the service never exceeds MAX_MEMBERS, 400, which keeps the
+    # test's ledger item within DynamoDB's 400 KB), and how many it boots at
+    # once (new sessions: 50 a second)
+    sandbox_loadtest_max_count: int = 200
+    sandbox_loadtest_launch_parallel: int = 10
     sandbox_runtime_arn: str = ""
     sandbox_default_version: str = ""
     sandbox_default_qualifier: str = "DEFAULT"
