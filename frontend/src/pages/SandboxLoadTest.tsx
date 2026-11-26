@@ -2,11 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import { Gauge, Square } from 'lucide-react'
 import { api, type SandboxLoadTest, type SandboxLoadTestConfig } from '@/services/api'
 
-// AgentCore Runtime list prices in ap-northeast-1 (USD): platform V2 committed
-// baseline, and consumption for what a sandbox uses above it. How a burst
-// above the baseline is billed is not spelled out in the AWS pricing page, so
-// the upper bound assumes the consumption rate; the bill is the reference.
-const PRICE = { baseVcpuH: 0.0997, baseGbH: 0.0132, useVcpuH: 0.1276, useGbH: 0.0169 }
+// AgentCore Runtime committed-baseline rates in ap-northeast-1 (USD), as
+// billed for the first production load test (2026-11-25): a sandbox is
+// billed for what it uses or for the baseline, whichever is more, and what it
+// bursts to above the baseline is billed at the same committed rate.
+const PRICE = { vcpuH: 0.0997, gbH: 0.0132 }
+// metered memory above what the stress workers hold (runtime and image);
+// 31.6 GB was metered per sandbox holding 30 GB
+const MEM_OVERHEAD_GB = 1.6
 
 const fmtUsd = (v: number) => `$${v < 10 ? v.toFixed(2) : Math.round(v).toLocaleString()}`
 const fmtDur = (s: number) => {
@@ -18,13 +21,12 @@ const fmtDur = (s: number) => {
 function estimate(cfg: SandboxLoadTestConfig, count: number, durationS: number, cpu: number, memGb: number, custom: boolean) {
   const hours = (count * durationS) / 3600
   const baseGb = cfg.memory_mib / 1024
-  const perHourBase = cfg.vcpu_baseline * PRICE.baseVcpuH + baseGb * PRICE.baseGbH
+  const perHourBase = cfg.vcpu_baseline * PRICE.vcpuH + baseGb * PRICE.gbH
   // a custom command may use everything the runtime bursts to
   const useCpu = custom ? cfg.max_vcpu : cpu
-  const useGb = custom ? cfg.max_memory_gb : memGb + 2
-  const perHourBurst =
-    Math.max(0, useCpu - cfg.vcpu_baseline) * PRICE.useVcpuH + Math.max(0, useGb - baseGb) * PRICE.useGbH
-  return { low: hours * perHourBase, high: hours * (perHourBase + perHourBurst), perHourBase }
+  const useGb = custom ? cfg.max_memory_gb : Math.min(cfg.max_memory_gb, memGb + MEM_OVERHEAD_GB)
+  const perHourLoad = Math.max(cfg.vcpu_baseline, useCpu) * PRICE.vcpuH + Math.max(baseGb, useGb) * PRICE.gbH
+  return { low: hours * perHourBase, high: hours * perHourLoad, perHourBase, perHourLoad }
 }
 
 const STATE_STYLE: Record<string, string> = {
@@ -214,10 +216,10 @@ export default function LoadTest({ config, enabled }: { config: SandboxLoadTestC
             Estimated cost: {fmtUsd(est.low)} to {fmtUsd(est.high)} ({count} sandboxes x {fmtDur(durationS)})
           </p>
           <p className="mt-1">
-            Each sandbox is billed for the {config.memory_mib / 1024} GB / {config.vcpu_baseline} vCPU baseline from start to end,
-            idle or not ({fmtUsd(est.perHourBase)} per sandbox-hour at the committed rate). The upper figure adds what the load uses
-            above the baseline at the consumption rate; how a burst is billed is not documented, so check the bill after the first
-            run.
+            Each sandbox is billed from start to end for what it uses or for the {config.memory_mib / 1024} GB /{' '}
+            {config.vcpu_baseline} vCPU baseline, whichever is more, all at the committed rate: {fmtUsd(est.perHourBase)} per
+            sandbox-hour idle, {fmtUsd(est.perHourLoad)} per sandbox-hour at this load. The lower figure is the baseline alone;
+            the upper one is the load running for the whole duration.
           </p>
         </div>
         {!confirming ? (

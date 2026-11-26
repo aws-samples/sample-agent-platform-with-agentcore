@@ -9,8 +9,9 @@ The full rationale is in the comments of `main.tf` and the module's other files.
 
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
+| addon\_versions | Exact version of each EKS add-on (vpc-cni, coredns, kube-proxy), as `aws eks describe-addon-versions --kubernetes-version <minor>` lists them, e.g. v1.23.3-eksbuild.1. Pinned so that an add-on changes only when this value does. | <pre>object({<br/>    vpc_cni    = string<br/>    coredns    = string<br/>    kube_proxy = string<br/>  })</pre> | n/a | yes |
 | fluent\_bit\_chart\_version | aws-for-fluent-bit Helm chart version; it ships container logs to CloudWatch under log\_group\_prefix. | `string` | n/a | yes |
-| kubernetes\_version | Kubernetes minor version for the cluster; the vpc-cni, coredns and kube-proxy add-on versions are resolved against it. | `string` | n/a | yes |
+| kubernetes\_version | Kubernetes minor version for the cluster. The add-on versions in addon\_versions must be builds published for this minor: change both together. | `string` | n/a | yes |
 | lbc\_chart\_version | aws-load-balancer-controller Helm chart version. Its TargetGroupBinding registers pods into the target groups Terraform creates. | `string` | n/a | yes |
 | node\_count | Desired node count; also the minimum. One node per private subnet keeps the replicas of each Deployment in different AZs. | `number` | n/a | yes |
 | node\_instance\_type | Graviton (arm64) instance type that supports ENI trunking — security groups for Pods need it. No `t` family. | `string` | n/a | yes |

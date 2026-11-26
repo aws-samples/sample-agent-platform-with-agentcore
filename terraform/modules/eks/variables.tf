@@ -9,8 +9,21 @@ variable "private_subnet_ids" {
 }
 
 variable "kubernetes_version" {
-  description = "Kubernetes minor version for the cluster; the vpc-cni, coredns and kube-proxy add-on versions are resolved against it."
+  description = "Kubernetes minor version for the cluster. The add-on versions in addon_versions must be builds published for this minor: change both together."
   type        = string
+}
+
+variable "addon_versions" {
+  description = "Exact version of each EKS add-on (vpc-cni, coredns, kube-proxy), as `aws eks describe-addon-versions --kubernetes-version <minor>` lists them, e.g. v1.23.3-eksbuild.1. Pinned so that an add-on changes only when this value does."
+  type = object({
+    vpc_cni    = string
+    coredns    = string
+    kube_proxy = string
+  })
+  validation {
+    condition     = alltrue([for v in values(var.addon_versions) : can(regex("^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$", v))])
+    error_message = "addon_versions must be exact add-on builds (vMAJOR.MINOR.PATCH-eksbuild.N): no empty value, no 'latest', no version without its build."
+  }
 }
 
 variable "node_instance_type" {

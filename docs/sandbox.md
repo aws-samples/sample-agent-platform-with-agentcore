@@ -273,8 +273,8 @@ Fast Runtime, image rule included, and differs in billing only:
 
 | | Fast Runtime | Fast Runtime with a baseline |
 |---|---|---|
-| Billed | the vCPU and memory a sandbox actually uses, per second | the baseline from the sandbox's start to its end, idle or not, plus any use above it, per second |
-| Rate | consumption | committed baseline (lower) |
+| Billed | the vCPU and memory a sandbox actually uses, per second | from the sandbox's start to its end, idle or not, the baseline or what it uses, whichever is more, per second |
+| Rate (ap-northeast-1, per vCPU-hour / GB-hour) | consumption: $0.1276 / $0.0169 | committed baseline, also for a burst above it: $0.0997 / $0.0132 |
 | Size | up to 2 vCPU / 8 GB | baseline `sandbox_baseline_memory_mib` (1024, 2048, 4096 or 8192 MiB, 1 vCPU per 4 GB; default 8192), bursting to 4x it |
 
 The provider has no argument for the baseline, so
@@ -324,13 +324,17 @@ active sessions) and never more than 400: all of a load test's sandboxes are
 kept in its one ledger item, which DynamoDB holds to 400 KB, so each keeps
 only the last 200 bytes of its output.
 
-Every sandbox of a load test is billed for the baseline from start to end,
-idle or not: at the ap-northeast-1 list prices, 2 x $0.0997 + 8 x $0.0132 =
-$0.305 per sandbox-hour for the 8192 MiB baseline, so 50 sandboxes for 8
-hours cost about $122 before any burst. What a sandbox uses above the
-baseline is billed on top; the AWS pricing page does not say at which rate,
-so the page's upper estimate assumes the consumption rate and the first
-bill is the reference.
+Every sandbox of a load test is billed from start to end for the baseline or
+for what it uses, whichever is more, and all of it at the committed-baseline
+rate: the bill does not split a burst out or charge it the consumption rate.
+At the ap-northeast-1 rates an idle sandbox on the 8192 MiB baseline costs
+2 x $0.0997 + 8 x $0.0132 = $0.305 an hour. The first production load test
+(2026-11-25: 50 sandboxes, 8 vCPU and 30 GB of stress each, 1.9 hours) was
+metered at 8 vCPU and 31.6 GB per sandbox, the runtime and image adding about
+1.6 GB to what the workers held, and billed $114, about $1.22 per
+sandbox-hour; 50 sandboxes at that load for 8 hours cost about $490. The
+page's estimate runs from the baseline alone to the chosen load for the whole
+duration.
 
 ## Deploying it
 

@@ -332,9 +332,27 @@ variable "async_artifact_prefixes" {
 # not installed.
 
 variable "eks_kubernetes_version" {
-  description = "Kubernetes minor version for the cluster and its add-ons."
+  description = "Kubernetes minor version for the cluster. eks_addon_versions must be builds published for this minor: change both together."
   type        = string
   default     = "1.36"
+}
+
+variable "eks_addon_versions" {
+  description = "Exact version of each EKS add-on, pinned: an add-on is upgraded by changing its version here, never by a plan picking up the newest build. List what a minor offers with `aws eks describe-addon-versions --kubernetes-version <minor>`. Only the state that creates the cluster uses it (production; staging joins that cluster)."
+  type = object({
+    vpc_cni    = string
+    coredns    = string
+    kube_proxy = string
+  })
+  default = {
+    vpc_cni    = "v1.23.3-eksbuild.1"
+    coredns    = "v1.14.7-eksbuild.35"
+    kube_proxy = "v1.36.0-eksbuild.65"
+  }
+  validation {
+    condition     = alltrue([for v in values(var.eks_addon_versions) : can(regex("^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$", v))])
+    error_message = "eks_addon_versions must be exact add-on builds (vMAJOR.MINOR.PATCH-eksbuild.N): no empty value, no 'latest', no version without its build."
+  }
 }
 
 variable "eks_node_instance_type" {
