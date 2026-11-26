@@ -53,8 +53,7 @@ locals {
       PLATFORM_SANDBOX_FAST_VERSIONS           = jsonencode(var.sandbox.fast_versions)
       PLATFORM_SANDBOX_BASELINE_VERSIONS       = jsonencode(var.sandbox.baseline_versions)
       PLATFORM_SANDBOX_BASELINE_MEMORY_MIB     = tostring(var.sandbox.baseline_memory_mib)
-      PLATFORM_SANDBOX_LOADTEST_VERSIONS       = jsonencode(var.sandbox.loadtest_versions)
-      PLATFORM_SANDBOX_LOADTEST_MEMORY_MIB     = tostring(var.sandbox.loadtest_memory_mib)
+      PLATFORM_SANDBOX_LOADTEST_RUNTIMES       = jsonencode(var.sandbox.loadtest_runtimes)
       PLATFORM_SANDBOX_LOADTEST_IDLE_TIMEOUT_S = tostring(var.sandbox.loadtest_idle_timeout_s)
       PLATFORM_SANDBOX_LOADTEST_MAX_LIFETIME_S = tostring(var.sandbox.loadtest_max_lifetime_s)
       PLATFORM_SANDBOX_DEFAULT_VERSION         = var.sandbox.default_version

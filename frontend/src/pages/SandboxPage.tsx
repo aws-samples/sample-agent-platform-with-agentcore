@@ -15,7 +15,7 @@ const TABS: TabDef<SbxTab>[] = [
   { id: 'access', label: 'How to call it' },
 ]
 // the Load test tab only where a load-test Runtime is deployed
-const hasLoadTest = (config: SandboxConfig | null) => Object.keys(config?.loadtest?.versions ?? {}).length > 0
+const hasLoadTest = (config: SandboxConfig | null) => (config?.loadtest?.sizes ?? []).length > 0
 
 const SAMPLE_MAIN = `import json, os, platform, sys
 

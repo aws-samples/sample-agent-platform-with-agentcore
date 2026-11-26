@@ -129,8 +129,8 @@ module "sandbox" {
     }
   }
   baseline_memory_mib = var.sandbox_baseline_memory_mib
-  # the load-test runtimes: their own baseline and lifecycle
-  loadtest_memory_mib     = var.sandbox_loadtest_memory_mib
+  # the load-test runtimes: one per baseline, with their own lifecycle
+  loadtest_memory_mibs    = var.sandbox_loadtest_memory_mibs
   loadtest_idle_timeout_s = var.sandbox_loadtest_idle_timeout_s
   loadtest_max_lifetime_s = var.sandbox_loadtest_max_lifetime_s
   repository_url          = local.facts.sandbox.repository_url
@@ -195,9 +195,8 @@ module "portal" {
     # Fast Runtime with a committed baseline, and the baseline the backend shows
     baseline_versions   = local.run_sandbox ? module.sandbox[0].baseline_runtime_arns : {}
     baseline_memory_mib = var.sandbox_baseline_memory_mib
-    # load-test runtimes, their baseline and the lifecycle their rows get
-    loadtest_versions       = local.run_sandbox ? module.sandbox[0].loadtest_runtime_arns : {}
-    loadtest_memory_mib     = var.sandbox_loadtest_memory_mib
+    # load-test runtimes (by version, then baseline) and the lifecycle their rows get
+    loadtest_runtimes       = local.run_sandbox ? module.sandbox[0].loadtest_runtime_arns : {}
     loadtest_idle_timeout_s = var.sandbox_loadtest_idle_timeout_s
     loadtest_max_lifetime_s = var.sandbox_loadtest_max_lifetime_s
     default_version         = var.sandbox_default_version

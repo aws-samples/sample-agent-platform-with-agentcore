@@ -156,9 +156,9 @@ def portal_reap(user: str = Depends(require_admin)):
 @portal.post("/loadtests")
 def portal_loadtest_submit(req: SandboxLoadTestRequest, user: str = Depends(require_admin)):
     sub = _call(loadtest_service.submit, owner=str(user), version=req.version, count=req.count, duration_s=req.duration_s,
-                cpu=req.cpu, memory_gb=req.memory_gb, command=req.command)
+                cpu=req.cpu, memory_gb=req.memory_gb, command=req.command, memory_mib=req.memory_mib)
     audit_service.record(str(user), "sandbox.loadtest", f"loadtest:{sub['loadtest_id']}",
-                         f"{req.version}:{req.count}x{req.duration_s}s")
+                         f"{req.version}:{sub['memory_mib']}MiB:{req.count}x{req.duration_s}s")
     return sub
 
 

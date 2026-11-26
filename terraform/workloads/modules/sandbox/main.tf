@@ -19,9 +19,9 @@
 # platform_version.tf): it starts like Fast, but every session is billed for
 # baseline_memory_mib (and 1 vCPU per 4 GB) from start to end, idle or not,
 # at the lower committed-baseline rate, and can burst to 4x. The caller picks
-# per sandbox. A version with loadtest = true also gets a load-test runtime:
-# the baseline runtime's shape with its own baseline (loadtest_memory_mib)
-# and its own, longer lifecycle (up to AgentCore's 8 hours for a microVM),
+# per sandbox. A version with loadtest = true also gets a load-test runtime
+# per baseline in loadtest_memory_mibs (the portal's machine types): the
+# baseline runtime's shape with that baseline and its own, longer lifecycle (up to AgentCore's 8 hours for a microVM),
 # used only by the portal's administrator load tests, so ordinary sandboxes
 # keep the short lifecycle. The Fast Runtime
 # sets CONTROL_FORKSERVER, so the kernel imports its preload before the
@@ -29,7 +29,7 @@
 # 0.5 s instead of 1-27 s); an image must also draw per-sandbox values per
 # request, never at start-up, as a snapshot shares them.
 #
-# Names are sandbox_runtime_v<N>[_fast|_baseline|_loadtest]<suffix>: like every platform runtime the
+# Names are sandbox_runtime_v<N>[_fast|_baseline|_loadtest[_<G>g]]<suffix>: like every platform runtime the
 # environment suffix comes last (sandbox_runtime_v1_staging), because the CI
 # roles separate the environments on "*_staging-*" (the AgentCore id follows
 # the name). A suffix anywhere else would put a staging runtime inside
@@ -52,9 +52,19 @@ locals {
     for v, _ in local.baseline_images : v => "sandbox_runtime_${v}_baseline${var.runtime_name_suffix}"
   }
   loadtest_images = { for v, img in var.images : v => img if img.loadtest }
-  loadtest_runtime_names = {
-    for v, _ in local.loadtest_images : v => "sandbox_runtime_${v}_loadtest${var.runtime_name_suffix}"
-  }
+  # One load-test runtime per version and baseline. The 8192 MiB one keeps
+  # the key (the version) and name it had before there were others, so
+  # adding the smaller ones recreates nothing; the others are
+  # <version>_<G>g, named sandbox_runtime_<version>_loadtest_<G>g<suffix>.
+  loadtest_runtimes = merge([
+    for v, _ in local.loadtest_images : {
+      for m in var.loadtest_memory_mibs : (m == 8192 ? v : "${v}_${floor(m / 1024)}g") => {
+        version    = v
+        memory_mib = m
+        name       = "sandbox_runtime_${v}_loadtest${m == 8192 ? "" : "_${floor(m / 1024)}g"}${var.runtime_name_suffix}"
+      }
+    }
+  ]...)
   image_uri = {
     for v, img in var.images : v => img.uri != "" ? img.uri : "${var.repository_url}:${img.tag}"
   }
@@ -211,23 +221,23 @@ resource "aws_bedrockagentcore_agent_runtime" "sandbox_baseline" {
   }
 }
 
-# Load-test runtime of each version with loadtest = true: the baseline
-# runtime's image, network and environment with its own baseline and its
-# own lifecycle (loadtest_idle_timeout_s / loadtest_max_lifetime_s, up to
+# Load-test runtimes of each version with loadtest = true, one per baseline
+# in loadtest_memory_mibs: the baseline runtime's image, network and
+# environment with that baseline and their own lifecycle (loadtest_idle_timeout_s / loadtest_max_lifetime_s, up to
 # AgentCore's 8 hours for a microVM). Only the portal's administrator load
 # tests use it (backend sandbox_loadtest_service); the backend stamps the
 # same lifecycle on its rows, so the reaper agrees with AgentCore.
 resource "aws_bedrockagentcore_agent_runtime" "sandbox_loadtest" {
-  for_each = local.loadtest_images
+  for_each = local.loadtest_runtimes
 
-  agent_runtime_name = local.loadtest_runtime_names[each.key]
-  description        = "Load-test sandbox, image version ${each.key}, Fast Runtime with a committed baseline and a lifetime of up to ${var.loadtest_max_lifetime_s} s: started by an administrator load test, stopped when it ends"
+  agent_runtime_name = each.value.name
+  description        = "Load-test sandbox, image version ${each.value.version}, Fast Runtime with a ${each.value.memory_mib} MiB committed baseline and a lifetime of up to ${var.loadtest_max_lifetime_s} s: started by an administrator load test, stopped when it ends"
   role_arn           = var.role_arn
 
   lifecycle {
     precondition {
-      condition     = length(local.loadtest_runtime_names[each.key]) <= 48
-      error_message = "runtime name ${local.loadtest_runtime_names[each.key]} exceeds AgentCore's 48 characters."
+      condition     = length(each.value.name) <= 48
+      error_message = "runtime name ${each.value.name} exceeds AgentCore's 48 characters."
     }
     precondition {
       condition     = var.loadtest_idle_timeout_s <= var.loadtest_max_lifetime_s
@@ -237,7 +247,7 @@ resource "aws_bedrockagentcore_agent_runtime" "sandbox_loadtest" {
 
   agent_runtime_artifact {
     container_configuration {
-      container_uri = local.image_uri[each.key]
+      container_uri = local.image_uri[each.value.version]
     }
   }
 

@@ -117,6 +117,9 @@ class SandboxError(Exception):
 # tests (sandbox_loadtest_service) reach it, through create(loadtest=True); it
 # is not a kind a caller can name, so no other path gets its long life.
 STANDARD, FAST, BASELINE, LOADTEST = "standard", "fast", "baseline", "loadtest"
+# the committed baselines AgentCore offers (minimumMemoryInMiB; vCPU follows,
+# 1 per 4096 MiB): a load-test Runtime has one of them
+LOADTEST_SIZES_MIB = (1024, 2048, 4096, 8192)
 PLATFORM_VERSION = {STANDARD: "V1", FAST: "V2", BASELINE: "V2", LOADTEST: "V2"}
 # AgentCore's own names, accepted for the kinds (a caller following the AWS
 # docs sends V1 / V2, and V2 means the plain Fast Runtime); the stored and
@@ -212,10 +215,20 @@ class SandboxService:
             return {}
         return {"memory_mib": mib, "vcpu": mib / 4096}
 
-    def loadtest_versions(self) -> dict[str, str]:
-        """Load-test Runtime by image version, for the offered versions that have one."""
+    def loadtest_runtimes(self) -> dict[int, dict[str, str]]:
+        """Load-test Runtime by committed baseline (MiB, smallest first), then
+        image version, for the offered versions that have one. A baseline
+        AgentCore does not offer is dropped, never guessed at."""
         offered = self.versions()
-        return {v: arn for v, arn in (settings.sandbox_loadtest_versions or {}).items() if v in offered and arn}
+        out: dict[int, dict[str, str]] = {}
+        for version, by_size in (settings.sandbox_loadtest_runtimes or {}).items():
+            if version not in offered or not isinstance(by_size, dict):
+                continue
+            for mib, arn in by_size.items():
+                size = int(mib) if str(mib).isdigit() else 0
+                if arn and size in LOADTEST_SIZES_MIB:
+                    out.setdefault(size, {})[version] = arn
+        return dict(sorted(out.items()))
 
     def runtimes(self, version: str) -> list[str]:
         """Runtime kinds an offered image version runs on: Standard always."""
@@ -226,19 +239,23 @@ class SandboxService:
             kinds.append(BASELINE)
         return kinds
 
-    def _target(self, version: str, runtime: str = "", *, loadtest: bool = False) -> tuple[str, str, str, str]:
+    def _target(self, version: str, runtime: str = "", *, loadtest: bool = False,
+                loadtest_mib: int = 0) -> tuple[str, str, str, str]:
         """(version, runtime kind, runtime ARN, qualifier) for a request. An
         image version without the requested kind is refused, never served on
         the other one: a caller asks for Fast to get its start-up. loadtest
-        (the load-test service only) picks the version's load-test Runtime."""
+        (the load-test service only) picks the version's load-test Runtime of
+        baseline loadtest_mib, and never another size: the test asked for
+        that machine type."""
         versions = self.versions()
         version = version or self.default_version()
         if version not in versions:
             raise SandboxError("unknown_version", f"no sandbox image version {version!r} (offered: {', '.join(versions) or 'none'})")
         if loadtest:
-            arn = self.loadtest_versions().get(version)
+            arn = self.loadtest_runtimes().get(loadtest_mib, {}).get(version)
             if not arn:
-                raise SandboxError("runtime_unavailable", f"image version {version!r} has no load-test runtime here")
+                raise SandboxError("runtime_unavailable",
+                                   f"image version {version!r} has no load-test runtime with a {loadtest_mib} MiB baseline here")
             return version, LOADTEST, arn, settings.sandbox_default_qualifier
         runtime = normalize_runtime(runtime) or STANDARD
         if runtime in (FAST, BASELINE):
@@ -376,13 +393,14 @@ class SandboxService:
         owner_session: str = "",
         labels: dict | None = None,
         loadtest: bool = False,
+        loadtest_mib: int = 0,
     ) -> dict:
         """Record, boot and claim a fresh sandbox. Returns its public row.
         loadtest (sandbox_loadtest_service only): on the version's load-test
-        Runtime, its row stamped with that runtime's long lifecycle, which the
-        reaper then holds it to."""
+        Runtime of baseline loadtest_mib, its row stamped with the load-test
+        runtimes' long lifecycle, which the reaper then holds it to."""
         self._require_enabled()
-        version, runtime, arn, qualifier = self._target(version, runtime, loadtest=loadtest)
+        version, runtime, arn, qualifier = self._target(version, runtime, loadtest=loadtest, loadtest_mib=loadtest_mib)
         idle_s, life_s = ((settings.sandbox_loadtest_idle_timeout_s, settings.sandbox_loadtest_max_lifetime_s) if loadtest
                           else (settings.sandbox_idle_timeout_s, settings.sandbox_max_lifetime_s))
         if owner_session and settings.sandbox_max_per_owner_session:

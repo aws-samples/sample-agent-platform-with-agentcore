@@ -18,12 +18,16 @@ variable "baseline_memory_mib" {
   }
 }
 
-variable "loadtest_memory_mib" {
-  description = "Committed baseline of every load-test sandbox runtime, as minimumMemoryInMiB (vCPU follows: 1 per 4096 MiB; a session can burst to 4x, so 8192 reaches 8 vCPU / 32 GB, the largest microVM)."
-  type        = number
+variable "loadtest_memory_mibs" {
+  description = "Committed baselines of the load-test sandbox runtimes, as minimumMemoryInMiB: each image with loadtest = true gets one runtime per value (vCPU follows: 1 per 4096 MiB; a session can burst to 4x, so 8192 reaches 8 vCPU / 32 GB, the largest microVM)."
+  type        = list(number)
   validation {
-    condition     = contains([1024, 2048, 4096, 8192], var.loadtest_memory_mib)
-    error_message = "loadtest_memory_mib must be one of the AgentCore resource configurations: 1024, 2048, 4096 or 8192."
+    condition     = length(var.loadtest_memory_mibs) > 0 && alltrue([for m in var.loadtest_memory_mibs : contains([1024, 2048, 4096, 8192], m)])
+    error_message = "loadtest_memory_mibs must name at least one baseline, each one of the AgentCore resource configurations: 1024, 2048, 4096 or 8192."
+  }
+  validation {
+    condition     = length(distinct(var.loadtest_memory_mibs)) == length(var.loadtest_memory_mibs)
+    error_message = "loadtest_memory_mibs must not repeat a baseline: each is one runtime."
   }
 }
 

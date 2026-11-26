@@ -64,13 +64,12 @@ class Settings(BaseSettings):
     sandbox_fast_versions: dict[str, str] = {}
     sandbox_baseline_versions: dict[str, str] = {}
     sandbox_baseline_memory_mib: int = 0
-    # Load-test Runtime by version (a baseline Runtime with its own baseline
-    # and an up to 8-hour lifecycle, for the portal's administrator load
-    # tests); {} = no load tests here. The lifecycle must match the runtime's
-    # (the rows of a load test are stamped with it, and the reaper holds them
-    # to it).
-    sandbox_loadtest_versions: dict[str, str] = {}
-    sandbox_loadtest_memory_mib: int = 0
+    # Load-test Runtimes by version, then committed baseline in MiB (as a
+    # string: the portal's machine types, each a baseline Runtime with an up
+    # to 8-hour lifecycle, for the administrator load tests); {} = no load
+    # tests here. The lifecycle must match the runtimes' (the rows of a load
+    # test are stamped with it, and the reaper holds them to it).
+    sandbox_loadtest_runtimes: dict[str, dict[str, str]] = {}
     sandbox_loadtest_idle_timeout_s: int = 900
     sandbox_loadtest_max_lifetime_s: int = 28800
     # most sandboxes one load test may start (the account allows 2500 active

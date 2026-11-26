@@ -238,10 +238,10 @@ variable "sandbox_baseline_memory_mib" {
   default     = 8192
 }
 
-variable "sandbox_loadtest_memory_mib" {
-  description = "Committed baseline of the load-test sandbox runtimes (images with loadtest = true), as minimumMemoryInMiB. A session can burst to 4x, so 8192 reaches 8 vCPU / 32 GB, the largest microVM; it is billed for the baseline from start to end."
-  type        = number
-  default     = 8192
+variable "sandbox_loadtest_memory_mibs" {
+  description = "Committed baselines of the load-test sandbox runtimes (images with loadtest = true), as minimumMemoryInMiB: one runtime per value, the machine types a portal load test offers. A session can burst to 4x, so 8192 reaches 8 vCPU / 32 GB, the largest microVM; it is billed for the baseline from start to end. A runtime with no session costs nothing."
+  type        = list(number)
+  default     = [1024, 2048, 4096, 8192]
 }
 
 variable "sandbox_loadtest_idle_timeout_s" {

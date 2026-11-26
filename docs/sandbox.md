@@ -290,15 +290,31 @@ run** offers the form where it is deployed and shows the baseline it bills.
 
 ### Load tests
 
-`loadtest = true` on a `sandbox_images` entry adds a load-test runtime
-(`sandbox_runtime_v<N>_loadtest`): the baseline runtime's shape with its own
-baseline (`sandbox_loadtest_memory_mib`, default 8192, so a sandbox bursts to
-8 vCPU / 32 GB, the largest microVM) and its own lifecycle
-(`sandbox_loadtest_idle_timeout_s`, default 900, and
+`loadtest = true` on a `sandbox_images` entry adds load-test runtimes, one
+per baseline in `sandbox_loadtest_memory_mibs` (default all four AgentCore
+offers): the baseline runtime's shape with that baseline and their own
+lifecycle (`sandbox_loadtest_idle_timeout_s`, default 900, and
 `sandbox_loadtest_max_lifetime_s`, default 28800: AgentCore's 8 hours for a
-microVM). No caller can name it as a runtime: only the portal's **Load test**
-tab (administrators) starts sandboxes on it, so no other sandbox gets its
-long life.
+microVM). They are the machine types the **Load test** tab offers:
+
+| Machine type | Runtime | Baseline | Bursts to | Idle, per sandbox-hour |
+|---|---|---|---|---|
+| 1 GB | `sandbox_runtime_v<N>_loadtest_1g` | 0.25 vCPU / 1 GB | 1 vCPU / 4 GB | $0.038 |
+| 2 GB | `sandbox_runtime_v<N>_loadtest_2g` | 0.5 vCPU / 2 GB | 2 vCPU / 8 GB | $0.076 |
+| 4 GB | `sandbox_runtime_v<N>_loadtest_4g` | 1 vCPU / 4 GB | 4 vCPU / 16 GB | $0.153 |
+| 8 GB | `sandbox_runtime_v<N>_loadtest` | 2 vCPU / 8 GB | 8 vCPU / 32 GB, the largest microVM | $0.305 |
+
+The 8 GB runtime keeps the name and Terraform address it had when it was the
+only one, so adding the smaller ones recreated nothing. A runtime with no
+session costs nothing, so offering all four costs nothing until a test runs.
+Adding a size adds a runtime, which the pipeline cannot create: an
+administrator applies it with `-target` once after the merge. A load test
+names its machine type (`memory_mib`; none is the largest) and is refused if
+that size, or the image version on it, is not deployed: it never runs on a
+neighbouring size. The built-in load is bounded by the chosen size (CPU up to
+its burst vCPU, memory up to its burst memory less 2 GB). No caller can name
+a load-test runtime: only the portal's **Load test** tab (administrators)
+starts sandboxes on one, so no other sandbox gets their long life.
 
 A load test starts `count` sandboxes, 10 at a time (`sandbox_loadtest_launch_parallel`;
 AgentCore admits 50 new sessions a second in this account), each running the
@@ -328,7 +344,8 @@ Every sandbox of a load test is billed from start to end for the baseline or
 for what it uses, whichever is more, and all of it at the committed-baseline
 rate: the bill does not split a burst out or charge it the consumption rate.
 At the ap-northeast-1 rates an idle sandbox on the 8192 MiB baseline costs
-2 x $0.0997 + 8 x $0.0132 = $0.305 an hour. The first production load test
+2 x $0.0997 + 8 x $0.0132 = $0.305 an hour (the table above gives the other
+sizes). The first production load test
 (2026-11-25: 50 sandboxes, 8 vCPU and 30 GB of stress each, 1.9 hours) was
 metered at 8 vCPU and 31.6 GB per sandbox, the runtime and image adding about
 1.6 GB to what the workers held, and billed $114, about $1.22 per

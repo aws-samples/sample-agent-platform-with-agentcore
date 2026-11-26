@@ -524,15 +524,21 @@ export interface SandboxConfig {
   loadtest?: SandboxLoadTestConfig | Record<string, never>
 }
 
-export interface SandboxLoadTestConfig {
-  // image version -> its load-test Runtime's name
-  versions: Record<string, string>
+// one machine type: a load-test Runtime per committed baseline
+export interface SandboxLoadTestSize {
   memory_mib: number
   vcpu_baseline: number
   // a baseline Runtime bursts to 4x its baseline
   max_vcpu: number
   max_memory_gb: number
   max_stress_memory_gb: number
+  // image version -> its load-test Runtime's name, for this size
+  versions: Record<string, string>
+}
+
+export interface SandboxLoadTestConfig {
+  // smallest first
+  sizes: SandboxLoadTestSize[]
   max_count: number
   max_duration_s: number
   idle_timeout_s: number
@@ -981,11 +987,13 @@ export const api = {
     version: string
     count: number
     duration_s: number
+    // the machine type (a size's memory_mib); omitted = the largest
+    memory_mib?: number
     cpu?: number
     memory_gb?: number
     command?: string
   }) =>
-    request<{ loadtest_id: string; status: string }>('/api/v1/sandboxes/loadtests', { method: 'POST', body: JSON.stringify(body) }),
+    request<{ loadtest_id: string; status: string; memory_mib: number }>('/api/v1/sandboxes/loadtests', { method: 'POST', body: JSON.stringify(body) }),
   listSandboxLoadTests: () => request<SandboxLoadTest[]>('/api/v1/sandboxes/loadtests'),
   stopSandboxLoadTest: (id: string) =>
     request<SandboxLoadTest>(`/api/v1/sandboxes/loadtests/${encodeURIComponent(id)}/stop`, { method: 'POST' }),

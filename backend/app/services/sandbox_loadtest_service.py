@@ -1,11 +1,12 @@
-"""Sandbox load tests: many sandboxes on the load-test Runtime, held busy for a
+"""Sandbox load tests: many sandboxes on a load-test Runtime, held busy for a
 set time, then stopped. Portal administrators only (api/sandboxes.py).
 
 A load test is one ledger row (PK=SANDBOX_LOADTEST, SK=lt-<hex>) holding its
 parameters and one entry per sandbox under ``members``. Its sandboxes are
 ordinary sandbox rows (sandbox_service.create(loadtest=True)) on the
-version's load-test Runtime: a baseline Runtime (8192 MiB by default, so a
-sandbox bursts to 8 vCPU / 32 GB) whose lifecycle lets a sandbox live up to
+version's load-test Runtime of the machine type the test picked: a baseline
+Runtime per committed baseline (1, 2, 4 or 8 GB, bursting to 4x, so the
+8 GB one reaches 8 vCPU / 32 GB) whose lifecycle lets a sandbox live up to
 AgentCore's 8 hours for a microVM; their rows carry that lifecycle, so the
 reaper holds them to it and to nothing shorter.
 
@@ -27,9 +28,9 @@ reaper holds them to it and to nothing shorter.
   so a replica that acts past its lease still agrees with the others.
 - stop() asks every member to stop now.
 
-Billing: a sandbox on the load-test Runtime is billed for the baseline from
-start to end, idle or not, at the committed-baseline rate, plus what it uses
-above the baseline. A member is stopped as soon as its job ends.
+Billing: a sandbox on a load-test Runtime is billed from start to end, idle
+or not, for its baseline or what it uses, whichever is more, all at the
+committed-baseline rate. A member is stopped as soon as its job ends.
 """
 
 import json
@@ -143,21 +144,10 @@ class LoadTestService:
 
     # ---------------------------------------------------------------- limits
 
-    def config(self) -> dict:
-        """What the portal shows and submit() enforces; {} when no version has
-        a load-test Runtime here."""
-        versions = sandbox_service.loadtest_versions()
-        mib = settings.sandbox_loadtest_memory_mib
-        # a member's deadline is its duration plus MEMBER_GRACE_S, all within
-        # the runtime's lifetime: a lifetime too short to hold the shortest
-        # load test (60 s) plus that reserve runs none, rather than one that
-        # AgentCore ends before its deadline
-        max_duration = settings.sandbox_loadtest_max_lifetime_s - MEMBER_GRACE_S
-        if not versions or mib <= 0 or max_duration < 60:
-            return {}
+    @staticmethod
+    def _size(mib: int, versions: dict[str, str]) -> dict:
+        """One machine type: a committed baseline and what it bursts to."""
         return {
-            # runtime names only: the ARN carries the account id
-            "versions": {v: arn.rsplit("/", 1)[-1] for v, arn in versions.items()},
             "memory_mib": mib,
             "vcpu_baseline": mib / 4096,
             # a baseline Runtime bursts to 4x its baseline
@@ -165,19 +155,46 @@ class LoadTestService:
             "max_memory_gb": int(mib * 4 / 1024),
             # the stress script may hold all but 2 GB (the kernel, the job's own process)
             "max_stress_memory_gb": max(0, int(mib * 4 / 1024) - 2),
+            # runtime names only: the ARN carries the account id
+            "versions": {v: arn.rsplit("/", 1)[-1] for v, arn in sorted(versions.items())},
+        }
+
+    def config(self) -> dict:
+        """What the portal shows and submit() enforces: the machine types
+        (sizes, smallest first) and the limits common to them; {} when no
+        version has a load-test Runtime here."""
+        runtimes = sandbox_service.loadtest_runtimes()
+        # a member's deadline is its duration plus MEMBER_GRACE_S, all within
+        # the runtime's lifetime: a lifetime too short to hold the shortest
+        # load test (60 s) plus that reserve runs none, rather than one that
+        # AgentCore ends before its deadline
+        max_duration = settings.sandbox_loadtest_max_lifetime_s - MEMBER_GRACE_S
+        if not runtimes or max_duration < 60:
+            return {}
+        return {
+            "sizes": [self._size(mib, versions) for mib, versions in runtimes.items()],
             "max_count": min(settings.sandbox_loadtest_max_count, MAX_MEMBERS),
             "max_duration_s": max_duration,
             "idle_timeout_s": settings.sandbox_loadtest_idle_timeout_s,
             "max_lifetime_s": settings.sandbox_loadtest_max_lifetime_s,
         }
 
-    def _validate(self, *, version: str, count: int, duration_s: int, cpu: int, memory_gb: float, command: str) -> dict:
+    def _validate(self, *, version: str, memory_mib: int, count: int, duration_s: int, cpu: int, memory_gb: float,
+                  command: str) -> dict:
+        """The machine type the request runs on, once every bound holds.
+        memory_mib 0 is the largest deployed; any other must be deployed
+        as asked, never swapped for a neighbour."""
         cfg = self.config()
         if not cfg:
             raise SandboxError("loadtest_unavailable", "no load-test runtime is deployed here", status=503)
-        if version not in cfg["versions"]:
+        sizes = {s["memory_mib"]: s for s in cfg["sizes"]}
+        size = cfg["sizes"][-1] if not memory_mib else sizes.get(memory_mib)
+        if size is None:
+            raise SandboxError("bad_size", f"memory_mib must be one of the deployed load-test baselines: {', '.join(map(str, sizes))}")
+        if version not in size["versions"]:
             raise SandboxError("runtime_unavailable",
-                               f"image version {version!r} has no load-test runtime (load tests run on: {', '.join(cfg['versions'])})")
+                               f"image version {version!r} has no load-test runtime with a {size['memory_mib']} MiB baseline "
+                               f"(that size runs: {', '.join(size['versions'])})")
         if not 1 <= count <= cfg["max_count"]:
             raise SandboxError("bad_count", f"count must be 1-{cfg['max_count']}")
         if not 60 <= duration_s <= cfg["max_duration_s"]:
@@ -186,11 +203,12 @@ class LoadTestService:
             if len(command) > MAX_COMMAND:
                 raise SandboxError("bad_command", f"command is longer than {MAX_COMMAND} characters")
         else:
-            if not 0 <= cpu <= cfg["max_vcpu"]:
-                raise SandboxError("bad_cpu", f"cpu must be 0-{cfg['max_vcpu']}")
-            if not 0 <= memory_gb <= cfg["max_stress_memory_gb"]:
-                raise SandboxError("bad_memory", f"memory_gb must be 0-{cfg['max_stress_memory_gb']}")
-        return cfg
+            if not 0 <= cpu <= size["max_vcpu"]:
+                raise SandboxError("bad_cpu", f"cpu must be 0-{size['max_vcpu']} on the {size['memory_mib']} MiB machine type")
+            if not 0 <= memory_gb <= size["max_stress_memory_gb"]:
+                raise SandboxError("bad_memory",
+                                   f"memory_gb must be 0-{size['max_stress_memory_gb']} on the {size['memory_mib']} MiB machine type")
+        return size
 
     # ---------------------------------------------------------------- ledger
 
@@ -336,27 +354,31 @@ class LoadTestService:
     # ---------------------------------------------------------------- submit
 
     def submit(self, *, owner: str, version: str, count: int, duration_s: int, cpu: int = 0, memory_gb: float = 0,
-               command: str = "") -> dict:
+               command: str = "", memory_mib: int = 0) -> dict:
         command = (command or "").strip()
-        cfg = self._validate(version=version, count=count, duration_s=duration_s, cpu=cpu, memory_gb=memory_gb, command=command)
+        size = self._validate(version=version, memory_mib=memory_mib, count=count, duration_s=duration_s, cpu=cpu,
+                              memory_gb=memory_gb, command=command)
+        mib = size["memory_mib"]
         lt_id = f"lt-{uuid.uuid4().hex[:12]}"
         now = int(time.time())
         self._table().put_item(Item=with_ttl({
             "PK": LT_PK, "SK": lt_id, "owner": str(owner), "status": "launching", "version": version,
             "count": count, "duration_s": duration_s, "cpu": cpu, "memory_gb": str(memory_gb), "command": command,
-            "memory_mib": cfg["memory_mib"], "submitted_ts": now, "heartbeat_ts": now, "members": {},
+            "memory_mib": mib, "submitted_ts": now, "heartbeat_ts": now, "members": {},
         }, ttl_after_days(settings.retention_live_session_days)))
-        _spawn(self._launch, lt_id, owner, version, count, duration_s, cpu, memory_gb, command, name=f"sandbox-loadtest-{lt_id[-6:]}")
-        return {"loadtest_id": lt_id, "status": "launching"}
+        _spawn(self._launch, lt_id, owner, version, mib, count, duration_s, cpu, memory_gb, command,
+               name=f"sandbox-loadtest-{lt_id[-6:]}")
+        return {"loadtest_id": lt_id, "status": "launching", "memory_mib": mib}
 
     def _command(self, duration_s: int, cpu: int, memory_gb: float, command: str) -> str:
         return command or f"python3 {STRESS_PATH} --cpu {int(cpu)} --mem-gb {float(memory_gb)} --duration {int(duration_s)}"
 
-    def _launch_one(self, lt_id: str, owner: str, version: str, duration_s: int, cpu: int, memory_gb: float, command: str) -> None:
+    def _launch_one(self, lt_id: str, owner: str, version: str, mib: int, duration_s: int, cpu: int, memory_gb: float,
+                    command: str) -> None:
         sid = ""
         try:
             sbx = sandbox_service.create(owner=owner, source="loadtest", version=version, run_id=lt_id,
-                                         labels={"loadtest": lt_id}, loadtest=True)
+                                         labels={"loadtest": lt_id}, loadtest=True, loadtest_mib=mib)
             sid = sbx["runtime_session_id"]
             if not command:
                 sandbox_service.write_file(sid, owner, STRESS_PATH, STRESS_PY.encode())
@@ -364,7 +386,7 @@ class LoadTestService:
             task = sandbox_service.exec_start(
                 sid, owner, cmd=self._command(duration_s, cpu, memory_gb, command),
                 env={"SANDBOX_ID": sid, "LOADTEST_ID": lt_id}, timeout_s=duration_s + 60,
-                memory_limit_mib=settings.sandbox_loadtest_memory_mib * 4,
+                memory_limit_mib=mib * 4,
             )
             started = int(time.time())
             member = {"state": "running", "task_id": task.get("task_id", ""), "started_ts": started,
@@ -385,13 +407,14 @@ class LoadTestService:
             self._set_member(lt_id, key, {"state": "failed", "error": _clip(str(e)), "code": getattr(e, "code", type(e).__name__)},
                              when="any")
 
-    def _launch(self, lt_id: str, owner: str, version: str, count: int, duration_s: int, cpu: int, memory_gb: float, command: str) -> None:
+    def _launch(self, lt_id: str, owner: str, version: str, mib: int, count: int, duration_s: int, cpu: int, memory_gb: float,
+                command: str) -> None:
         try:
             with ThreadPoolExecutor(max_workers=max(1, settings.sandbox_loadtest_launch_parallel)) as pool:
                 for _ in range(count):
                     if self._get(lt_id).get("status") != "launching":
                         break  # stopped while launching: start no more
-                    pool.submit(self._launch_one, lt_id, owner, version, duration_s, cpu, memory_gb, command)
+                    pool.submit(self._launch_one, lt_id, owner, version, mib, duration_s, cpu, memory_gb, command)
             self._set_status(lt_id, "running", ("launching",), launched_ts=int(time.time()))
         except Exception:  # noqa: BLE001 - tick() takes over a stale launch
             logger.exception("load test %s: launch failed", lt_id)
@@ -457,7 +480,7 @@ class LoadTestService:
         self._set_member(lt_id, sid, {**member, "polled_ts": now, "tail": _clip(st.get("stdout_tail"), tail=True)})
 
     def tick(self, now: float | None = None) -> dict:
-        if not sandbox_service.enabled or not sandbox_service.loadtest_versions():
+        if not sandbox_service.enabled or not sandbox_service.loadtest_runtimes():
             return {"enabled": False}
         now = int(time.time() if now is None else now)
         acted = {"kept": 0, "taken_over": [], "closed": []}
